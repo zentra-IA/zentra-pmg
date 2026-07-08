@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireCompanyAccess } from "@/lib/server-company";
 import { prisma } from "@/lib/prisma";
-import { writeFile, unlink } from "fs/promises";
-import { existsSync } from "fs";
+import { writeFile, unlink, readFile } from "fs/promises";
 import os from "os";
 import path from "path";
-import { spawn } from "child_process";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,119 +50,64 @@ async function ensureQuoteDailyPricesTable() {
   `);
 }
 
-function runPythonParser(pdfPath: string, timeoutMs = 120000): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const parserPath = path.join(process.cwd(), "scripts", "pmg-pdf-parser.py");
+async function runPythonParser(pdfPath: string, timeoutMs = 120000): Promise<any> {
+  const parserUrl = process.env.PDF_PARSER_URL;
+  const parserToken = process.env.PDF_PARSER_TOKEN;
 
-    if (!existsSync(parserPath)) {
-      reject(new Error(`Parser Python não encontrado em: ${parserPath}`));
-      return;
+  if (!parserUrl) {
+    throw new Error("Configure PDF_PARSER_URL nas variáveis de ambiente da Vercel.");
+  }
+
+  const pdfBuffer = await readFile(pdfPath);
+  const formData = new FormData();
+
+  formData.append(
+    "file",
+    new Blob([pdfBuffer], { type: "application/pdf" }),
+    path.basename(pdfPath)
+  );
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    console.log(`[quotes/upload] enviando PDF para parser remoto: ${parserUrl}`);
+
+    const response = await fetch(parserUrl, {
+      method: "POST",
+      body: formData,
+      signal: controller.signal,
+      headers: parserToken
+        ? {
+            Authorization: `Bearer ${parserToken}`,
+          }
+        : undefined,
+    });
+
+    const text = await response.text();
+
+    let data: any = {};
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(`Parser remoto retornou resposta inválida: ${text.slice(0, 1000)}`);
     }
 
-    const candidates: Array<{ cmd: string; args: string[] }> = [
-      { cmd: "py", args: ["-X", "utf8", parserPath, pdfPath] },
-      { cmd: "python", args: [parserPath, pdfPath] },
-      { cmd: "python3", args: [parserPath, pdfPath] },
-    ];
+    if (!response.ok || !data.success) {
+      throw new Error(data?.error || data?.message || "Parser remoto retornou erro.");
+    }
 
-    let index = 0;
-    const errors: string[] = [];
+    console.log(`[quotes/upload] parser remoto OK: ${data.count || data.items?.length || 0} produtos`);
+    return data;
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      throw new Error(`Timeout ao chamar parser remoto após ${timeoutMs / 1000}s.`);
+    }
 
-    const tryNext = () => {
-      const current = candidates[index++];
-
-      if (!current) {
-        reject(
-          new Error(
-            "Não consegui executar o parser Python.\n" +
-              "Rode: py -m pip install -r requirements-quotes.txt\n\n" +
-              errors.join("\n---\n")
-          )
-        );
-        return;
-      }
-
-      console.log(`[quotes/upload] iniciando parser: ${current.cmd} ${current.args.join(" ")}`);
-
-      const child = spawn(current.cmd, current.args, {
-        cwd: process.cwd(),
-        windowsHide: true,
-        shell: false,
-        env: {
-          ...process.env,
-          PYTHONIOENCODING: "utf-8",
-        },
-      });
-
-      let stdout = "";
-      let stderr = "";
-      let finished = false;
-
-      const timer = setTimeout(() => {
-        if (finished) return;
-        finished = true;
-        child.kill("SIGKILL");
-        errors.push(`${current.cmd}: timeout após ${timeoutMs / 1000}s\n${stderr.slice(0, 1000)}`);
-        tryNext();
-      }, timeoutMs);
-
-      child.stdout.on("data", (data) => {
-        stdout += data.toString("utf8");
-      });
-
-      child.stderr.on("data", (data) => {
-        stderr += data.toString("utf8");
-      });
-
-      child.on("error", (err) => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timer);
-        errors.push(`${current.cmd}: ${err.message}`);
-        tryNext();
-      });
-
-      child.on("close", (code) => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timer);
-
-        if (stderr.trim()) {
-          console.warn(`[quotes/upload] stderr python (${current.cmd}):`, stderr.slice(0, 1200));
-        }
-
-        if (!stdout.trim()) {
-          errors.push(`${current.cmd}: sem saída. Exit ${code}. ${stderr.slice(0, 1000)}`);
-          tryNext();
-          return;
-        }
-
-        try {
-          // Garante que, se alguma lib imprimir lixo antes/depois, pegamos só o JSON.
-          const start = stdout.indexOf("{");
-          const end = stdout.lastIndexOf("}");
-          const jsonText = start >= 0 && end >= start ? stdout.slice(start, end + 1) : stdout;
-          const data = JSON.parse(jsonText);
-
-          if (!data.success) {
-            errors.push(`${current.cmd}: ${data.error || "Parser retornou erro."}`);
-            tryNext();
-            return;
-          }
-
-          console.log(`[quotes/upload] parser OK: ${data.count || data.items?.length || 0} produtos`);
-          resolve(data);
-        } catch (err: any) {
-          errors.push(
-            `${current.cmd}: JSON inválido: ${err?.message || err}\nSTDOUT: ${stdout.slice(0, 1000)}\nSTDERR: ${stderr.slice(0, 1000)}`
-          );
-          tryNext();
-        }
-      });
-    };
-
-    tryNext();
-  });
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function getCatalogMap(companyId: string, codes: string[]) {
@@ -301,7 +244,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           success: false,
-          error: "O PDF foi aberto, mas nenhum produto foi identificado pelo parser Python.",
+          error: "O PDF foi aberto, mas nenhum produto foi identificado pelo parser remoto.",
           debug: {
             ignoredCount: parsed.ignoredCount || 0,
             ignoredSample: parsed.ignoredSample || [],
@@ -328,7 +271,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      engine: "python-pdfplumber-batch",
+      engine: "remote-python-pdfplumber",
       file: file.name,
       parsed: items.length,
       updated,
