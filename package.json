@@ -1,0 +1,45 @@
+{
+  "name": "zentra-sales-ai",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --webpack",
+    "build": "prisma generate && next build",
+    "start": "next start",
+    "postinstall": "prisma generate",
+    "dev:turbo": "next dev",
+    "worker": "tsx scripts/zentra-worker.ts",
+    "prisma:push": "prisma db push",
+    "prisma:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "@supabase/supabase-js": "^2.106.2",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "lucide-react": "^1.23.0",
+    "next": "16.2.2",
+    "openai": "^6.44.0",
+    "pdf-parse": "1.1.1",
+    "qrcode": "^1.5.4",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "recharts": "^3.8.1",
+    "resend": "^6.12.3",
+    "tsx": "^4.22.3",
+    "xlsx": "^0.18.5",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.2",
+    "@types/node": "25.6.0",
+    "@types/react": "19.2.14",
+    "postcss": "^8.5.9",
+    "prisma": "^6.19.3",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^5.0.0"
+  },
+  "description": "Plataforma de inteligência comercial para representantes e distribuidores"
+}

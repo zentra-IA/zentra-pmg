@@ -1,0 +1,72 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Category {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String    @unique
+  active    Boolean   @default(true)
+  sortOrder Int       @default(0)
+  products  Product[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  price       Decimal  @db.Decimal(10, 2)
+  imageUrl    String?
+  active      Boolean  @default(true)
+  inStock     Boolean  @default(true)
+  featured    Boolean  @default(false)
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Customer {
+  id          String   @id @default(cuid())
+  nome        String
+  whatsapp    String
+  email       String?
+  cep         String
+  endereco    String
+  numero      String
+  complemento String?
+  bairro      String
+  cidade      String
+  createdAt   DateTime @default(now())
+}
+
+model Order {
+  id            String    @id @default(cuid())
+  orderNumber   String    @unique
+  customerId    String
+  totalAmount   Decimal   @db.Decimal(10, 2)
+  paymentMethod String
+  observacao    String?
+  status        String    @default("NOVO")
+  archived      Boolean   @default(false)
+  archivedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  productId String
+  nome      String
+  price     Decimal @db.Decimal(10, 2)
+  quantity  Int     @default(1)
+}

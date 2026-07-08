@@ -1,0 +1,1516 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Category {
+  id                String               @id @default(cuid())
+  company_id        String               @db.Uuid
+  branch_id         String?              @db.Uuid
+  name              String
+  slug              String
+  description       String?
+  type              CategoryType         @default(NORMAL)
+  selectionRequired Boolean              @default(false)
+  active            Boolean              @default(true)
+  sortOrder         Int                  @default(0)
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  additionalLinks   AdditionalCategory[]
+  branch            branches?            @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies         companies            @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  products          Product[]
+  productLinks      ProductCategory[]
+
+  @@unique([company_id, slug])
+  @@index([company_id], map: "idx_category_company")
+  @@index([branch_id], map: "idx_category_branch")
+}
+
+model Product {
+  id                       String              @id @default(cuid())
+  company_id               String              @db.Uuid
+  branch_id                String?             @db.Uuid
+  categoryId               String
+  name                     String
+  slug                     String
+  description              String?
+  price                    Float
+  imageUrl                 String?
+  active                   Boolean             @default(true)
+  inStock                  Boolean             @default(true)
+  required                 Boolean             @default(true)
+  sortOrder                Int                 @default(0)
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @updatedAt
+  comboGroupItems          ComboGroupItem[]
+  orderItems               OrderItem[]
+  branch                   branches?           @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  category                 Category            @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  companies                companies           @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "product_company_fk")
+  productAdditionalConfigs ProductAdditional[]
+  categories               ProductCategory[]
+
+  @@unique([company_id, slug])
+  @@index([company_id], map: "idx_product_company")
+  @@index([branch_id], map: "idx_product_branch")
+  @@index([categoryId], map: "idx_product_category")
+}
+
+model ProductCategory {
+  id          String    @id @default(cuid())
+  company_id  String    @db.Uuid
+  branch_id   String?   @db.Uuid
+  productId   String
+  categoryId  String
+  sortOrder   Int       @default(0)
+  customPrice Float?
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  branch      branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  category    Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  companies   companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "productcategory_company_fk")
+
+  @@unique([productId, categoryId])
+  @@index([company_id], map: "idx_productcategory_company")
+  @@index([branch_id], map: "idx_productcategory_branch")
+}
+
+model Additional {
+  id             String               @id @default(cuid())
+  company_id     String               @db.Uuid
+  branch_id      String?              @db.Uuid
+  name           String
+  slug           String
+  description    String?
+  price          Float
+  required       Boolean              @default(false)
+  active         Boolean              @default(true)
+  sortOrder      Int                  @default(0)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  branch         branches?            @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies      companies            @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  categoryLinks  AdditionalCategory[]
+  productConfigs ProductAdditional[]
+
+  @@unique([company_id, slug])
+  @@index([company_id], map: "idx_additional_company")
+  @@index([branch_id], map: "idx_additional_branch")
+}
+
+model AdditionalCategory {
+  id           String     @id @default(cuid())
+  company_id   String     @db.Uuid
+  branch_id    String?    @db.Uuid
+  additionalId String
+  categoryId   String
+  createdAt    DateTime   @default(now())
+  additional   Additional @relation(fields: [additionalId], references: [id], onDelete: Cascade)
+  branch       branches?  @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  category     Category   @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  companies    companies  @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([additionalId, categoryId])
+  @@index([company_id], map: "idx_additionalcategory_company")
+  @@index([branch_id], map: "idx_additionalcategory_branch")
+}
+
+model ProductAdditional {
+  id           String     @id @default(cuid())
+  company_id   String     @db.Uuid
+  branch_id    String?    @db.Uuid
+  productId    String
+  additionalId String
+  required     Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  additional   Additional @relation(fields: [additionalId], references: [id], onDelete: Cascade)
+  branch       branches?  @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  product      Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  companies    companies  @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "productadditional_company_fk")
+
+  @@unique([productId, additionalId])
+  @@index([company_id], map: "idx_productadditional_company")
+  @@index([branch_id], map: "idx_productadditional_branch")
+}
+
+model Combo {
+  id          String       @id @default(cuid())
+  company_id  String       @db.Uuid
+  branch_id   String?      @db.Uuid
+  name        String
+  slug        String
+  description String?
+  price       Float
+  imageUrl    String?
+  active      Boolean      @default(true)
+  sortOrder   Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  branch      branches?    @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies   companies    @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  groups      ComboGroup[]
+
+  @@unique([company_id, slug])
+  @@index([company_id], map: "idx_combo_company")
+  @@index([branch_id], map: "idx_combo_branch")
+}
+
+model ComboGroup {
+  id         String           @id @default(cuid())
+  company_id String           @db.Uuid
+  branch_id  String?          @db.Uuid
+  comboId    String
+  name       String
+  required   Boolean          @default(true)
+  minSelect  Int              @default(1)
+  maxSelect  Int              @default(1)
+  createdAt  DateTime         @default(now())
+  branch     branches?        @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  combo      Combo            @relation(fields: [comboId], references: [id], onDelete: Cascade)
+  companies  companies        @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  items      ComboGroupItem[]
+
+  @@index([company_id], map: "idx_combogroup_company")
+  @@index([branch_id], map: "idx_combogroup_branch")
+}
+
+model ComboGroupItem {
+  id           String     @id @default(cuid())
+  company_id   String     @db.Uuid
+  branch_id    String?    @db.Uuid
+  comboGroupId String
+  productId    String
+  createdAt    DateTime   @default(now())
+  branch       branches?  @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  comboGroup   ComboGroup @relation(fields: [comboGroupId], references: [id], onDelete: Cascade)
+  companies    companies  @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  product      Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([comboGroupId, productId])
+  @@index([company_id], map: "idx_combogroupitem_company")
+  @@index([branch_id], map: "idx_combogroupitem_branch")
+}
+
+model Customer {
+  id           String    @id @default(cuid())
+  company_id   String    @db.Uuid
+  branch_id    String?   @db.Uuid
+  name         String
+  whatsapp     String
+  email        String?
+  cep          String?
+  address      String?
+  neighborhood String?
+  city         String?
+  cpf          String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  branch       branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies    companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  orders       Order[]
+
+  @@unique([company_id, whatsapp])
+  @@index([company_id], map: "idx_customer_company")
+  @@index([branch_id], map: "idx_customer_branch")
+  @@index([whatsapp], map: "idx_customer_whatsapp")
+}
+
+model Driver {
+  id         String          @id @default(cuid())
+  company_id String          @db.Uuid
+  branch_id  String?         @db.Uuid
+  name       String
+  whatsapp   String
+  active     Boolean         @default(true)
+  createdAt  DateTime        @default(now())
+  batches    DeliveryBatch[]
+  branch     branches?       @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies  companies       @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "driver_company_fk")
+  orders     Order[]
+
+  @@index([company_id], map: "idx_driver_company")
+  @@index([branch_id], map: "idx_driver_branch")
+}
+
+model DeliveryBatch {
+  id         String              @id @default(cuid())
+  company_id String              @db.Uuid
+  branch_id  String?             @db.Uuid
+  code       String
+  driverId   String
+  routeMode  RouteMode
+  status     DeliveryBatchStatus @default(MONTADO)
+  createdAt  DateTime            @default(now())
+  branch     branches?           @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  driver     Driver              @relation(fields: [driverId], references: [id])
+  companies  companies           @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "deliverybatch_company_fk")
+  orders     Order[]
+
+  @@unique([company_id, code])
+  @@index([company_id], map: "idx_deliverybatch_company")
+  @@index([branch_id], map: "idx_deliverybatch_branch")
+}
+
+model Order {
+  id              String         @id @default(cuid())
+  company_id      String         @db.Uuid
+  branch_id       String?        @db.Uuid
+  code            String?
+  status          OrderStatus    @default(NOVO)
+  paymentMethod   PaymentMethod  @default(PIX)
+  total           Float          @default(0)
+  customerId      String?
+  driverId        String?
+  deliveryBatchId String?
+  archived        Boolean        @default(false)
+  archivedAt      DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @default(now()) @updatedAt
+  branch          branches?      @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  customer        Customer?      @relation(fields: [customerId], references: [id])
+  deliveryBatch   DeliveryBatch? @relation(fields: [deliveryBatchId], references: [id])
+  driver          Driver?        @relation(fields: [driverId], references: [id])
+  companies       companies      @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "order_company_fk")
+  items           OrderItem[]
+
+  @@unique([company_id, code])
+  @@index([company_id], map: "idx_order_company")
+  @@index([branch_id], map: "idx_order_branch")
+  @@index([customerId], map: "idx_order_customer")
+  @@index([status], map: "idx_order_status")
+  @@index([archived], map: "idx_order_archived")
+}
+
+model OrderItem {
+  id         String    @id @default(cuid())
+  company_id String    @db.Uuid
+  branch_id  String?   @db.Uuid
+  orderId    String
+  productId  String?
+  name       String
+  price      Float
+  quantity   Int       @default(1)
+  createdAt  DateTime  @default(now())
+  branch     branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  order      Order     @relation(fields: [orderId], references: [id])
+  product    Product?  @relation(fields: [productId], references: [id])
+  companies  companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "orderitem_company_fk")
+
+  @@index([company_id], map: "idx_orderitem_company")
+  @@index([branch_id], map: "idx_orderitem_branch")
+  @@index([orderId], map: "idx_orderitem_order")
+}
+
+model CrmCustomer {
+  id         String       @id @default(cuid())
+  company_id String       @db.Uuid
+  branch_id  String?      @db.Uuid
+  name       String?
+  phone      String
+  email      String?
+  tags       String[]
+  notes      String?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+  branch     branches?    @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies  companies    @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  messages   CrmMessage[]
+
+  @@unique([company_id, phone])
+  @@index([company_id], map: "idx_crmcustomer_company")
+  @@index([branch_id], map: "idx_crmcustomer_branch")
+  @@index([phone], map: "idx_crmcustomer_phone")
+}
+
+model CrmMessage {
+  id         String       @id @default(cuid())
+  company_id String       @db.Uuid
+  branch_id  String?      @db.Uuid
+  customerId String?
+  phone      String
+  direction  String
+  source     String       @default("whatsapp")
+  message    String
+  createdAt  DateTime     @default(now())
+  branch     branches?    @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies  companies    @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  customer   CrmCustomer? @relation(fields: [customerId], references: [id])
+
+  @@index([company_id], map: "idx_crmmessage_company")
+  @@index([branch_id], map: "idx_crmmessage_branch")
+  @@index([customerId], map: "idx_crmmessage_customer")
+  @@index([phone], map: "idx_crmmessage_phone")
+}
+
+model WhatsappSession {
+  id         String    @id @default(cuid())
+  company_id String    @db.Uuid
+  branch_id  String?   @db.Uuid
+  name       String
+  sessionId  String
+  status     String    @default("offline")
+  qr         String?
+  createdAt  DateTime  @default(now())
+  branch     branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies  companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "whatsappsession_company_fk")
+
+  @@unique([company_id, sessionId])
+  @@index([company_id], map: "idx_whatsappsession_company")
+  @@index([branch_id], map: "idx_whatsappsession_branch")
+}
+
+model Campaign {
+  id         String    @id @default(cuid())
+  company_id String    @db.Uuid
+  branch_id  String?   @db.Uuid
+  name       String
+  message    String
+  status     String    @default("draft")
+  createdAt  DateTime  @default(now())
+  branch     branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies  companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_campaign_company")
+  @@index([branch_id], map: "idx_campaign_branch")
+}
+
+model Automation {
+  id         String    @id @default(cuid())
+  company_id String    @db.Uuid
+  branch_id  String?   @db.Uuid
+  name       String
+  trigger    String
+  response   String
+  active     Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  branch     branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies  companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_automation_company")
+  @@index([branch_id], map: "idx_automation_branch")
+}
+
+model leads {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id         String    @db.Uuid
+  branch_id          String?   @db.Uuid
+  name               String?
+  phone              String?
+  email              String?
+  status             String?   @default("novo")
+  session_id         Int?      @default(1)
+  ai_paused          Boolean?  @default(false)
+  conversation_stage String?   @default("new")
+  current_flow_step  String?
+  unread_count       Int?      @default(0)
+  last_message       String?
+  last_message_at    DateTime? @db.Timestamptz(6)
+  created_at         DateTime? @default(now()) @db.Timestamptz(6)
+  whatsapp_lid       String?
+  remote_jid         String?
+  opening_sent       Boolean?  @default(false)
+  updated_at         DateTime? @default(now()) @db.Timestamptz(6)
+  campaign_step      Int?      @default(0)
+  last_campaign_at   DateTime? @db.Timestamptz(6)
+  reactivation_at    DateTime? @db.Timestamptz(6)
+  opt_out            Boolean?  @default(false)
+  batch_id           String?   @db.Uuid
+  job_id             String?   @db.Uuid
+  current_job_id     String?   @db.Uuid
+  paused             Boolean?  @default(false)
+  campaign_status    String?
+activities SalesCustomerActivity[]
+  automation_queue automation_queue[]
+  branch           branches?          @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies        companies          @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  messages         messages[]
+
+  @@unique([company_id, phone])
+  @@index([company_id], map: "idx_leads_company")
+  @@index([branch_id], map: "idx_leads_branch")
+  @@index([phone], map: "idx_leads_phone")
+  @@index([remote_jid], map: "idx_leads_remote_jid")
+}
+
+model messages {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id String    @db.Uuid
+  branch_id  String?   @db.Uuid
+  lead_id    String?   @db.Uuid
+  direction  String?
+  content    String?
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  branch     branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies  companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  leads      leads?    @relation(fields: [lead_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_messages_company")
+  @@index([branch_id], map: "idx_messages_branch")
+  @@index([lead_id], map: "idx_messages_lead")
+  @@index([created_at], map: "idx_messages_created_at")
+}
+
+model automation_queue {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id            String    @db.Uuid
+  branch_id             String?   @db.Uuid
+  lead_id               String?   @db.Uuid
+  phone                 String?
+  session_id            Int?      @default(1)
+  type                  String?
+  status                String?   @default("pending")
+  scheduled_at          DateTime? @default(now()) @db.Timestamptz(6)
+  created_at            DateTime? @default(now()) @db.Timestamptz(6)
+  sent_at               DateTime? @db.Timestamptz(6)
+  error                 String?
+  message               String?
+  campaign_id           String?   @db.Uuid
+  attempts              Int?      @default(0)
+  next_attempt_at       DateTime? @db.Timestamptz(6)
+  processing_started_at DateTime? @db.Timestamptz(6)
+  locked_at             DateTime? @db.Timestamptz(6)
+  worker_id             String?
+  last_error            String?
+  finished_at           DateTime? @db.Timestamptz(6)
+  processing_at         DateTime? @db.Timestamptz(6)
+  updated_at            DateTime? @default(now()) @db.Timestamptz(6)
+  branch                branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies             companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  leads                 leads?    @relation(fields: [lead_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_automation_queue_company")
+  @@index([branch_id], map: "idx_automation_queue_branch")
+  @@index([lead_id], map: "idx_automation_queue_lead")
+  @@index([status], map: "idx_automation_queue_status")
+  @@index([scheduled_at], map: "idx_automation_queue_scheduled_at")
+}
+
+model promotion_campaigns {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id        String    @db.Uuid
+  branch_id         String?   @db.Uuid
+  name              String?
+  message           String
+  whatsapp_accounts Json?     @default("[]")
+  target_days       Int?      @default(1)
+  total_queued      Int?      @default(0)
+  created_at        DateTime? @default(now()) @db.Timestamptz(6)
+  branch            branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies         companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_promotion_campaigns_company")
+  @@index([branch_id], map: "idx_promotion_campaigns_branch")
+}
+
+model Prospect {
+  id               String           @id @default(cuid())
+  company_id       String           @db.Uuid
+  branch_id        String?          @db.Uuid
+  name             String
+  age              Int?
+  email            String?
+  phone1           String?
+  phone2           String?
+  gender           String?
+  city             String?
+  address          String?
+  cep              String?
+  latitude         Float?
+  longitude        Float?
+  active           Boolean          @default(true)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  category         String?
+  creditLimit      Float?           @map("credit_limit")
+  externalId       String?          @map("external_id")
+  lastActivationAt DateTime?        @map("last_activation_at")
+  lastOrderAt      DateTime?        @map("last_order_at")
+  lastTransferAt   DateTime?        @map("last_transfer_at")
+  paymentMethod    String?          @map("payment_method")
+  productInterest  String?
+  segment          String?
+  sourcePayload    Json?            @map("source_payload")
+  state            String?
+  branch           branches?        @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies        companies        @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "prospect_company_fk")
+  exports          ProspectExport[]
+
+  @@index([email])
+  @@index([phone1])
+  @@index([phone2])
+  @@index([city])
+  @@index([externalId])
+  @@index([lastOrderAt])
+  @@index([creditLimit])
+  @@index([cep])
+  @@index([latitude, longitude])
+  @@index([company_id], map: "idx_prospect_company")
+  @@index([branch_id], map: "idx_prospect_branch")
+}
+
+model ProspectExport {
+  id         String    @id @default(cuid())
+  company_id String    @db.Uuid
+  branch_id  String?   @db.Uuid
+  prospectId String
+  clientId   String
+  action     String
+  createdAt  DateTime  @default(now())
+  branch     branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  prospect   Prospect  @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  companies  companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "prospectexport_company_fk")
+
+  @@unique([prospectId, clientId])
+  @@index([clientId])
+  @@index([createdAt])
+  @@index([company_id], map: "idx_prospectexport_company")
+  @@index([branch_id], map: "idx_prospectexport_branch")
+}
+
+model ProspectImportJob {
+  id           String    @id @default(cuid())
+  company_id   String    @db.Uuid
+  branch_id    String?   @db.Uuid
+  fileName     String?
+  totalRows    Int       @default(0)
+  created      Int       @default(0)
+  updated      Int       @default(0)
+  duplicated   Int       @default(0)
+  invalidPhone Int       @default(0)
+  underAge     Int       @default(0)
+  status       String    @default("PENDING")
+  error        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  branch       branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies    companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "prospectimportjob_company_fk")
+
+  @@index([company_id], map: "idx_prospectimportjob_company")
+  @@index([branch_id], map: "idx_prospectimportjob_branch")
+}
+
+model ProspectUsage {
+  id           String    @id @default(cuid())
+  company_id   String    @db.Uuid
+  branch_id    String?   @db.Uuid
+  clientId     String
+  month        String
+  monthlyLimit Int       @default(500)
+  used         Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  branch       branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies    companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "prospectusage_company_fk")
+
+  @@unique([company_id, clientId, month])
+  @@index([clientId])
+  @@index([company_id], map: "idx_prospectusage_company")
+  @@index([branch_id], map: "idx_prospectusage_branch")
+}
+
+model companies {
+  id                 String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name               String
+  slug               String                @unique
+  logo_url           String?
+  active             Boolean               @default(true)
+  trial_ends_at      DateTime?             @db.Timestamptz(6)
+  plan_id            String?               @db.Uuid
+  created_at         DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime              @default(now()) @updatedAt @db.Timestamptz(6)
+  monthly_value      Decimal?              @default(0)
+  due_day            Int?
+  payment_method     String?               @default("PIX")
+  billing_notes      String?
+  blocked_reason     String?
+  document           String?
+  phone              String?
+  whatsapp           String?
+  owner_name         String?
+  additionals        Additional[]
+  additionalLinks    AdditionalCategory[]
+  automations        Automation[]
+  campaigns          Campaign[]
+  candidateProfiles  CandidateProfile[]
+  categories         Category[]
+  combos             Combo[]
+  comboGroups        ComboGroup[]
+  comboGroupItems    ComboGroupItem[]
+  crmCustomers       CrmCustomer[]
+  crmMessages        CrmMessage[]
+  customers          Customer[]
+  deliveryBatches    DeliveryBatch[]
+  drivers            Driver[]
+  hiringProcesses    HiringProcess[]
+  interviews         Interview[]
+  jobs               Job[]
+  jobApplications    JobApplication[]
+  orders             Order[]
+  orderItems         OrderItem[]
+  products           Product[]
+  productAdditional  ProductAdditional[]
+  productCategories  ProductCategory[]
+  prospects          Prospect[]
+  prospectExports    ProspectExport[]
+  prospectImportJobs ProspectImportJob[]
+  prospectUsages     ProspectUsage[]
+  SalesCustomer      SalesCustomer[]
+  SalesOrder         SalesOrder[]
+  SalesOrderItem     SalesOrderItem[]
+  SalesOrderOcr      SalesOrderOcr[]
+  whatsappSessions   WhatsappSession[]
+  activity_logs      activity_logs[]
+  automationQueue    automation_queue[]
+  branches           branches[]
+  plans              plans?                @relation(fields: [plan_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  companyContacts    company_contacts[]
+  company_users      company_users[]
+  featureGrants      feature_grants[]
+  leads              leads[]
+  messageTemplates   message_templates[]
+  messageVariations  message_variations[]
+  messages           messages[]
+  promotionCampaigns promotion_campaigns[]
+  radarGrants        radar_grants[]
+  subscriptions      subscriptions[]
+  supportKnowledges  support_knowledge[]
+}
+
+model branches {
+  id                   String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id           String                @db.Uuid
+  name                 String                @default("Matriz")
+  slug                 String?
+  active               Boolean               @default(true)
+  created_at           DateTime              @default(now()) @db.Timestamptz(6)
+  additionals          Additional[]
+  additionalCategories AdditionalCategory[]
+  automations          Automation[]
+  campaigns            Campaign[]
+  candidateProfiles    CandidateProfile[]
+  categories           Category[]
+  combos               Combo[]
+  comboGroups          ComboGroup[]
+  comboGroupItems      ComboGroupItem[]
+  crmCustomers         CrmCustomer[]
+  crmMessages          CrmMessage[]
+  customers            Customer[]
+  deliveryBatches      DeliveryBatch[]
+  drivers              Driver[]
+  hiringProcesses      HiringProcess[]
+  interviews           Interview[]
+  jobs                 Job[]
+  jobApplications      JobApplication[]
+  orders               Order[]
+  orderItems           OrderItem[]
+  products             Product[]
+  productAdditionals   ProductAdditional[]
+  productCategories    ProductCategory[]
+  prospects            Prospect[]
+  prospectExports      ProspectExport[]
+  prospectImportJobs   ProspectImportJob[]
+  prospectUsages       ProspectUsage[]
+  SalesCustomer        SalesCustomer[]
+  whatsappSessions     WhatsappSession[]
+  automationQueue      automation_queue[]
+  companies            companies             @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  companyContacts      company_contacts[]
+  leads                leads[]
+  messageTemplates     message_templates[]
+  messageVariations    message_variations[]
+  messages             messages[]
+  promotionCampaigns   promotion_campaigns[]
+  supportKnowledges    support_knowledge[]
+
+  @@unique([company_id, slug])
+  @@index([company_id], map: "idx_branches_company")
+}
+
+model company_users {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id        String    @db.Uuid
+  user_id           String    @db.Uuid
+  name              String?
+  email             String?
+  phone             String?
+  role              String
+  active            Boolean   @default(true)
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+  radarMonthlyLimit Int?      @map("radar_monthly_limit")
+  companies         companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([company_id, user_id])
+  @@index([user_id], map: "idx_company_users_user")
+}
+
+model activity_logs {
+  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id String?    @db.Uuid
+  user_id    String?    @db.Uuid
+  action     String
+  entity     String?
+  metadata   Json?
+  created_at DateTime   @default(now()) @db.Timestamptz(6)
+  companies  companies? @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_activity_logs_company")
+  @@index([user_id], map: "idx_activity_logs_user")
+  @@index([created_at], map: "idx_activity_logs_created_at")
+}
+
+model plans {
+  id            String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name          String
+  active        Boolean         @default(true)
+  created_at    DateTime        @default(now()) @db.Timestamptz(6)
+  companies     companies[]
+  plan_features plan_features[]
+  subscriptions subscriptions[]
+}
+
+model plan_features {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  plan_id     String   @db.Uuid
+  feature     String
+  limit_value Int?
+  enabled     Boolean  @default(true)
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  plans       plans    @relation(fields: [plan_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([plan_id, feature])
+}
+
+model subscriptions {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id            String    @db.Uuid
+  plan_id               String?   @db.Uuid
+  status                String    @default("trial")
+  asaas_customer_id     String?
+  asaas_subscription_id String?
+  trial_ends_at         DateTime? @db.Timestamptz(6)
+  starts_at             DateTime? @db.Timestamptz(6)
+  expires_at            DateTime? @db.Timestamptz(6)
+  notes                 String?
+  created_at            DateTime  @default(now()) @db.Timestamptz(6)
+  companies             companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  plans                 plans?    @relation(fields: [plan_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_subscriptions_company")
+  @@index([plan_id], map: "idx_subscriptions_plan")
+}
+
+model company_contacts {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id       String    @db.Uuid
+  branch_id        String?   @db.Uuid
+  restaurant_name  String?
+  company_name     String?
+  owner_name       String?
+  responsible_name String?
+  document         String?
+  cnpj             String?
+  cpf              String?
+  email            String?
+  phone            String?
+  whatsapp         String?
+  extra_contact    String?
+  address          String?
+  city             String?
+  state            String?
+  cep              String?
+  created_at       DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  branch           branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies        companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_company_contacts_company_id")
+  @@index([branch_id], map: "idx_company_contacts_branch_id")
+}
+
+model message_templates {
+  id                String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id        String?              @db.Uuid
+  branch_id         String?              @db.Uuid
+  name              String?
+  title             String?
+  type              String?              @default("default")
+  category          String?
+  intent            String?
+  trigger           String?
+  trigger_words     String[]             @default([])
+  content           String?
+  message           String?
+  base_message      String?
+  final_message     String?
+  response          String?
+  variables         Json?                @default("{}")
+  metadata          Json?                @default("{}")
+  active            Boolean              @default(true)
+  sort_order        Int                  @default(0)
+  created_at        DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime             @default(now()) @updatedAt @db.Timestamptz(6)
+  batch_id          String?              @db.Uuid
+  caption           String?
+  delay_seconds     Int?                 @default(0)
+  media_url         String?
+  media_type        String?              @default("text")
+  media_name        String?
+  trigger_keywords  String?
+  keywords          String?
+  trigger_text      String?
+  match_type        String?              @default("contains")
+  match_mode        String?              @default("contains")
+  kanban_status     String?
+  notify_enabled    Boolean?             @default(false)
+  notify_number     String?
+  notify_numbers    String?
+  notify_message    String?
+  notify_email      String?
+  notify_phone      String?
+  notify_channel    String?              @default("whatsapp")
+  flow_mode         String?              @default("global")
+  flow_step         Int?
+  next_step         Int?
+  stage             String?
+  next_stage        String?
+  previous_step     String?
+  priority          Int?                 @default(0)
+  use_ai            Boolean?             @default(false)
+  response_type     String?              @default("text")
+  template_category String?              @default("sales")
+  template_scope    String?              @default("global")
+  job_id            String?
+  branch            branches?            @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies         companies?           @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  variations        message_variations[]
+
+  @@index([company_id], map: "idx_message_templates_company_id")
+  @@index([branch_id], map: "idx_message_templates_branch_id")
+  @@index([intent], map: "idx_message_templates_intent")
+}
+
+model message_variations {
+  id            String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id    String?            @db.Uuid
+  branch_id     String?            @db.Uuid
+  template_id   String?            @db.Uuid
+  name          String?
+  title         String?
+  type          String?            @default("default")
+  category      String?
+  content       String?
+  message       String?
+  variation     String?
+  base_message  String?
+  final_message String?
+  active        Boolean            @default(true)
+  sort_order    Int                @default(0)
+  metadata      Json?              @default("{}")
+  created_at    DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime           @default(now()) @updatedAt @db.Timestamptz(6)
+  branch        branches?          @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies     companies?         @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  template      message_templates? @relation(fields: [template_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_message_variations_company_id")
+  @@index([branch_id], map: "idx_message_variations_branch_id")
+  @@index([template_id], map: "idx_message_variations_template_id")
+}
+
+model support_knowledge {
+  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id String?    @db.Uuid
+  branch_id  String?    @db.Uuid
+  title      String?
+  question   String?
+  answer     String?
+  content    String?
+  category   String?
+  tags       String[]   @default([])
+  active     Boolean    @default(true)
+  sort_order Int        @default(0)
+  created_at DateTime   @default(now()) @db.Timestamptz(6)
+  updated_at DateTime   @default(now()) @updatedAt @db.Timestamptz(6)
+  branch     branches?  @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies  companies? @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_support_knowledge_company_id")
+  @@index([branch_id], map: "idx_support_knowledge_branch_id")
+}
+
+model feature_grants {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id String    @db.Uuid
+  feature    String
+  active     Boolean   @default(true)
+  notes      String?
+  starts_at  DateTime? @default(now()) @db.Timestamptz(6)
+  expires_at DateTime? @db.Timestamptz(6)
+  created_at DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  companies  companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_feature_grants_company_id")
+  @@index([feature], map: "idx_feature_grants_feature")
+}
+
+model radar_grants {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id     String    @db.Uuid
+  contacts_extra Int       @default(0)
+  active         Boolean   @default(true)
+  starts_at      DateTime? @default(now()) @db.Timestamptz(6)
+  expires_at     DateTime? @db.Timestamptz(6)
+  created_at     DateTime  @default(now()) @db.Timestamptz(6)
+  companies      companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_radar_grants_company_id")
+}
+
+model Job {
+  id                 String           @id @default(cuid())
+  company_id         String           @db.Uuid
+  branch_id          String?          @db.Uuid
+  title              String
+  description        String?
+  department         String?
+  city               String?
+  state              String?
+  neighborhood       String?
+  region             String?
+  zipCode            String?
+  workMode           String?
+  contractType       String?
+  salaryMin          Float?
+  salaryMax          Float?
+  educationRequired  String?
+  experienceRequired String?
+  skillsRequired     String[]         @default([])
+  languagesRequired  String[]         @default([])
+  status             String           @default("open")
+  requirements       Json?
+  filters            Json?
+  aiCriteria         Json?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  hiringProcesses    HiringProcess[]
+  interviews         Interview[]
+  branch             branches?        @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies          companies        @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "job_company_fk")
+  applications       JobApplication[]
+  matches            JobMatch[]
+  questions          JobQuestion[]
+
+  @@index([company_id], map: "idx_job_company")
+  @@index([branch_id], map: "idx_job_branch")
+  @@index([status], map: "idx_job_status")
+  @@index([city], map: "idx_job_city")
+  @@index([state], map: "idx_job_state")
+  @@index([region], map: "idx_job_region")
+  @@index([zipCode], map: "idx_job_zip_code")
+}
+
+model CandidateProfile {
+  id                    String                    @id @default(cuid())
+  company_id            String                    @db.Uuid
+  branch_id             String?                   @db.Uuid
+  name                  String
+  firstName             String?
+  lastName              String?
+  cpf                   String?
+  rg                    String?
+  birthDate             DateTime?                 @db.Date
+  gender                String?
+  phone                 String?
+  mobile                String?
+  email                 String?
+  city                  String?
+  state                 String?
+  neighborhood          String?
+  region                String?
+  zipCode               String?
+  address               String?
+  education             String?
+  course                String?
+  courseStatus          String?
+  institution           String?
+  lastRole              String?
+  experiences           Json?
+  totalExperienceMonths Int?
+  professionalSummary   String?
+  skills                String[]                  @default([])
+  languages             String[]                  @default([])
+  salaryExpectation     Decimal?                  @db.Decimal(10, 2)
+  resumeOrigin          String?
+  resumeFileUrl         String?
+  rawImportData         Json?
+  aiSummary             String?
+  aiExtractedData       Json?
+  status                String                    @default("talent_pool")
+  active                Boolean                   @default(true)
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  branch                branches?                 @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies             companies                 @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "candidateprofile_company_fk")
+  answers               CandidateQuestionAnswer[]
+  hiringProcesses       HiringProcess[]
+  interviews            Interview[]
+  applications          JobApplication[]
+  matches               JobMatch[]
+
+  @@unique([company_id, cpf])
+  @@index([company_id], map: "idx_candidateprofile_company")
+  @@index([branch_id], map: "idx_candidateprofile_branch")
+  @@index([phone], map: "idx_candidateprofile_phone")
+  @@index([mobile], map: "idx_candidateprofile_mobile")
+  @@index([email], map: "idx_candidateprofile_email")
+  @@index([city], map: "idx_candidateprofile_city")
+  @@index([state], map: "idx_candidateprofile_state")
+  @@index([region], map: "idx_candidateprofile_region")
+  @@index([zipCode], map: "idx_candidateprofile_zip_code")
+  @@index([education], map: "idx_candidateprofile_education")
+  @@index([resumeOrigin], map: "idx_candidateprofile_origin")
+  @@index([status], map: "idx_candidateprofile_status")
+}
+
+model JobApplication {
+  id              String           @id @default(cuid())
+  company_id      String           @db.Uuid
+  branch_id       String?          @db.Uuid
+  jobId           String
+  candidateId     String
+  source          String?
+  applicationDate DateTime?        @default(now())
+  stage           String           @default("triagem")
+  status          String           @default("active")
+  history         Json?
+  notes           String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  branch          branches?        @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  candidate       CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  job             Job              @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  companies       companies        @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "jobapplication_company_fk")
+
+  @@unique([jobId, candidateId])
+  @@index([company_id], map: "idx_jobapplication_company")
+  @@index([branch_id], map: "idx_jobapplication_branch")
+  @@index([jobId], map: "idx_jobapplication_job")
+  @@index([candidateId], map: "idx_jobapplication_candidate")
+  @@index([stage], map: "idx_jobapplication_stage")
+  @@index([status], map: "idx_jobapplication_status")
+}
+
+model JobQuestion {
+  id        String                    @id @default(cuid())
+  jobId     String
+  question  String
+  type      String                    @default("text")
+  options   Json?
+  required  Boolean                   @default(false)
+  sortOrder Int                       @default(0)
+  createdAt DateTime                  @default(now())
+  updatedAt DateTime                  @updatedAt
+  answers   CandidateQuestionAnswer[]
+  job       Job                       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId], map: "idx_jobquestion_job")
+}
+
+model CandidateQuestionAnswer {
+  id          String           @id @default(cuid())
+  candidateId String
+  questionId  String
+  answer      String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  candidate   CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  question    JobQuestion      @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([candidateId, questionId])
+  @@index([candidateId], map: "idx_candidateanswer_candidate")
+  @@index([questionId], map: "idx_candidateanswer_question")
+}
+
+model JobMatch {
+  id                  String           @id @default(cuid())
+  jobId               String
+  candidateId         String
+  score               Int
+  strengths           Json?
+  attentionPoints     Json?
+  missingRequirements Json?
+  reason              String?
+  aiRawResult         Json?
+  status              String           @default("suggested")
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  candidate           CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  job                 Job              @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, candidateId])
+  @@index([jobId], map: "idx_jobmatch_job")
+  @@index([candidateId], map: "idx_jobmatch_candidate")
+  @@index([score], map: "idx_jobmatch_score")
+  @@index([status], map: "idx_jobmatch_status")
+}
+
+model Interview {
+  id          String           @id @default(cuid())
+  company_id  String           @db.Uuid
+  branch_id   String?          @db.Uuid
+  jobId       String
+  candidateId String
+  scheduledAt DateTime
+  durationMin Int              @default(30)
+  interviewer String?
+  meetingUrl  String?
+  location    String?
+  status      String           @default("scheduled")
+  score       Int?
+  notes       String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  branch      branches?        @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  candidate   CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  job         Job              @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  companies   companies        @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "interview_company_fk")
+
+  @@index([company_id], map: "idx_interview_company")
+  @@index([branch_id], map: "idx_interview_branch")
+  @@index([jobId], map: "idx_interview_job")
+  @@index([candidateId], map: "idx_interview_candidate")
+  @@index([scheduledAt], map: "idx_interview_scheduled_at")
+  @@index([status], map: "idx_interview_status")
+}
+
+model HiringProcess {
+  id           String              @id @default(cuid())
+  company_id   String              @db.Uuid
+  branch_id    String?             @db.Uuid
+  candidateId  String
+  jobId        String?
+  position     String?
+  salary       Decimal?            @db.Decimal(10, 2)
+  contractType String?
+  status       String              @default("pending_documents")
+  startDate    DateTime?           @db.Date
+  notes        String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  documents    CandidateDocument[]
+  branch       branches?           @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  candidate    CandidateProfile    @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  job          Job?                @relation(fields: [jobId], references: [id])
+  companies    companies           @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "hiringprocess_company_fk")
+
+  @@index([company_id], map: "idx_hiringprocess_company")
+  @@index([branch_id], map: "idx_hiringprocess_branch")
+  @@index([candidateId], map: "idx_hiringprocess_candidate")
+  @@index([jobId], map: "idx_hiringprocess_job")
+  @@index([status], map: "idx_hiringprocess_status")
+}
+
+model CandidateDocument {
+  id              String        @id @default(cuid())
+  hiringProcessId String
+  type            String
+  fileUrl         String?
+  status          String        @default("pending")
+  notes           String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  hiringProcess   HiringProcess @relation(fields: [hiringProcessId], references: [id], onDelete: Cascade)
+
+  @@index([hiringProcessId], map: "idx_candidatedocument_hiring")
+  @@index([status], map: "idx_candidatedocument_status")
+}
+
+model SalesCustomer {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id            String    @db.Uuid
+  seller_id             String?   @db.Uuid
+  internal_code         String?
+  erp_code              String?
+  document              String?
+  legal_name            String
+  trade_name            String?
+  segment               String?
+  category              String?
+  buyer_name            String?
+  phone                 String?
+  whatsapp              String?
+  email                 String?
+  cep                   String?
+  address               String?
+  number                String?
+  complement            String?
+  neighborhood          String?
+  city                  String?
+  state                 String?
+  payment_terms         String?
+  weekly_purchase_limit Decimal?  @db.Decimal(12, 2)
+  habitual_purchase_day String?
+  purchase_weekdays     String[]
+  expected_ticket       Decimal?  @db.Decimal(12, 2)
+  commercial_notes      String?
+  status                String    @default("ativo")
+  customer_score        Int       @default(0)
+  risk_level            String    @default("baixo")
+  first_order_at        DateTime? @db.Timestamptz(6)
+  last_order_at         DateTime? @db.Timestamptz(6)
+  last_contact_at       DateTime? @db.Timestamptz(6)
+  last_quote_at         DateTime? @db.Timestamptz(6)
+  created_at            DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime  @default(now()) @db.Timestamptz(6)
+  branch_id             String?   @db.Uuid
+
+  branches   branches?               @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies  companies               @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  SalesOrder SalesOrder[]
+  activities SalesCustomerActivity[]
+
+  @@index([branch_id], map: "idx_sales_customer_branch")
+  @@index([company_id], map: "idx_sales_customer_company")
+  @@index([document], map: "idx_sales_customer_document")
+  @@index([internal_code], map: "idx_sales_customer_internal_code")
+  @@index([seller_id], map: "idx_sales_customer_seller")
+  @@index([status], map: "idx_sales_customer_status")
+  @@index([whatsapp], map: "idx_sales_customer_whatsapp")
+}
+
+model SalesCustomerActivity {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  company_id   String    @db.Uuid
+  seller_id    String?   @db.Uuid
+
+  customer_id  String?   @db.Uuid
+  lead_id      String?   @db.Uuid
+
+  phone        String?
+
+  type         String    @default("followup")
+  origin       String    @default("customer")
+
+  title        String
+  description  String?
+
+  scheduled_at DateTime? @db.Timestamptz(6)
+
+  priority     String    @default("media")
+  status       String    @default("pendente")
+
+  notify       Boolean   @default(true)
+
+  completed_by String?   @db.Uuid
+  completed_at DateTime? @db.Timestamptz(6)
+
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  customer SalesCustomer? @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  lead     leads?         @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+
+  @@index([company_id])
+  @@index([seller_id])
+  @@index([customer_id])
+  @@index([lead_id])
+  @@index([scheduled_at])
+  @@index([status])
+}
+
+model SalesOrder {
+  id                     String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id             String           @db.Uuid
+  seller_id              String?          @db.Uuid
+  customer_id            String?          @db.Uuid
+  customer_internal_code String?
+  order_number           String?
+  customer_name          String?
+  document               String?
+  seller_name            String?
+  seller_code            String?
+  payment_terms          String?
+  installments           Int?
+  delivery_date          DateTime?        @db.Timestamptz(6)
+  address                String?
+  subtotal               Decimal?         @db.Decimal(12, 2)
+  discount_total         Decimal?         @db.Decimal(12, 2)
+  tax_total              Decimal?         @db.Decimal(12, 2)
+  total                  Decimal          @default(0) @db.Decimal(12, 2)
+  status                 String           @default("registrado")
+  source                 String           @default("ocr_image")
+  raw_text               String?
+  ai_summary             String?
+  confidence             Int              @default(0)
+  image_stored           Boolean          @default(false)
+  boleto_due_date        DateTime?        @db.Timestamptz(6)
+  commercial_notes       String?
+  divergences            Json?
+  created_at             DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime         @default(now()) @db.Timestamptz(6)
+  companies              companies        @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  SalesCustomer          SalesCustomer?   @relation(fields: [customer_id], references: [id], onUpdate: NoAction)
+  SalesOrderItem         SalesOrderItem[]
+  SalesOrderOcr          SalesOrderOcr[]
+
+  @@index([boleto_due_date], map: "idx_sales_order_boleto_due_date")
+  @@index([company_id], map: "idx_sales_order_company")
+  @@index([customer_id], map: "idx_sales_order_customer")
+  @@index([customer_internal_code], map: "idx_sales_order_customer_code")
+  @@index([delivery_date], map: "idx_sales_order_delivery_date")
+  @@index([order_number], map: "idx_sales_order_number")
+  @@index([seller_id], map: "idx_sales_order_seller")
+  @@index([status], map: "idx_sales_order_status")
+}
+
+model SalesOrderItem {
+  id           String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id   String     @db.Uuid
+  order_id     String     @db.Uuid
+  product_code String?
+  product_name String
+  quantity     Decimal    @default(0) @db.Decimal(12, 3)
+  unit_price   Decimal    @default(0) @db.Decimal(12, 2)
+  discount     Decimal    @default(0) @db.Decimal(12, 2)
+  total        Decimal    @default(0) @db.Decimal(12, 2)
+  created_at   DateTime   @default(now()) @db.Timestamptz(6)
+  companies    companies  @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  SalesOrder   SalesOrder @relation(fields: [order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_sales_order_item_company")
+  @@index([order_id], map: "idx_sales_order_item_order")
+  @@index([product_code], map: "idx_sales_order_item_product_code")
+}
+
+model SalesOrderOcr {
+  id          String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id  String      @db.Uuid
+  order_id    String?     @db.Uuid
+  status      String      @default("processed")
+  provider    String      @default("openai")
+  raw_payload Json?
+  extracted   Json?
+  typed_order String?
+  comparison  Json?
+  confidence  Int         @default(0)
+  created_at  DateTime    @default(now()) @db.Timestamptz(6)
+  companies   companies   @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  SalesOrder  SalesOrder? @relation(fields: [order_id], references: [id], onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_sales_order_ocr_company")
+  @@index([order_id], map: "idx_sales_order_ocr_order")
+}
+
+model product_catalog {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id  String   @db.Uuid
+  code        String
+  name        String
+  unit        String?
+  active      Boolean  @default(true)
+  search_text String?
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([company_id, code])
+  @@index([code], map: "idx_product_catalog_code")
+  @@index([company_id], map: "idx_product_catalog_company")
+  @@index([name], map: "idx_product_catalog_name")
+}
+
+model quote_catalog_products {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id        String    @db.Uuid
+  branch_id         String?   @db.Uuid
+  code              String
+  official_name     String
+  normalized_name   String
+  category          String?
+  subcategory       String?
+  brand             String?
+  package_type      String?
+  weight_value      Decimal?  @db.Decimal(12, 3)
+  weight_unit       String?
+  default_sell_unit String?
+  synonyms          String[]  @default([])
+  forbidden_terms   String[]  @default([])
+  attributes        Json?     @default("{}")
+  active            Boolean?  @default(true)
+  created_at        DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@unique([company_id, code], map: "quote_catalog_products_company_code_idx")
+  @@index([company_id, normalized_name], map: "quote_catalog_products_company_name_idx")
+}
+
+model quote_daily_prices {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id            String    @db.Uuid
+  branch_id             String?   @db.Uuid
+  catalog_product_id    String?   @db.Uuid
+  code                  String
+  pdf_name              String?
+  product_name_from_pdf String
+  sell_unit             String
+  price                 Decimal   @db.Decimal(12, 2)
+  table_date            DateTime  @db.Date
+  raw_line              String?
+  created_at            DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@unique([company_id, code, table_date], map: "quote_daily_prices_company_code_date_idx")
+  @@index([company_id, table_date], map: "quote_daily_prices_company_date_idx")
+}
+
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model sales_goals {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id  String    @db.Uuid
+  seller_id   String?   @db.Uuid
+  year        Int
+  month       Int
+  goal_amount Decimal   @default(0) @db.Decimal(14, 2)
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+enum CategoryType {
+  NORMAL
+  PIZZA_HALF_HALF
+}
+
+enum RouteMode {
+  NEAR_TO_FAR
+  FAR_TO_NEAR
+}
+
+enum DeliveryBatchStatus {
+  MONTADO
+  ENVIADO
+  EM_ROTA
+  FINALIZADO
+}
+
+enum OrderStatus {
+  NOVO
+  EM_PREPARO
+  SAIU_PARA_ENTREGA
+  ENTREGUE
+  CANCELADO
+}
+
+enum PaymentMethod {
+  PIX
+  DINHEIRO
+  DEBITO
+  CREDITO
+}

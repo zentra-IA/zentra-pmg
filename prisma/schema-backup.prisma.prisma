@@ -1,0 +1,320 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum CategoryType {
+  NORMAL
+  PIZZA_HALF_HALF
+}
+
+enum OrderStatus {
+  NOVO
+  EM_PREPARO
+  SAIU_PARA_ENTREGA
+  ENTREGUE
+  CANCELADO
+}
+
+enum PaymentMethod {
+  PIX
+  DINHEIRO
+  DEBITO
+  CREDITO
+}
+
+enum DeliveryBatchStatus {
+  MONTADO
+  ENVIADO
+  EM_ROTA
+  FINALIZADO
+}
+
+enum RouteMode {
+  NEAR_TO_FAR
+  FAR_TO_NEAR
+}
+
+model Category {
+  id                String       @id @default(cuid())
+  name              String
+  slug              String       @unique
+  description       String?
+  type              CategoryType @default(NORMAL)
+  selectionRequired Boolean      @default(false)
+  active            Boolean      @default(true)
+  sortOrder         Int          @default(0)
+
+  products        Product[]
+  productLinks    ProductCategory[]
+  additionalLinks AdditionalCategory[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Product {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String?
+  price       Float
+  imageUrl    String?
+  active      Boolean @default(true)
+  inStock     Boolean @default(true)
+  required    Boolean @default(true)
+  sortOrder   Int     @default(0)
+
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  categories ProductCategory[]
+  orderItems OrderItem[]
+
+  productAdditionalConfigs ProductAdditional[]
+  comboGroupItems          ComboGroupItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ProductCategory {
+  id          String  @id @default(cuid())
+  productId   String
+  categoryId  String
+  sortOrder   Int     @default(0)
+  customPrice Float?
+  active      Boolean @default(true)
+
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([productId, categoryId])
+  @@index([categoryId])
+  @@index([productId])
+}
+
+model Additional {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String?
+  price       Float
+  required    Boolean @default(false)
+  active      Boolean @default(true)
+  sortOrder   Int     @default(0)
+
+  categoryLinks    AdditionalCategory[]
+  productConfigs   ProductAdditional[]
+  comboAdditionals ComboAdditional[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model AdditionalCategory {
+  id           String @id @default(cuid())
+  additionalId String
+  categoryId   String
+  sortOrder    Int    @default(0)
+
+  additional Additional @relation(fields: [additionalId], references: [id], onDelete: Cascade)
+  category   Category   @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([additionalId, categoryId])
+  @@index([additionalId])
+  @@index([categoryId])
+}
+
+model ProductAdditional {
+  id           String  @id @default(cuid())
+  productId    String
+  additionalId String
+  required     Boolean @default(false)
+  sortOrder    Int     @default(0)
+
+  product    Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  additional Additional @relation(fields: [additionalId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([productId, additionalId])
+}
+
+model Combo {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String?
+  price       Float
+  imageUrl    String?
+  active      Boolean @default(true)
+  sortOrder   Int     @default(0)
+
+  groups                 ComboGroup[]
+  comboAdditionalConfigs ComboAdditional[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ComboAdditional {
+  id           String  @id @default(cuid())
+  comboId      String
+  additionalId String
+  required     Boolean @default(false)
+  sortOrder    Int     @default(0)
+
+  combo      Combo      @relation(fields: [comboId], references: [id], onDelete: Cascade)
+  additional Additional @relation(fields: [additionalId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([comboId, additionalId])
+  @@index([comboId])
+  @@index([additionalId])
+}
+
+model ComboGroup {
+  id        String  @id @default(cuid())
+  comboId   String
+  name      String
+  required  Boolean @default(true)
+  minSelect Int     @default(1)
+  maxSelect Int     @default(1)
+  sortOrder Int     @default(0)
+
+  combo Combo            @relation(fields: [comboId], references: [id], onDelete: Cascade)
+  items ComboGroupItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ComboGroupItem {
+  id           String @id @default(cuid())
+  comboGroupId String
+  productId    String
+  sortOrder    Int    @default(0)
+
+  comboGroup ComboGroup @relation(fields: [comboGroupId], references: [id], onDelete: Cascade)
+  product    Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([comboGroupId, productId])
+}
+
+model Customer {
+  id           String  @id @default(cuid())
+  name         String
+  whatsapp     String
+  email        String?
+  cep          String?
+  address      String?
+  number       String?
+  complement   String?
+  neighborhood String?
+  city         String?
+  cpf          String?
+
+  orders Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
+  @@index([whatsapp])
+}
+
+model Driver {
+  id        String  @id @default(cuid())
+  name      String
+  whatsapp  String
+  active    Boolean @default(true)
+
+  orders  Order[]
+  batches DeliveryBatch[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
+  @@index([whatsapp])
+}
+
+model DeliveryBatch {
+  id         String              @id @default(cuid())
+  code       String              @unique
+  driverId    String
+  routeMode  RouteMode
+  status     DeliveryBatchStatus @default(MONTADO)
+  mapsUrl    String?
+  notes      String?
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  orders Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([driverId])
+}
+
+model Order {
+  id            String        @id @default(cuid())
+  code          String?       @unique
+  status        OrderStatus   @default(NOVO)
+
+  paymentMethod PaymentMethod @default(PIX)
+  changeFor     String?
+  observation   String?
+
+  archived      Boolean       @default(false)
+  archivedAt    DateTime?
+  total         Float         @default(0)
+
+  channel   String @default("ONLINE")
+  orderType String @default("DELIVERY")
+
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  // 👇 NOVO
+  driverId           String?
+  driver             Driver? @relation(fields: [driverId], references: [id], onDelete: SetNull)
+
+  deliveryBatchId    String?
+  deliveryBatch      DeliveryBatch? @relation(fields: [deliveryBatchId], references: [id], onDelete: SetNull)
+
+  deliveryRouteOrder Int?
+  dispatchedAt       DateTime?
+
+  items OrderItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  productId String?
+  name      String
+  price     Float
+  quantity  Int     @default(1)
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+}
