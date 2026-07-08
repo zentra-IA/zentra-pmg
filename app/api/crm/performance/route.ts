@@ -159,9 +159,20 @@ export async function GET(req: NextRequest) {
       month
     );
 
-    const selectedGoalRow = goalRows.find((g) => String(g.seller_id || "") === String(sellerScope || ""));
-    const generalGoalRow = goalRows.find((g) => !g.seller_id);
-    const goalAmount = Number((selectedGoalRow || generalGoalRow)?.goal_amount || 0);
+    const selectedGoalRow = sellerScope
+  ? goalRows.find((g) => String(g.seller_id || "") === String(sellerScope))
+  : null;
+
+const generalGoalRow = goalRows.find((g) => !g.seller_id);
+
+const teamGoalAmount = goalRows.reduce(
+  (sum, goal) => sum + Number(goal.goal_amount || 0),
+  0
+);
+
+const goalAmount = sellerScope
+  ? Number(selectedGoalRow?.goal_amount || 0)
+  : Number(generalGoalRow?.goal_amount || teamGoalAmount || 0);
 
     const monthTotal = Number(monthAgg._sum.total || 0);
     const remaining = Math.max(goalAmount - monthTotal, 0);
@@ -241,10 +252,11 @@ export async function GET(req: NextRequest) {
         status,
       },
       supervisor: {
-        ranking,
-        team_total_sales: ranking.reduce((sum, item) => sum + item.total_sales, 0),
-        team_order_count: ranking.reduce((sum, item) => sum + item.order_count, 0),
-      },
+  ranking,
+  team_total_sales: ranking.reduce((sum, item) => sum + item.total_sales, 0),
+  team_order_count: ranking.reduce((sum, item) => sum + item.order_count, 0),
+  team_goal_amount: teamGoalAmount,
+},
     });
   } catch (error) {
     console.error("[GET /api/crm/performance]", error);

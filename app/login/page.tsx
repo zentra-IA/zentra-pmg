@@ -10,6 +10,23 @@ type LoginForm = {
   remember: boolean;
 };
 
+function normalizeRole(role: unknown) {
+  return String(role || "")
+    .trim()
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function getFallbackRedirect(role: unknown) {
+  const normalizedRole = normalizeRole(role);
+
+  if (normalizedRole === "SUPERVISOR") return "/command-center";
+  if (normalizedRole === "GERAL") return "/crm/dashboard";
+
+  return "/crm/dashboard";
+}
+
 export default function LoginPage() {
   const router = useRouter();
 
@@ -59,14 +76,50 @@ export default function LoginPage() {
         return;
       }
 
+      const role = normalizeRole(data?.role);
+      const redirectTo = data?.redirectTo || getFallbackRedirect(role);
+
       if (typeof window !== "undefined") {
-        if (data?.company_id) localStorage.setItem("active_company_id", data.company_id);
-        if (data?.company?.slug) localStorage.setItem("active_company_slug", data.company.slug);
-        if (data?.role) localStorage.setItem("active_company_role", data.role);
-        if (data?.roleLabel) localStorage.setItem("active_role_label", data.roleLabel);
+        if (data?.company_id) {
+          localStorage.setItem("active_company_id", data.company_id);
+          localStorage.setItem("zentra_company_id", data.company_id);
+        }
+
+        if (data?.company?.slug) {
+          localStorage.setItem("active_company_slug", data.company.slug);
+          localStorage.setItem("zentra_company_slug", data.company.slug);
+        }
+
+        if (data?.company?.name) {
+          localStorage.setItem("active_company_name", data.company.name);
+        }
+
+        if (data?.branch_id) {
+          localStorage.setItem("active_branch_id", data.branch_id);
+          localStorage.setItem("zentra_branch_id", data.branch_id);
+        }
+
+        if (data?.user?.id) {
+          localStorage.setItem("zentra_user_id", data.user.id);
+        }
+
+        if (data?.user?.email) {
+          localStorage.setItem("zentra_user_email", data.user.email);
+        }
+
+        if (data?.role) {
+          localStorage.setItem("active_company_role", data.role);
+          localStorage.setItem("user_role", data.role);
+          localStorage.setItem("role", data.role);
+          localStorage.setItem("zentra_user_role", data.role);
+        }
+
+        if (data?.roleLabel) {
+          localStorage.setItem("active_role_label", data.roleLabel);
+        }
       }
 
-      router.push(data?.redirectTo || "/crm/dashboard");
+      router.push(redirectTo);
       router.refresh();
     } catch {
       setError("Erro inesperado ao fazer login. Tente novamente.");
@@ -176,7 +229,7 @@ export default function LoginPage() {
         <div className="pmg-profile-info">
           <strong>Perfis de acesso</strong>
           <span>Vendedor: operação comercial completa.</span>
-          <span>Supervisor: visão da equipe e dados de todos os vendedores.</span>
+          <span>Supervisor: entra direto no Centro de Comando.</span>
           <span>Geral: acesso master de todas as empresas.</span>
         </div>
       </section>
@@ -190,7 +243,7 @@ export default function LoginPage() {
           align-items: center;
           padding: 42px;
           background:
-            radial-gradient(circle at 8% 8%, rgba(22, 163, 74, 0.10), transparent 30%),
+            radial-gradient(circle at 8% 8%, rgba(22, 163, 74, 0.1), transparent 30%),
             radial-gradient(circle at 92% 12%, rgba(220, 38, 38, 0.08), transparent 28%),
             linear-gradient(135deg, #f8fafc 0%, #ffffff 45%, #f3f4f6 100%);
           color: #111827;
@@ -208,7 +261,7 @@ export default function LoginPage() {
           border-radius: 999px;
           color: #166534;
           background: #dcfce7;
-          border: 1px solid rgba(22, 163, 74, 0.20);
+          border: 1px solid rgba(22, 163, 74, 0.2);
           font-size: 12px;
           font-weight: 900;
           letter-spacing: 0.08em;
@@ -447,25 +500,11 @@ export default function LoginPage() {
         @media (max-width: 980px) {
           .pmg-login-page {
             grid-template-columns: 1fr;
-            padding: 18px;
-          }
-
-          .pmg-login-brand {
-            padding: 0;
+            padding: 24px;
           }
 
           .pmg-benefits {
             grid-template-columns: 1fr;
-          }
-
-          .pmg-login-card {
-            padding: 22px;
-            border-radius: 24px;
-          }
-
-          .pmg-form-row {
-            align-items: flex-start;
-            flex-direction: column;
           }
         }
       `}</style>

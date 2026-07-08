@@ -49,6 +49,7 @@ function normalizeRole(role: unknown) {
 
   if (MASTER_ROLES.has(raw)) return "GERAL";
   if (SUPERVISOR_ROLES.has(raw)) return "SUPERVISOR";
+
   if (raw === "REPRESENTANTE" || raw === "ATENDENTE" || raw === "USER") {
     return "VENDEDOR";
   }
@@ -76,6 +77,12 @@ function cleanCompanySlug(value: unknown) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/(^-|-$)+/g, "");
+}
+
+function getRedirectByRole(role: string) {
+  if (role === "SUPERVISOR") return "/command-center";
+  if (role === "GERAL") return "/crm/dashboard";
+  return "/crm/dashboard";
 }
 
 export async function POST(req: NextRequest) {
@@ -114,14 +121,14 @@ export async function POST(req: NextRequest) {
     const userIsMetadataMaster = isMaster(metadataRole);
 
     const links = await prisma.company_users.findMany({
-  where: {
-    user_id: authUser.id,
-    active: true,
-  },
-  include: {
-    companies: true,
-  },
-});
+      where: {
+        user_id: authUser.id,
+        active: true,
+      },
+      include: {
+        companies: true,
+      },
+    });
 
     const filteredLinks = companySlug
       ? links.filter((item: any) => {
@@ -209,16 +216,16 @@ export async function POST(req: NextRequest) {
       : normalizeRole(selectedLink.role || metadataRole);
 
     const branch = await prisma.branches.findFirst({
-  where: {
-    company_id: selectedLink.company_id,
-    active: true,
-  },
-  orderBy: {
-    created_at: "asc",
-  },
-});
+      where: {
+        company_id: selectedLink.company_id,
+        active: true,
+      },
+      orderBy: {
+        created_at: "asc",
+      },
+    });
 
-    const redirectTo = "/crm/dashboard";
+    const redirectTo = getRedirectByRole(role);
 
     const response = NextResponse.json({
       success: true,
