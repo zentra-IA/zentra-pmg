@@ -323,7 +323,12 @@ async function isSessionOnline(companyId: string | null | undefined, sessionId: 
 
     const data = await response.json().catch(() => ({}));
 
-    return Boolean(data?.connected || data?.online || data?.status === "open");
+  return Boolean(
+  data?.connected ||
+  data?.online ||
+  data?.status === "online" ||
+  data?.status === "open"
+);
   } catch {
     return false;
   }

@@ -328,6 +328,7 @@ function getPageTitle(pathname: string, menu: MenuItem[]) {
 export default function CrmDashboardLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const [username, setUsername] = useState("");
   const [role, setRole] = useState("");
 
@@ -349,7 +350,7 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
   }, [open]);
 
   return (
-    <div className="pmg-shell">
+    <div className={`pmg-shell ${collapsed ? "collapsed" : ""}`}>
       <button
         type="button"
         className="pmg-mobile-menu"
@@ -446,7 +447,17 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
 
       <section className="pmg-main">
         <header className="pmg-topbar">
-          <div>
+          <button
+            type="button"
+            className="pmg-sidebar-toggle"
+            onClick={() => setCollapsed((value) => !value)}
+            aria-label={collapsed ? "Expandir menu lateral" : "Recolher menu lateral"}
+            title={collapsed ? "Expandir menu lateral" : "Recolher menu lateral"}
+          >
+            <Icon name="menu" />
+          </button>
+
+          <div className="pmg-topbar-title">
             <span className="pmg-eyebrow">Zentra Sales AI</span>
             <h1>{title}</h1>
           </div>
@@ -521,6 +532,11 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
             radial-gradient(circle at 10% 0%, rgba(22, 163, 74, 0.08), transparent 28%),
             radial-gradient(circle at 90% 0%, rgba(220, 38, 38, 0.06), transparent 26%),
             var(--pmg-bg);
+          transition: grid-template-columns 220ms ease;
+        }
+
+        .pmg-shell.collapsed {
+          grid-template-columns: 72px minmax(0, 1fr);
         }
 
         .pmg-sidebar {
@@ -623,6 +639,71 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
           width: 42px;
           height: 42px;
           box-shadow: var(--pmg-shadow-sm);
+        }
+
+        .pmg-sidebar-toggle {
+          appearance: none;
+          border: 0;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          color: var(--pmg-text);
+          background: var(--pmg-surface);
+          border: 1px solid var(--pmg-border);
+          border-radius: 14px;
+          width: 42px;
+          height: 42px;
+          box-shadow: var(--pmg-shadow-sm);
+          flex: 0 0 auto;
+        }
+
+        .pmg-sidebar-toggle:hover {
+          color: var(--pmg-green);
+          border-color: #bbf7d0;
+          background: #f0fdf4;
+        }
+
+        .pmg-topbar-title {
+          min-width: 0;
+          margin-right: auto;
+        }
+
+        .pmg-shell.collapsed .pmg-sidebar {
+          align-items: center;
+          padding-left: 10px;
+          padding-right: 10px;
+        }
+
+        .pmg-shell.collapsed .pmg-sidebar-head {
+          justify-content: center;
+        }
+
+        .pmg-shell.collapsed .pmg-brand {
+          padding: 6px;
+        }
+
+        .pmg-shell.collapsed .pmg-brand-text,
+        .pmg-shell.collapsed .pmg-company-card,
+        .pmg-shell.collapsed .pmg-nav-label,
+        .pmg-shell.collapsed .pmg-ai-box,
+        .pmg-shell.collapsed .pmg-cotador span:not(.pmg-cotador-icon) {
+          display: none;
+        }
+
+        .pmg-shell.collapsed .pmg-nav-item {
+          width: 52px;
+          justify-content: center;
+          padding: 8px;
+        }
+
+        .pmg-shell.collapsed .pmg-nav-item::before {
+          display: none;
+        }
+
+        .pmg-shell.collapsed .pmg-cotador {
+          width: 52px;
+          justify-content: center;
         }
 
         .pmg-company-card {
@@ -974,7 +1055,7 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
 
         @media (max-width: 1100px) {
           .pmg-shell {
-            grid-template-columns: 84px minmax(0, 1fr);
+            grid-template-columns: 72px minmax(0, 1fr);
           }
 
           .pmg-sidebar {
@@ -1023,6 +1104,10 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
             display: inline-flex;
           }
 
+          .pmg-sidebar-toggle {
+            display: none;
+          }
+
           .pmg-sidebar {
             position: fixed;
             left: 0;
@@ -1045,6 +1130,15 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
             display: inline-flex;
           }
 
+          .pmg-shell.collapsed .pmg-sidebar {
+            align-items: stretch;
+            padding: 18px 14px;
+          }
+
+          .pmg-shell.collapsed .pmg-sidebar-head {
+            justify-content: space-between;
+          }
+
           .pmg-brand-text,
           .pmg-company-card,
           .pmg-nav-label,
@@ -1058,6 +1152,13 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
             width: auto;
             justify-content: flex-start;
           }
+
+          .pmg-shell.collapsed .pmg-nav-item,
+          .pmg-shell.collapsed .pmg-cotador {
+            width: auto;
+            justify-content: flex-start;
+          }
+
 
           .pmg-nav-item::before {
             display: block;
