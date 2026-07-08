@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { requireCompany } from "@/lib/server-company";
+import { requireCompanyAccess } from "@/lib/server-company";
+import { buildWhatsappSessionKey } from "@/lib/whatsapp-session";
 
 export const dynamic = "force-dynamic";
 
@@ -49,9 +50,9 @@ function normalizeLid(value: any) {
   return null;
 }
 
-function buildSession(companyId: string, lead: any) {
+function buildSession(companyId: string, userId: string, lead: any) {
   const sessionId = Number(lead?.session_id || DEFAULT_SESSION || 1);
-  return `${companyId}_${sessionId}`;
+  return buildWhatsappSessionKey({ companyId, userId, sessionId });
 }
 
 function getDestination(lead: any, fallbackPhone?: any) {
@@ -131,6 +132,7 @@ async function saveSentMessage({
   supabase,
   companyId,
   branchId,
+  userId,
   leadId,
   message,
   whatsappResult,
@@ -138,6 +140,7 @@ async function saveSentMessage({
   supabase: any;
   companyId: string;
   branchId?: string | null;
+  userId?: string | null;
   leadId: string;
   message: string;
   whatsappResult: any;
@@ -153,6 +156,7 @@ async function saveSentMessage({
     event: "message_sent",
     payload: {
       source: "inbox_manual",
+      user_id: userId || null,
       whatsapp_message_id: whatsappResult?.messageId || null,
       jid: whatsappResult?.jid || null,
     },
@@ -168,7 +172,16 @@ async function saveSentMessage({
 export async function POST(req: NextRequest) {
   try {
     const supabase = getSupabase();
-    const { companyId } = await requireCompany(req);
+    const access = await requireCompanyAccess(req);
+    const companyId = access.companyId;
+    const userId = access.userId;
+
+    if (!companyId || !userId) {
+      return NextResponse.json(
+        { success: false, error: "Empresa ou usuário não identificado." },
+        { status: 401 }
+      );
+    }
     const body = await req.json();
 
     const leadId = clean(body.leadId || body.lead_id || body.id);
@@ -238,7 +251,7 @@ export async function POST(req: NextRequest) {
         .eq("company_id", companyId);
     }
 
-    const sessionId = buildSession(companyId, lead);
+    const sessionId = buildSession(companyId, userId, lead);
 
     const result = await sendToWhatsapp({
       sessionId,
@@ -250,6 +263,7 @@ export async function POST(req: NextRequest) {
       supabase,
       companyId,
       branchId: lead.branch_id || null,
+      userId,
       leadId: lead.id,
       message,
       whatsappResult: result,

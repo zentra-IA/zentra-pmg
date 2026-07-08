@@ -54,6 +54,7 @@ type QueueItem = {
   contact_id?: string | null;
   phone?: string | null;
   session_id?: number | null;
+  user_id?: string | null;
   type?: string | null;
   intent?: string | null;
   message?: string | null;
@@ -110,7 +111,12 @@ function cleanPhone(value: any) {
   return phone;
 }
 
-function buildSessionId(companyId: string | null | undefined, sessionId: number) {
+function buildSessionId(
+  companyId: string | null | undefined,
+  userId: string | null | undefined,
+  sessionId: number
+) {
+  if (companyId && userId) return `${companyId}_${userId}_${sessionId}`;
   return `${companyId || "default"}_${sessionId}`;
 }
 
@@ -313,8 +319,8 @@ async function getTemplateMessage(item: QueueItem, contact: CommercialContact | 
   return applyVariables(defaultTemplate(item.intent), contact, item.payload || {});
 }
 
-async function isSessionOnline(companyId: string | null | undefined, sessionId: number) {
-  const fullSessionId = buildSessionId(companyId, sessionId);
+async function isSessionOnline(companyId: string | null | undefined, userId: string | null | undefined, sessionId: number) {
+  const fullSessionId = buildSessionId(companyId, userId, sessionId);
 
   try {
     const response = await fetch(`${WHATSAPP_SERVER}/status/${fullSessionId}`);
@@ -323,12 +329,12 @@ async function isSessionOnline(companyId: string | null | undefined, sessionId: 
 
     const data = await response.json().catch(() => ({}));
 
-  return Boolean(
-  data?.connected ||
-  data?.online ||
-  data?.status === "online" ||
-  data?.status === "open"
-);
+    return Boolean(
+      data?.connected ||
+        data?.online ||
+        data?.status === "online" ||
+        data?.status === "open"
+    );
   } catch {
     return false;
   }
@@ -353,9 +359,9 @@ async function countSentToday(companyId: string | null | undefined, sessionId: n
   }
 }
 
-async function getBestSession(companyId: string | null | undefined) {
+async function getBestSession(companyId: string | null | undefined, userId: string | null | undefined) {
   for (const sessionId of SESSIONS) {
-    const online = await isSessionOnline(companyId, sessionId);
+    const online = await isSessionOnline(companyId, userId, sessionId);
     if (!online) continue;
 
     const sentToday = await countSentToday(companyId, sessionId);
@@ -370,11 +376,11 @@ async function resolveSession(item: QueueItem) {
     return item.session_id;
   }
 
-  return getBestSession(item.company_id);
+  return getBestSession(item.company_id, item.user_id);
 }
 
 async function sendText(item: QueueItem, phone: string, message: string, sessionId: number) {
-  const fullSessionId = buildSessionId(item.company_id, sessionId);
+  const fullSessionId = buildSessionId(item.company_id, item.user_id, sessionId);
 
   const response = await fetch(`${WHATSAPP_SERVER}/send`, {
   method: "POST",
@@ -480,7 +486,7 @@ async function processQueueItem(item: QueueItem) {
   await markContactStatus(item, "processing");
 
   const sessionId = await resolveSession(item);
-  const online = await isSessionOnline(item.company_id, sessionId);
+  const online = await isSessionOnline(item.company_id, item.user_id, sessionId);
 
   if (!online) {
     throw new Error(`Sessão WhatsApp ${sessionId} offline.`);

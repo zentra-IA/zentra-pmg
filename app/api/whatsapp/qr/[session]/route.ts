@@ -1,39 +1,50 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCompanyId } from "@/lib/server-company";
+import { normalizeWhatsappSessionNumber, resolveWhatsappSession } from "@/lib/whatsapp-session";
+
+export const dynamic = "force-dynamic";
 
 const WHATSAPP_SERVER =
   process.env.NEXT_PUBLIC_WHATSAPP_SERVER || "http://localhost:3011";
 
 type Context = {
-  params: Promise<{ session: string }>;
+  params: Promise<{ session: string }> | { session: string };
 };
 
 export async function GET(req: NextRequest, context: Context) {
   try {
-    const { session } = await context.params;
+    const params = await context.params;
+    const sessionId = normalizeWhatsappSessionNumber(params?.session || "1");
 
-    const companyId =
-      await getCompanyId(req) ||
-      process.env.DEFAULT_COMPANY_ID ||
-      "b7336aa2-345d-4624-8141-0ea0de084c3d";
+    const session = await resolveWhatsappSession(req, sessionId);
+    const finalSessionId = session.fullSessionId;
 
-    const finalSession = `${companyId}_${session}`;
-
-    const res = await fetch(`${WHATSAPP_SERVER}/qr/${finalSession}`, {
-      cache: "no-store",
-    });
+    const res = await fetch(
+      `${WHATSAPP_SERVER}/qr/${encodeURIComponent(finalSessionId)}`,
+      { cache: "no-store" }
+    );
 
     const data = await res.json().catch(() => ({
       status: "offline",
       qr: null,
+      me: null,
     }));
 
-    return NextResponse.json(data, { status: res.status });
+    return NextResponse.json(
+      {
+        ...data,
+        sessionId,
+        companyId: session.companyId,
+        userId: session.userId,
+        finalSessionId,
+      },
+      { status: res.status }
+    );
   } catch (error: any) {
     return NextResponse.json(
       {
         status: "offline",
         qr: null,
+        me: null,
         error: error?.message || "Erro ao buscar QR",
       },
       { status: 500 }

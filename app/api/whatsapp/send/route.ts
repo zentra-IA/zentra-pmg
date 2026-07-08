@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
-import { getCompanyId } from "@/lib/server-company";
+import { requireCompanyAccess } from "@/lib/server-company";
+import { buildWhatsappSessionKey } from "@/lib/whatsapp-session";
 
 export const dynamic = "force-dynamic";
 
@@ -45,13 +46,13 @@ function normalizeSessionNumber(value: any) {
   return Math.round(number);
 }
 
-function buildSession(companyId: string, sessionId: string | number) {
-  return `${companyId}_${sessionId || 1}`;
+function buildSession(companyId: string, userId: string, sessionId: string | number) {
+  return buildWhatsappSessionKey({ companyId, userId, sessionId: sessionId || 1 });
 }
 
-async function isSessionOnline(companyId: string, sessionNumber: number) {
+async function isSessionOnline(companyId: string, userId: string, sessionNumber: number) {
   try {
-    const finalSessionId = buildSession(companyId, sessionNumber);
+    const finalSessionId = buildSession(companyId, userId, sessionNumber);
 
     const res = await fetch(`${WHATSAPP_SERVER}/status/${finalSessionId}`, {
       cache: "no-store",
@@ -131,10 +132,16 @@ function nextLeadStatus(currentStatus: any) {
 
 export async function POST(req: NextRequest) {
   try {
-    const companyId =
-      await getCompanyId(req) ||
-      process.env.DEFAULT_COMPANY_ID ||
-      "41edd938-3eb4-420e-9675-2e53703ed70b";
+    const access = await requireCompanyAccess(req);
+    const companyId = access.companyId;
+    const userId = access.userId;
+
+    if (!companyId || !userId) {
+      return NextResponse.json(
+        { success: false, error: "Empresa ou usuário não identificado." },
+        { status: 401 }
+      );
+    }
 
     const body = await req.json();
 
@@ -171,9 +178,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const finalSession = buildSession(companyId, sessionNumber);
+    const finalSession = buildSession(companyId, userId, sessionNumber);
 
-    const online = await isSessionOnline(companyId, sessionNumber);
+    const online = await isSessionOnline(companyId, userId, sessionNumber);
 
     if (!online) {
       return NextResponse.json(
@@ -253,6 +260,7 @@ export async function POST(req: NextRequest) {
       event: "manual_message_sent",
       payload: {
         company_id: companyId,
+        user_id: userId,
         session_number: sessionNumber,
         session_id: finalSession,
         jid: result.jid || null,
@@ -279,6 +287,7 @@ export async function POST(req: NextRequest) {
       success: true,
       sessionId: finalSession,
       sessionNumber,
+      userId,
       phone,
       lid,
       usedToday: usedToday + 1,

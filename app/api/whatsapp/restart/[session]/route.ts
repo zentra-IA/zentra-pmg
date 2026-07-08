@@ -1,27 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCompanyId } from "@/lib/server-company";
+import { normalizeWhatsappSessionNumber, resolveWhatsappSession } from "@/lib/whatsapp-session";
 
 export const dynamic = "force-dynamic";
 
 const WHATSAPP_SERVER =
   process.env.NEXT_PUBLIC_WHATSAPP_SERVER || "http://localhost:3011";
-
-const DEFAULT_COMPANY_ID = process.env.DEFAULT_COMPANY_ID || "";
-
-async function resolveCompanyId(req: NextRequest) {
-  return req.headers.get("x-company-id") || await getCompanyId(req) || DEFAULT_COMPANY_ID;
-}
-
-function normalizeSessionId(value: any) {
-  const n = String(value || "1").replace(/\D/g, "");
-  const num = Number(n);
-  if (!num || num < 1 || num > 5) return "1";
-  return String(num);
-}
-
-function buildSession(companyId: string, sessionId: string) {
-  return `${companyId}_${sessionId}`;
-}
 
 export async function POST(
   req: NextRequest,
@@ -29,10 +12,10 @@ export async function POST(
 ) {
   try {
     const params = await context.params;
-    const sessionId = normalizeSessionId(params.session);
-    const companyId = await resolveCompanyId(req);
+    const sessionId = normalizeWhatsappSessionNumber(params?.session || "1");
 
-    const finalSessionId = buildSession(companyId, sessionId);
+    const session = await resolveWhatsappSession(req, sessionId);
+    const finalSessionId = session.fullSessionId;
 
     const res = await fetch(
       `${WHATSAPP_SERVER}/restart/${encodeURIComponent(finalSessionId)}`,
@@ -42,16 +25,17 @@ export async function POST(
     const data = await res.json().catch(() => ({}));
 
     return NextResponse.json({
-      success: res.ok,
+      success: data?.success ?? res.ok,
       sessionId,
-      companyId,
+      companyId: session.companyId,
+      userId: session.userId,
       finalSessionId,
       ...data,
     });
-  } catch (error:any) {
+  } catch (error: any) {
     return NextResponse.json(
-      { success:false, error:error?.message || "Erro ao reiniciar WhatsApp" },
-      { status:500 }
+      { success: false, error: error?.message || "Erro ao reiniciar WhatsApp" },
+      { status: 500 }
     );
   }
 }

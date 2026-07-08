@@ -104,26 +104,47 @@ function normalizeSessionNumber(value: any) {
   return n;
 }
 
-function buildSendSession(companyId: string, sessionId: number | string) {
+function buildSendSession(companyId: string, userId: string | null | undefined, sessionId: number | string) {
+  if (userId) return `${companyId}_${userId}_${sessionId}`;
   return `${companyId}_${sessionId}`;
 }
 
 async function resolveCompanyBySession(supabase: any, incomingSession: any) {
   const sessionId = normalizeSessionNumber(incomingSession);
   const raw = clean(incomingSession);
-  const parts = raw.match(/^(.+)_(\d+)$/);
+  const parts = raw.split("_").filter(Boolean);
 
-  if (parts?.[1]) {
+  // Novo padrão multiusuário: companyId_userId_sessionNumber
+  if (parts.length >= 3) {
+    const sessionNumber = Number(parts[parts.length - 1]);
+    const userId = parts[parts.length - 2] || null;
+    const companyId = parts.slice(0, -2).join("_") || null;
+
+    if (companyId && userId && Number.isFinite(sessionNumber)) {
+      return {
+        companyId,
+        userId,
+        branchId: DEFAULT_BRANCH_ID,
+        sessionId: sessionNumber,
+      };
+    }
+  }
+
+  // Compatibilidade com sessões antigas: companyId_sessionNumber
+  const legacyParts = raw.match(/^(.+)_(\d+)$/);
+  if (legacyParts?.[1]) {
     return {
-      companyId: parts[1],
+      companyId: legacyParts[1],
+      userId: null,
       branchId: DEFAULT_BRANCH_ID,
-      sessionId: Number(parts[2]),
+      sessionId: Number(legacyParts[2]),
     };
   }
 
   if (DEFAULT_COMPANY_ID) {
     return {
       companyId: DEFAULT_COMPANY_ID,
+      userId: null,
       branchId: DEFAULT_BRANCH_ID,
       sessionId,
     };
@@ -143,6 +164,7 @@ async function resolveCompanyBySession(supabase: any, incomingSession: any) {
 
   return {
     companyId: company.id,
+    userId: null,
     branchId: DEFAULT_BRANCH_ID,
     sessionId,
   };
@@ -1803,8 +1825,9 @@ export async function POST(req: Request) {
 
     const companyId = resolved.companyId;
     const branchId = resolved.branchId;
+    const userId = resolved.userId || null;
     const sessionId = resolved.sessionId;
-    const sendSessionId = buildSendSession(companyId, sessionId);
+    const sendSessionId = buildSendSession(companyId, userId, sessionId);
 
     if ((!phone && !lid) || !message) {
       return NextResponse.json(

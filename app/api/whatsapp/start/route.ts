@@ -1,51 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCompanyId } from "@/lib/server-company";
+import { normalizeWhatsappSessionNumber, resolveWhatsappSession } from "@/lib/whatsapp-session";
 
 export const dynamic = "force-dynamic";
 
 const WHATSAPP_SERVER =
   process.env.NEXT_PUBLIC_WHATSAPP_SERVER || "http://localhost:3011";
 
-const DEFAULT_COMPANY_ID = process.env.DEFAULT_COMPANY_ID || "";
-
-async function resolveCompanyId(req: NextRequest) {
-  return req.headers.get("x-company-id") || await getCompanyId(req) || DEFAULT_COMPANY_ID;
-}
-
-function normalizeSessionId(value: any) {
-  const sessionId = String(value || "1").replace(/\D/g, "");
-
-  if (!sessionId) return "1";
-
-  const number = Number(sessionId);
-
-  if (!Number.isFinite(number) || number < 1 || number > 5) return "1";
-
-  return String(number);
-}
-
-function buildSession(companyId: string, sessionId: string) {
-  return `${companyId}_${sessionId}`;
-}
-
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
+    const sessionId = normalizeWhatsappSessionNumber(body?.sessionId || body?.session || "1");
 
-    const sessionId = normalizeSessionId(body?.sessionId || body?.session || "1");
-    const companyId = await resolveCompanyId(req);
-
-    if (!companyId) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Empresa não identificada.",
-        },
-        { status: 401 }
-      );
-    }
-
-    const finalSessionId = buildSession(companyId, sessionId);
+    const session = await resolveWhatsappSession(req, sessionId);
+    const finalSessionId = session.fullSessionId;
 
     const res = await fetch(
       `${WHATSAPP_SERVER}/start/${encodeURIComponent(finalSessionId)}`,
@@ -62,7 +29,8 @@ export async function POST(req: NextRequest) {
         ...data,
         success: data?.success ?? res.ok,
         sessionId,
-        companyId,
+        companyId: session.companyId,
+        userId: session.userId,
         finalSessionId,
       },
       { status: res.ok ? 200 : 500 }
