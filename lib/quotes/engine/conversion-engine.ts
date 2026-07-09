@@ -38,6 +38,52 @@ function positiveNumber(value?: number | null) {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
+function extractWeightFromText(...values: Array<string | undefined | null>) {
+  const text = values
+    .filter(Boolean)
+    .join(" ")
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, " ");
+
+  // Prioriza KG explícito na descrição do produto.
+  const kgMatch = text.match(/(\d+(?:[,.]\d+)?)\s*KG\b/);
+  if (kgMatch) {
+    const value = Number(kgMatch[1].replace(",", "."));
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+
+  // Fallback para gramas, caso algum produto venha em G.
+  const gMatch = text.match(/(\d+(?:[,.]\d+)?)\s*G\b/);
+  if (gMatch) {
+    const value = Number(gMatch[1].replace(",", ".")) / 1000;
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+
+  return undefined;
+}
+
+function resolvePieceWeight(product: CatalogProduct) {
+  return (
+    positiveNumber(product.pesoPeca) ||
+    positiveNumber(product.peso) ||
+    extractWeightFromText(
+      product.descricaoOriginal,
+      product.produto,
+      product.marca,
+      product.embalagem
+    )
+  );
+}
+
+function resolvePackageWeight(product: CatalogProduct) {
+  return (
+    positiveNumber(product.pesoPacote) ||
+    extractWeightFromText(product.descricaoOriginal, product.produto, product.embalagem)
+  );
+}
+
+
 export function convertQuantity(
   input: QuoteInputLine,
   product?: CatalogProduct
@@ -57,8 +103,8 @@ export function convertQuantity(
 
   const soldBy = normalizeUnit(product.vendePor || "UN");
 
-  const pieceWeight = positiveNumber(product.pesoPeca);
-  const packageWeight = positiveNumber(product.pesoPacote);
+  const pieceWeight = resolvePieceWeight(product);
+  const packageWeight = resolvePackageWeight(product);
   const boxWeight = positiveNumber(product.pesoCaixa);
   const piecesPerBox = positiveNumber(product.pecasCaixa);
   const packagesPerBox = positiveNumber(product.pacotesCaixa);

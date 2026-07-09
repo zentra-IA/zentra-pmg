@@ -146,7 +146,12 @@ export class CatalogEngine {
     const flavor = this.detectFlavor(text);
     const packageType = this.detectPackage(text);
     const weights = this.detectWeights(text);
-    const commercial = this.detectCommercialData(text, product, packageType);
+    const commercial = this.enrichCommercialData(
+      this.detectCommercialData(text, product, packageType),
+      weights,
+      text,
+      product
+    );
 
     const aliases = this.buildAliases(product, brand, subtype, line);
     const keywords = this.buildKeywords(
@@ -319,6 +324,73 @@ export class CatalogEngine {
     return {};
   }
 
+
+  private static enrichCommercialData(
+    commercial: CommercialData,
+    weights: DetectedWeights,
+    text: string,
+    product: string
+  ): CommercialData {
+    const detectedWeight = weights.weight;
+
+    /*
+      Regra crítica para frios/laticínios vendidos por KG, mas pedidos por peça:
+      Ex.: PEITO DE PERU REZENDE 2,5 KG (CX 2 PÇ)
+           PROVOLONE CRISTAL 5 KG (CX 4 PÇ)
+           GORGONZOLA 3 KG (CX 2 PÇ)
+
+      O PDF traz o preço por KG, mas o cliente pede "1 peça".
+      Então a peça precisa carregar o peso detectado na própria descrição.
+    */
+    if (
+      detectedWeight &&
+      detectedWeight > 0 &&
+      (commercial.piecesPerBox || text.includes(" pç") || text.includes(" pc"))
+    ) {
+      commercial = {
+        ...commercial,
+        pieceWeight: commercial.pieceWeight || detectedWeight,
+      };
+    }
+
+    /*
+      Produtos em pacote com peso na descrição.
+      Ex.: CALABRESA AURORA 5 KG (CX 5 PCT)
+      Se o cliente pedir caixa e o PDF vender por PCT, a caixa vira 5 pacotes.
+      Se o cliente pedir KG e o produto vender por PCT, o pacote tem 5 KG.
+    */
+    if (
+      detectedWeight &&
+      detectedWeight > 0 &&
+      commercial.packagesPerBox &&
+      !commercial.packageWeight
+    ) {
+      commercial = {
+        ...commercial,
+        packageWeight: detectedWeight,
+      };
+    }
+
+    /*
+      Caixa vendida por KG.
+      Ex.: ASAS DE FRANGO (CX 20 KG)
+    */
+    if (
+      detectedWeight &&
+      detectedWeight > 0 &&
+      commercial.boxWeight &&
+      !commercial.pieceWeight &&
+      product !== "REQUEIJÃO"
+    ) {
+      commercial = {
+        ...commercial,
+        boxWeight: commercial.boxWeight || detectedWeight,
+      };
+    }
+
+    return commercial;
+  }
+
   private static detectCommercialData(
     text: string,
     product: string,
@@ -372,6 +444,15 @@ export class CatalogEngine {
     if (product === "AZEITONA" && packageType === "BD") {
       return {
         soldBy: "BD",
+      };
+    }
+
+    const detectedWeight = this.detectWeights(text).weight;
+
+    if (packageType === "PÇ" && detectedWeight && detectedWeight > 0) {
+      return {
+        soldBy: "KG",
+        pieceWeight: detectedWeight,
       };
     }
 
