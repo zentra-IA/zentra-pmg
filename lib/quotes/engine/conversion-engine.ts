@@ -9,50 +9,145 @@ export type ConversionResult = {
   message?: string;
 };
 
+function normalizeUnit(value?: string | null) {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function isPieceUnit(unit: string) {
+  return ["P", "PC", "PCS", "PÇ", "PÇS", "PECA", "PECAS"].includes(unit);
+}
+
+function isBoxUnit(unit: string) {
+  return ["CX", "CAIXA", "CAIXAS"].includes(unit);
+}
+
+function isPackageUnit(unit: string) {
+  return ["PCT", "PACOTE", "PACOTES"].includes(unit);
+}
+
+function isBundleUnit(unit: string) {
+  return ["FD", "FDO", "FARDO", "FARDOS"].includes(unit);
+}
+
+function positiveNumber(value?: number | null) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
 export function convertQuantity(
   input: QuoteInputLine,
   product?: CatalogProduct
 ): ConversionResult {
   const quantity = input.quantity || 1;
-  const unit = input.unit || "UN";
+  const originalUnit = input.unit || "UN";
+  const requestedUnit = normalizeUnit(originalUnit);
 
   if (!product) {
     return {
       quantity,
-      unit,
+      unit: originalUnit,
       needsReview: true,
       message: "Produto não selecionado para conversão.",
     };
   }
 
-  const normalizedUnit = unit.toLowerCase();
+  const soldBy = normalizeUnit(product.vendePor || "UN");
 
-  if (normalizedUnit === "kg") {
-    if (product.pesoPacote) {
+  const pieceWeight = positiveNumber(product.pesoPeca);
+  const packageWeight = positiveNumber(product.pesoPacote);
+  const boxWeight = positiveNumber(product.pesoCaixa);
+  const piecesPerBox = positiveNumber(product.pecasCaixa);
+  const packagesPerBox = positiveNumber(product.pacotesCaixa);
+
+  /*
+    REGRA CRÍTICA:
+    Quando o cliente pede PEÇA e o produto é vendido por KG,
+    a cobrança precisa ser feita pelo peso da peça.
+
+    Exemplo:
+    PROVOLONE 5 KG - Vend. por KG
+    Pedido: 1 peça
+    Cobrança: 5 KG x preço do KG
+
+    Antes o sistema fazia 1 peça = 1 KG, o que gerava preço errado.
+  */
+  if (isPieceUnit(requestedUnit)) {
+    if (soldBy === "KG") {
+      if (pieceWeight) {
+        return {
+          quantity,
+          unit: "PÇ",
+          convertedQuantity: quantity * pieceWeight,
+          convertedUnit: "KG",
+          needsReview: false,
+        };
+      }
+
       return {
         quantity,
-        unit,
-        convertedQuantity: quantity / product.pesoPacote,
+        unit: "PÇ",
+        needsReview: true,
+        message:
+          "O cliente pediu peça, mas o peso da peça não foi encontrado no catálogo.",
+      };
+    }
+
+    if (isPieceUnit(soldBy)) {
+      return {
+        quantity,
+        unit: "PÇ",
+        convertedQuantity: quantity,
+        convertedUnit: "PÇ",
+        needsReview: false,
+      };
+    }
+  }
+
+  /*
+    Quando o cliente pede KG:
+    - se vende por KG, não converte;
+    - se vende por pacote/caixa/peça, converte proporcionalmente.
+  */
+  if (requestedUnit === "KG") {
+    if (soldBy === "KG") {
+      return {
+        quantity,
+        unit: "KG",
+        convertedQuantity: quantity,
+        convertedUnit: "KG",
+        needsReview: false,
+      };
+    }
+
+    if (isPackageUnit(soldBy) && packageWeight) {
+      return {
+        quantity,
+        unit: "KG",
+        convertedQuantity: quantity / packageWeight,
         convertedUnit: "PCT",
         needsReview: false,
       };
     }
 
-    if (product.pesoCaixa) {
+    if (isBoxUnit(soldBy) && boxWeight) {
       return {
         quantity,
-        unit,
-        convertedQuantity: quantity / product.pesoCaixa,
+        unit: "KG",
+        convertedQuantity: quantity / boxWeight,
         convertedUnit: "CX",
         needsReview: false,
       };
     }
 
-    if (product.pesoPeca) {
+    if (isPieceUnit(soldBy) && pieceWeight) {
       return {
         quantity,
-        unit,
-        convertedQuantity: quantity / product.pesoPeca,
+        unit: "KG",
+        convertedQuantity: quantity / pieceWeight,
         convertedUnit: "PÇ",
         needsReview: false,
       };
@@ -60,17 +155,102 @@ export function convertQuantity(
 
     return {
       quantity,
-      unit,
+      unit: "KG",
       needsReview: true,
-      message: "Produto vendido por KG, mas sem regra de conversão configurada.",
+      message: "Produto sem regra suficiente para converter KG.",
+    };
+  }
+
+  /*
+    Quando o cliente pede CAIXA:
+    converte para a unidade oficial de venda do produto.
+  */
+  if (isBoxUnit(requestedUnit)) {
+    if (isBoxUnit(soldBy)) {
+      return {
+        quantity,
+        unit: "CX",
+        convertedQuantity: quantity,
+        convertedUnit: "CX",
+        needsReview: false,
+      };
+    }
+
+    if (soldBy === "KG") {
+      if (boxWeight) {
+        return {
+          quantity,
+          unit: "CX",
+          convertedQuantity: quantity * boxWeight,
+          convertedUnit: "KG",
+          needsReview: false,
+        };
+      }
+
+      if (piecesPerBox && pieceWeight) {
+        return {
+          quantity,
+          unit: "CX",
+          convertedQuantity: quantity * piecesPerBox * pieceWeight,
+          convertedUnit: "KG",
+          needsReview: false,
+        };
+      }
+    }
+
+    if (isPieceUnit(soldBy) && piecesPerBox) {
+      return {
+        quantity,
+        unit: "CX",
+        convertedQuantity: quantity * piecesPerBox,
+        convertedUnit: "PÇ",
+        needsReview: false,
+      };
+    }
+
+    if (isPackageUnit(soldBy) && packagesPerBox) {
+      return {
+        quantity,
+        unit: "CX",
+        convertedQuantity: quantity * packagesPerBox,
+        convertedUnit: "PCT",
+        needsReview: false,
+      };
+    }
+
+    return {
+      quantity,
+      unit: "CX",
+      needsReview: true,
+      message: "Produto sem regra suficiente para converter caixa.",
+    };
+  }
+
+  if (isPackageUnit(requestedUnit)) {
+    return {
+      quantity,
+      unit: "PCT",
+      convertedQuantity: quantity,
+      convertedUnit: "PCT",
+      needsReview: false,
+    };
+  }
+
+  if (isBundleUnit(requestedUnit)) {
+    return {
+      quantity,
+      unit: "FD",
+      convertedQuantity: quantity,
+      convertedUnit: "FD",
+      needsReview: false,
     };
   }
 
   return {
     quantity,
-    unit,
+    unit: requestedUnit || originalUnit,
     convertedQuantity: quantity,
-    convertedUnit: unit.toUpperCase(),
+    convertedUnit: requestedUnit || originalUnit.toUpperCase(),
     needsReview: false,
   };
 }

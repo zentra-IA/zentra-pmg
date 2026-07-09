@@ -546,7 +546,7 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
           display: flex;
           flex-direction: column;
           gap: 14px;
-          padding: 18px 14px;
+          padding: max(18px, env(safe-area-inset-top)) 14px 18px 14px;
           background: rgba(255, 255, 255, 0.92);
           border-right: 1px solid var(--pmg-border);
           box-shadow: 12px 0 38px rgba(15, 23, 42, 0.04);
@@ -1113,7 +1113,7 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
             left: 0;
             top: 0;
             bottom: 0;
-            width: min(88vw, 330px);
+            width: min(84vw, 330px);
             height: 100dvh;
             align-items: stretch;
             transform: translateX(-104%);
@@ -1140,27 +1140,47 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
           }
 
           .pmg-brand-text,
-          .pmg-company-card,
+          .pmg-shell.collapsed .pmg-brand-text,
           .pmg-nav-label,
-          .pmg-ai-box,
-          .pmg-cotador span:not(.pmg-cotador-icon) {
+          .pmg-shell.collapsed .pmg-nav-label {
             display: grid;
           }
 
-          .pmg-nav-item,
-          .pmg-cotador {
-            width: auto;
-            justify-content: flex-start;
+          .pmg-company-card,
+          .pmg-shell.collapsed .pmg-company-card {
+            display: flex;
           }
 
+          .pmg-ai-box,
+          .pmg-shell.collapsed .pmg-ai-box {
+            display: flex;
+          }
+
+          .pmg-cotador span:not(.pmg-cotador-icon),
+          .pmg-shell.collapsed .pmg-cotador span:not(.pmg-cotador-icon) {
+            display: block;
+          }
+
+          .pmg-brand,
+          .pmg-shell.collapsed .pmg-brand {
+            padding: 8px;
+          }
+
+          .pmg-nav,
+          .pmg-sidebar-footer {
+            width: 100%;
+          }
+
+          .pmg-nav-item,
+          .pmg-cotador,
           .pmg-shell.collapsed .pmg-nav-item,
           .pmg-shell.collapsed .pmg-cotador {
-            width: auto;
+            width: 100%;
             justify-content: flex-start;
           }
 
-
-          .pmg-nav-item::before {
+          .pmg-nav-item::before,
+          .pmg-shell.collapsed .pmg-nav-item::before {
             display: block;
           }
 

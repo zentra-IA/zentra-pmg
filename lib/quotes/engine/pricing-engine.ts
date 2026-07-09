@@ -17,7 +17,21 @@ export function calculatePrice(params: {
     };
   }
 
-  const finalQuantity = convertedQuantity || quantity;
+  /*
+    Usa a quantidade convertida quando existir.
+
+    Exemplo crítico:
+    Produto vendido por KG
+    Pedido: 1 peça de provolone
+    Conversão: 5 KG
+    Cálculo: 5 x preço do KG
+
+    Não usar "convertedQuantity || quantity", porque isso pode ignorar
+    valores convertidos válidos em casos específicos.
+  */
+  const finalQuantity =
+    convertedQuantity !== undefined ? convertedQuantity : quantity;
+
   const subtotalRaw = product.price * finalQuantity;
   const subtotal = subtotalRaw - subtotalRaw * (discount / 100);
 
