@@ -1,137 +1,265 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
+const BUCKET_NAME = "products";
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+  // Imagens
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+
+  // Áudios
+  mp3: "audio/mpeg",
+  ogg: "audio/ogg",
+  oga: "audio/ogg",
+  wav: "audio/wav",
+  m4a: "audio/mp4",
+  aac: "audio/aac",
+
+  // Vídeos
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
+  m4v: "video/x-m4v",
+
+  // Documentos
+  pdf: "application/pdf",
+};
 
 function getSupabase() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  if (!supabaseUrl || !serviceRoleKey) {
-    throw new Error("Supabase não configurado.");
+  if (!supabaseUrl) {
+    throw new Error("NEXT_PUBLIC_SUPABASE_URL não configurada.");
   }
 
-  return createClient(supabaseUrl, serviceRoleKey);
-}
-
-const ALLOWED_EXTENSIONS = [
-  "jpg",
-  "jpeg",
-  "png",
-  "webp",
-  "gif",
-  "pdf",
-  "mp3",
-  "ogg",
-  "oga",
-  "wav",
-  "m4a",
-  "aac",
-  "mp4",
-];
-
-function safeExtension(fileName: string) {
-  const ext = fileName.split(".").pop()?.toLowerCase() || "bin";
-
-  if (ALLOWED_EXTENSIONS.includes(ext)) {
-    return ext;
+  if (!serviceRoleKey) {
+    throw new Error("SUPABASE_SERVICE_ROLE_KEY não configurada.");
   }
 
-  return "bin";
+  return createClient(supabaseUrl, serviceRoleKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
 }
 
-function detectMediaType(file: File, ext: string) {
-  if (file.type.startsWith("image/")) return "image";
-  if (file.type.startsWith("audio/")) return "audio";
-  if (file.type.startsWith("video/")) return "video";
-  if (file.type === "application/pdf" || ext === "pdf") return "pdf";
+function getExtension(fileName: string): string {
+  return fileName.split(".").pop()?.toLowerCase() || "";
+}
+
+function detectMediaType(
+  mimeType: string,
+  extension: string
+): "image" | "audio" | "video" | "pdf" | "file" {
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("audio/")) return "audio";
+  if (mimeType.startsWith("video/")) return "video";
+
+  if (mimeType === "application/pdf" || extension === "pdf") {
+    return "pdf";
+  }
+
+  if (
+    ["jpg", "jpeg", "png", "webp", "gif"].includes(extension)
+  ) {
+    return "image";
+  }
+
+  if (
+    ["mp3", "ogg", "oga", "wav", "m4a", "aac"].includes(extension)
+  ) {
+    return "audio";
+  }
+
+  if (
+    ["mp4", "mov", "webm", "m4v"].includes(extension)
+  ) {
+    return "video";
+  }
+
   return "file";
 }
 
-function maxSizeByType(mediaType: string) {
-  if (mediaType === "image") return 10 * 1024 * 1024;
-  if (mediaType === "audio") return 25 * 1024 * 1024;
-  if (mediaType === "pdf") return 25 * 1024 * 1024;
-  if (mediaType === "video") return 50 * 1024 * 1024;
-  return 15 * 1024 * 1024;
+function getMaxFileSize(mediaType: string): number {
+  const MB = 1024 * 1024;
+
+  const limits: Record<string, number> = {
+    image: 10 * MB,
+    audio: 25 * MB,
+    video: 50 * MB,
+    pdf: 25 * MB,
+    file: 15 * MB,
+  };
+
+  return limits[mediaType] || limits.file;
 }
 
-export async function POST(req: NextRequest) {
+function sanitizeFolder(value: FormDataEntryValue | null): string {
+  const folder = String(value || "uploads")
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .slice(0, 40);
+
+  return folder || "uploads";
+}
+
+export async function POST(request: NextRequest) {
   try {
     const supabase = getSupabase();
+    const formData = await request.formData();
 
-    const formData = await req.formData();
-    const file = formData.get("file") as File | null;
-    const folder = String(formData.get("folder") || "uploads")
-      .replace(/[^a-zA-Z0-9-_]/g, "")
-      .slice(0, 40);
+    const fileEntry = formData.get("file");
 
-    if (!file) {
-      return NextResponse.json(
-        { error: "Arquivo não enviado" },
-        { status: 400 }
-      );
-    }
-
-    const ext = safeExtension(file.name);
-    const mediaType = detectMediaType(file, ext);
-    const maxSize = maxSizeByType(mediaType);
-
-    if (file.size > maxSize) {
+    if (!(fileEntry instanceof File)) {
       return NextResponse.json(
         {
-          error: `Arquivo muito grande. Limite para ${mediaType}: ${Math.round(
-            maxSize / 1024 / 1024
-          )}MB.`,
+          success: false,
+          error: "Nenhum arquivo foi enviado.",
         },
         { status: 400 }
       );
     }
 
-    if (ext === "bin") {
+    const file = fileEntry;
+    const extension = getExtension(file.name);
+
+    if (!extension || !MIME_BY_EXTENSION[extension]) {
       return NextResponse.json(
-        { error: "Tipo de arquivo não permitido" },
+        {
+          success: false,
+          error: `Formato não permitido: ${extension || "desconhecido"}.`,
+        },
         { status: 400 }
       );
     }
 
-    const fileName = `${Date.now()}-${crypto.randomUUID()}.${ext}`;
-    const filePath = `${folder}/${mediaType}/${fileName}`;
-    const buffer = Buffer.from(await file.arrayBuffer());
+    const mimeType =
+      file.type && file.type !== "application/octet-stream"
+        ? file.type
+        : MIME_BY_EXTENSION[extension];
 
-    const { error: uploadError } = await supabase.storage
-      .from("products")
-      .upload(filePath, buffer, {
-        contentType: file.type || "application/octet-stream",
-        upsert: true,
-      });
+    const mediaType = detectMediaType(mimeType, extension);
+    const maxFileSize = getMaxFileSize(mediaType);
 
-    if (uploadError) {
-      throw new Error(uploadError.message);
+    if (file.size <= 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "O arquivo está vazio.",
+        },
+        { status: 400 }
+      );
     }
 
-    const { data } = supabase.storage.from("products").getPublicUrl(filePath);
+    if (file.size > maxFileSize) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Arquivo muito grande. Limite para ${mediaType}: ${
+            maxFileSize / 1024 / 1024
+          } MB.`,
+        },
+        { status: 413 }
+      );
+    }
+
+    const folder = sanitizeFolder(formData.get("folder"));
+
+    const generatedName = `${Date.now()}-${crypto.randomUUID()}.${extension}`;
+
+    const filePath = `${folder}/${mediaType}/${generatedName}`;
+
+    console.log("UPLOAD_INICIADO", {
+      originalName: file.name,
+      size: file.size,
+      browserMimeType: file.type,
+      detectedMimeType: mimeType,
+      mediaType,
+      filePath,
+      bucket: BUCKET_NAME,
+    });
+
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    const { data: uploadData, error: uploadError } =
+      await supabase.storage
+        .from(BUCKET_NAME)
+        .upload(filePath, buffer, {
+          contentType: mimeType,
+          cacheControl: "3600",
+          upsert: false,
+        });
+
+    if (uploadError) {
+      console.error("ERRO_SUPABASE_UPLOAD", uploadError);
+
+      return NextResponse.json(
+        {
+          success: false,
+          error: "O Supabase recusou o upload.",
+          details: uploadError.message,
+          bucket: BUCKET_NAME,
+          path: filePath,
+        },
+        { status: 500 }
+      );
+    }
+
+    const { data: publicUrlData } = supabase.storage
+      .from(BUCKET_NAME)
+      .getPublicUrl(uploadData.path);
+
+    const publicUrl = publicUrlData.publicUrl;
+
+    console.log("UPLOAD_CONCLUIDO", {
+      originalName: file.name,
+      path: uploadData.path,
+      publicUrl,
+      mediaType,
+    });
 
     return NextResponse.json(
       {
         success: true,
-        url: data.publicUrl,
-        fileUrl: data.publicUrl,
-        imageUrl: data.publicUrl,
-        mediaUrl: data.publicUrl,
+
+        url: publicUrl,
+        fileUrl: publicUrl,
+        mediaUrl: publicUrl,
+        imageUrl: mediaType === "image" ? publicUrl : null,
+
         mediaType,
-        mimeType: file.type,
-        path: filePath,
+        mimeType,
+
+        path: uploadData.path,
         name: file.name,
+        storedName: generatedName,
         size: file.size,
       },
       { status: 200 }
     );
-  } catch (error: any) {
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Erro desconhecido durante o upload.";
+
+    console.error("ERRO_GERAL_UPLOAD", error);
+
     return NextResponse.json(
       {
-        error: "Erro ao fazer upload do arquivo",
-        details: error?.message || String(error),
+        success: false,
+        error: "Erro ao fazer upload do arquivo.",
+        details: message,
       },
       { status: 500 }
     );
