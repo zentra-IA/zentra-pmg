@@ -245,7 +245,11 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const supabase = getSupabase();
-    const { companyId, branchId } = await requireCompany(req);
+    const {
+  companyId,
+  branchId,
+  userId,
+} = await requireCompany(req);
     const body = await req.json();
 
     const campaignType = String(body?.campaignType || "PROMOCAO_DIARIA");
@@ -312,19 +316,22 @@ export async function POST(req: NextRequest) {
 
       const message = fillTemplate(messageTemplate, customer);
 
-      const { error: queueError } = await supabase.from("automation_queue").insert({
-        company_id: companyId,
-        branch_id: branchId || null,
-        phone,
-        session_id: sessionId,
-        type: "commercial_campaign",
-        status: "pending",
-        scheduled_at: scheduledAt.toISOString(),
-        created_at: new Date().toISOString(),
-        attempts: 0,
-        message,
-        campaign_id: campaign?.id || null,
-      });
+      const { error: queueError } = await supabase
+  .from("automation_queue")
+  .insert({
+    company_id: companyId,
+    branch_id: branchId || null,
+    owner_user_id: userId,
+    phone,
+    session_id: sessionId,
+    type: "commercial_campaign",
+    status: "pending",
+    scheduled_at: scheduledAt.toISOString(),
+    created_at: new Date().toISOString(),
+    attempts: 0,
+    message,
+    campaign_id: campaign?.id || null,
+  });
 
       if (!queueError) {
         queued++;
