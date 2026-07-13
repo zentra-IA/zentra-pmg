@@ -55,6 +55,9 @@ type QueueItem = {
   phone?: string | null;
   session_id?: number | null;
   user_id?: string | null;
+  owner_user_id?: string | null;
+  whatsapp_owner_user_id?: string | null;
+  campaign_id?: string | null;
   type?: string | null;
   intent?: string | null;
   message?: string | null;
@@ -111,13 +114,44 @@ function cleanPhone(value: any) {
   return phone;
 }
 
+type ResolvedWhatsappSession = {
+  companyId: string;
+  ownerUserId: string;
+  sessionNumber: number;
+  fullSessionId: string;
+  ownerSource: string;
+};
+
+function normalizeIdentifier(value: unknown) {
+  return String(value || "").trim();
+}
+
 function buildSessionId(
-  companyId: string | null | undefined,
-  userId: string | null | undefined,
+  companyId: string,
+  ownerUserId: string,
   sessionId: number
 ) {
-  if (companyId && userId) return `${companyId}_${userId}_${sessionId}`;
-  return `${companyId || "default"}_${sessionId}`;
+  const normalizedCompanyId = normalizeIdentifier(companyId);
+  const normalizedOwnerUserId = normalizeIdentifier(ownerUserId);
+  const normalizedSessionId = Number(sessionId);
+
+  if (!normalizedCompanyId) {
+    throw new Error("Não foi possível resolver a sessão: company_id ausente.");
+  }
+
+  if (!normalizedOwnerUserId) {
+    throw new Error(
+      "Não foi possível resolver a sessão: proprietário do WhatsApp ausente."
+    );
+  }
+
+  if (!Number.isInteger(normalizedSessionId) || normalizedSessionId < 1) {
+    throw new Error(
+      `Não foi possível resolver a sessão: session_id inválido (${String(sessionId)}).`
+    );
+  }
+
+  return `${normalizedCompanyId}_${normalizedOwnerUserId}_${normalizedSessionId}`;
 }
 
 function formatMoney(value: any) {
@@ -319,39 +353,172 @@ async function getTemplateMessage(item: QueueItem, contact: CommercialContact | 
   return applyVariables(defaultTemplate(item.intent), contact, item.payload || {});
 }
 
-async function isSessionOnline(companyId: string | null | undefined, userId: string | null | undefined, sessionId: number) {
-  const fullSessionId = buildSessionId(companyId, userId, sessionId);
+function firstOwnerCandidate(
+  source: Record<string, any> | null | undefined,
+  fields: string[]
+): { value: string; field: string } | null {
+  if (!source) return null;
+
+  for (const field of fields) {
+    const value = normalizeIdentifier(source[field]);
+    if (value) return { value, field };
+  }
+
+  return null;
+}
+
+async function resolveOwnerUser(
+  item: QueueItem,
+  contact: CommercialContact | null
+): Promise<{ ownerUserId: string; source: string }> {
+  const queueCandidate = firstOwnerCandidate(item as Record<string, any>, [
+    "whatsapp_owner_user_id",
+    "owner_user_id",
+    "user_id",
+  ]);
+
+  if (queueCandidate) {
+    return {
+      ownerUserId: queueCandidate.value,
+      source: `automation_queue.${queueCandidate.field}`,
+    };
+  }
+
+  const payloadCandidate = firstOwnerCandidate(item.payload, [
+    "whatsapp_owner_user_id",
+    "owner_user_id",
+    "seller_id",
+    "assigned_user_id",
+    "assigned_to",
+    "user_id",
+    "created_by",
+  ]);
+
+  if (payloadCandidate) {
+    return {
+      ownerUserId: payloadCandidate.value,
+      source: `automation_queue.payload.${payloadCandidate.field}`,
+    };
+  }
+
+  const contactCandidate = firstOwnerCandidate(
+    contact as Record<string, any> | null,
+    [
+      "whatsapp_owner_user_id",
+      "owner_user_id",
+      "seller_id",
+      "assigned_user_id",
+      "assigned_to",
+      "user_id",
+      "created_by",
+    ]
+  );
+
+  if (contactCandidate) {
+    return {
+      ownerUserId: contactCandidate.value,
+      source: `contato.${contactCandidate.field}`,
+    };
+  }
+
+  if (item.campaign_id) {
+    const campaign = await safeSelectSingle(
+      ["promotion_campaigns", "crm_campaigns", "campaigns", "sales_campaigns"],
+      item.campaign_id,
+      item.company_id || null
+    );
+
+    const campaignCandidate = firstOwnerCandidate(campaign, [
+      "whatsapp_owner_user_id",
+      "owner_user_id",
+      "seller_id",
+      "assigned_user_id",
+      "assigned_to",
+      "user_id",
+      "created_by",
+    ]);
+
+    if (campaignCandidate) {
+      return {
+        ownerUserId: campaignCandidate.value,
+        source: `campanha.${campaignCandidate.field}`,
+      };
+    }
+  }
+
+  throw new Error(
+    `Não foi possível identificar o proprietário do WhatsApp para o item ${item.id}. ` +
+      "O disparo foi bloqueado para evitar envio pela sessão de outro vendedor."
+  );
+}
+
+function responseMeansOnline(data: any) {
+  const status = normalizeIdentifier(
+    data?.status || data?.state || data?.connectionStatus
+  ).toLowerCase();
+
+  return Boolean(
+    data?.connected === true ||
+      data?.online === true ||
+      data?.isConnected === true ||
+      data?.ready === true ||
+      data?.me ||
+      ["online", "open", "connected", "ready"].includes(status)
+  );
+}
+
+async function isSessionOnline(session: ResolvedWhatsappSession) {
+  const endpoint =
+    `${WHATSAPP_SERVER}/status/` +
+    encodeURIComponent(session.fullSessionId);
 
   try {
-    const response = await fetch(`${WHATSAPP_SERVER}/status/${fullSessionId}`);
-
-    if (!response.ok) return false;
-
+    const response = await fetch(endpoint);
     const data = await response.json().catch(() => ({}));
+    const online = response.ok && responseMeansOnline(data);
 
-    return Boolean(
-      data?.connected ||
-        data?.online ||
-        data?.status === "online" ||
-        data?.status === "open"
-    );
-  } catch {
+    log("Status da sessão WhatsApp", {
+      company_id: session.companyId,
+      owner_user_id: session.ownerUserId,
+      session_number: session.sessionNumber,
+      full_session_id: session.fullSessionId,
+      http_status: response.status,
+      online,
+    });
+
+    return online;
+  } catch (error: any) {
+    log("Falha ao consultar sessão WhatsApp", {
+      full_session_id: session.fullSessionId,
+      error: error?.message || String(error),
+    });
+
     return false;
   }
 }
 
-async function countSentToday(companyId: string | null | undefined, sessionId: number) {
+async function countSentToday(
+  companyId: string,
+  ownerUserId: string,
+  sessionId: number
+) {
   const start = new Date();
   start.setHours(0, 0, 0, 0);
 
   try {
-    const { count } = await supabase
+    const { count, error } = await supabase
       .from("automation_queue")
       .select("id", { count: "exact", head: true })
-      .eq("company_id", companyId || "")
+      .eq("company_id", companyId)
+      .eq("owner_user_id", ownerUserId)
       .eq("session_id", sessionId)
       .eq("status", "sent")
       .gte("sent_at", start.toISOString());
+
+    if (error) {
+      log("Não foi possível contar os envios da sessão", error.message);
+      return 0;
+    }
 
     return count || 0;
   } catch {
@@ -359,50 +526,96 @@ async function countSentToday(companyId: string | null | undefined, sessionId: n
   }
 }
 
-async function getBestSession(companyId: string | null | undefined, userId: string | null | undefined) {
-  for (const sessionId of SESSIONS) {
-    const online = await isSessionOnline(companyId, userId, sessionId);
+async function getBestSession(
+  companyId: string,
+  ownerUserId: string
+): Promise<ResolvedWhatsappSession> {
+  for (const sessionNumber of SESSIONS) {
+    const session: ResolvedWhatsappSession = {
+      companyId,
+      ownerUserId,
+      sessionNumber,
+      fullSessionId: buildSessionId(companyId, ownerUserId, sessionNumber),
+      ownerSource: "seleção automática",
+    };
+
+    const online = await isSessionOnline(session);
     if (!online) continue;
 
-    const sentToday = await countSentToday(companyId, sessionId);
-    if (sentToday < MAX_PER_DAY) return sessionId;
+    const sentToday = await countSentToday(
+      companyId,
+      ownerUserId,
+      sessionNumber
+    );
+
+    if (sentToday < MAX_PER_DAY) return session;
   }
 
-  return SESSIONS[0] || 1;
+  throw new Error(
+    `Nenhuma sessão WhatsApp online e disponível para o vendedor ${ownerUserId}.`
+  );
 }
 
-async function resolveSession(item: QueueItem) {
-  if (item.session_id) {
-    return item.session_id;
+async function resolveSession(
+  item: QueueItem,
+  contact: CommercialContact | null
+): Promise<ResolvedWhatsappSession> {
+  const companyId = normalizeIdentifier(item.company_id);
+
+  if (!companyId) {
+    throw new Error(`Item ${item.id} da fila está sem company_id.`);
   }
 
-  return getBestSession(item.company_id, item.user_id);
+  const owner = await resolveOwnerUser(item, contact);
+  const requestedSession = Number(item.session_id || 0);
+
+  if (requestedSession > 0) {
+    return {
+      companyId,
+      ownerUserId: owner.ownerUserId,
+      sessionNumber: requestedSession,
+      fullSessionId: buildSessionId(
+        companyId,
+        owner.ownerUserId,
+        requestedSession
+      ),
+      ownerSource: owner.source,
+    };
+  }
+
+  const selected = await getBestSession(companyId, owner.ownerUserId);
+  return {
+    ...selected,
+    ownerSource: owner.source,
+  };
 }
 
-async function sendText(item: QueueItem, phone: string, message: string, sessionId: number) {
-  const fullSessionId = buildSessionId(item.company_id, item.user_id, sessionId);
-
+async function sendText(
+  phone: string,
+  message: string,
+  session: ResolvedWhatsappSession
+) {
   const response = await fetch(`${WHATSAPP_SERVER}/send`, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify({
-    sessionId: fullSessionId,
-    number: phone,
-    message,
-  }),
-});
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      sessionId: session.fullSessionId,
+      number: phone,
+      message,
+    }),
+  });
 
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok || data?.success === false) {
-  throw new Error(
-    data?.error ||
-    data?.message ||
-    "Erro ao enviar mensagem pelo WhatsApp."
-  );
-}
+    throw new Error(
+      data?.error ||
+        data?.message ||
+        "Erro ao enviar mensagem pelo WhatsApp."
+    );
+  }
 
   return data;
 }
@@ -479,17 +692,22 @@ async function processQueueItem(item: QueueItem) {
     throw new Error("Contato sem telefone/WhatsApp válido.");
   }
 
+  const session = await resolveSession(item, contact);
+
   await markQueueItem(item, "processing", {
     processing_at: new Date().toISOString(),
+    owner_user_id: session.ownerUserId,
   });
 
   await markContactStatus(item, "processing");
 
-  const sessionId = await resolveSession(item);
-  const online = await isSessionOnline(item.company_id, item.user_id, sessionId);
+  const online = await isSessionOnline(session);
 
   if (!online) {
-    throw new Error(`Sessão WhatsApp ${sessionId} offline.`);
+    throw new Error(
+      `Sessão WhatsApp offline: ${session.fullSessionId}. ` +
+        `Proprietário resolvido por ${session.ownerSource}.`
+    );
   }
 
   const message = await getTemplateMessage(item, contact);
@@ -498,11 +716,12 @@ async function processQueueItem(item: QueueItem) {
     throw new Error("Mensagem vazia.");
   }
 
-  await sendText(item, phone, message, sessionId);
+  await sendText(phone, message, session);
 
   await markQueueItem(item, "sent", {
     sent_at: new Date().toISOString(),
-    session_id: sessionId,
+    session_id: session.sessionNumber,
+    owner_user_id: session.ownerUserId,
     error: null,
   });
 
@@ -510,7 +729,10 @@ async function processQueueItem(item: QueueItem) {
 
   log("Mensagem enviada", {
     queue_id: item.id,
-    session_id: sessionId,
+    session_id: session.sessionNumber,
+    full_session_id: session.fullSessionId,
+    owner_user_id: session.ownerUserId,
+    owner_source: session.ownerSource,
     phone,
     company_id: item.company_id,
   });
@@ -585,6 +807,12 @@ async function enqueueCommercialAlert(alert: any) {
       customer_id: alert.customer_id || alert.contact_id || null,
       phone: cleanPhone(alert.phone || ""),
       session_id: alert.session_id || null,
+      owner_user_id:
+        alert.whatsapp_owner_user_id ||
+        alert.owner_user_id ||
+        alert.seller_id ||
+        alert.user_id ||
+        null,
       type: "commercial_alert",
       intent: alert.intent || "SALES_ALERT",
       message,
@@ -671,7 +899,7 @@ async function processInactiveCustomers() {
 }
 
 async function loop() {
-  log("Worker Zentra Sales AI iniciado");
+  log("Worker Zentra Sales AI multiusuário iniciado");
   log("Configuração", {
     WHATSAPP_SERVER,
     APP_URL,
