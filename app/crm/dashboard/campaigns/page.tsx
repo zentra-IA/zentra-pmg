@@ -104,6 +104,64 @@ function formatDate(value?: string) {
   }
 }
 
+
+function isWhatsappOnline(data: any) {
+  const status = String(
+    data?.status ||
+      data?.state ||
+      data?.connectionStatus ||
+      data?.session?.status ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+
+  return Boolean(
+    data?.connected === true ||
+      data?.online === true ||
+      data?.isConnected === true ||
+      data?.ready === true ||
+      data?.me ||
+      data?.session?.connected === true ||
+      ["connected", "online", "open", "ready"].includes(status)
+  );
+}
+
+async function fetchWhatsappSession(sessionId: number) {
+  const endpoints = [
+    `/api/whatsapp/qr?sessionId=${sessionId}`,
+    `/api/whatsapp/qr/${sessionId}`,
+  ];
+
+  let lastData: any = {};
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, {
+        cache: "no-store",
+        credentials: "include",
+      });
+
+      const data = await response.json().catch(() => ({}));
+      lastData = data;
+
+      if (response.ok || response.status !== 404) {
+        return {
+          online: response.ok && isWhatsappOnline(data),
+          data,
+        };
+      }
+    } catch {
+      // Tenta a rota compatível seguinte.
+    }
+  }
+
+  return {
+    online: isWhatsappOnline(lastData),
+    data: lastData,
+  };
+}
+
 export default function CampaignsPage() {
   const [campaignType, setCampaignType] = useState("PROMOCAO_DIARIA");
   const [targetDays, setTargetDays] = useState(0);
@@ -141,50 +199,47 @@ export default function CampaignsPage() {
   }
 
   async function getAvailableSessions(ids: number[]) {
-    const result: number[] = [];
+    const checks = await Promise.all(
+      ids.map(async (id) => {
+        const result = await fetchWhatsappSession(id);
+        return result.online ? id : null;
+      })
+    );
 
-    for (const id of ids) {
-      try {
-        const res = await fetch(`/api/whatsapp/qr?sessionId=${id}`, {
-          cache: "no-store",
-          credentials: "include",
-        });
-
-        const data = await res.json().catch(() => ({}));
-
-        if (data?.connected || data?.status === "connected" || data?.online) {
-          result.push(id);
-        }
-      } catch {
-        // mantém compatibilidade local: se a API do QR falhar, não considera online
-      }
-    }
-
-    return result;
+    return checks.filter((id): id is number => id !== null);
   }
 
   async function loadSessionStats() {
-    const stats: Record<number, any> = {};
+    const entries = await Promise.all(
+      SESSIONS.map(async (id) => {
+        const result = await fetchWhatsappSession(id);
+        const queueItem = queueStats?.stats?.[id] || {};
+        const limit = Number(
+          queueItem?.limit ||
+            queueStats?.antiban?.maxPerSessionDay ||
+            80
+        );
+        const used = Number(queueItem?.used || 0);
 
-    for (const id of SESSIONS) {
-      try {
-        const res = await fetch(`/api/whatsapp/qr?sessionId=${id}`, {
-          cache: "no-store",
-          credentials: "include",
-        });
+        return [
+          id,
+          {
+            online: result.online,
+            status: result.online ? "online" : "offline",
+            remaining: Math.max(
+              0,
+              Number(result.data?.remaining ?? limit - used)
+            ),
+            finalSessionId:
+              result.data?.finalSessionId ||
+              result.data?.sessionId ||
+              null,
+          },
+        ] as const;
+      })
+    );
 
-        const data = await res.json().catch(() => ({}));
-
-        stats[id] = {
-          online: Boolean(data?.connected || data?.status === "connected" || data?.online),
-          remaining: data?.remaining || 80,
-        };
-      } catch {
-        stats[id] = { online: false, remaining: 0 };
-      }
-    }
-
-    setSessionStats(stats);
+    setSessionStats(Object.fromEntries(entries));
 
     try {
       const res = await fetch("/api/crm/campaigns?stats=1", {
@@ -193,7 +248,10 @@ export default function CampaignsPage() {
       });
 
       const data = await res.json().catch(() => ({}));
-      setQueueStats(data?.queue || {});
+
+      if (res.ok) {
+        setQueueStats(data?.queue || {});
+      }
     } catch {
       setQueueStats({});
     }
@@ -281,7 +339,10 @@ export default function CampaignsPage() {
       const onlineSessions = await getAvailableSessions(selectedWpp);
 
       if (!onlineSessions.length) {
-        alert("Nenhum WhatsApp selecionado está online.");
+        await loadSessionStats();
+        alert(
+          "Os WhatsApps selecionados não responderam como online. Atualize o status e confirme se a sessão está conectada."
+        );
         return;
       }
 
@@ -331,14 +392,22 @@ export default function CampaignsPage() {
 
   useEffect(() => {
     loadSessionStats();
+
+    const interval = window.setInterval(() => {
+      loadSessionStats();
+    }, 10_000);
+
+    return () => window.clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    const timer = setTimeout(() => {
+    const timer = window.setTimeout(() => {
       loadPreview();
     }, 350);
 
-    return () => clearTimeout(timer);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [campaignType, targetDays, q, segment, city, status]);
 
   return (
@@ -462,8 +531,10 @@ export default function CampaignsPage() {
                   )
                 }
               >
-                #{id}
-                <small>{sessionStats[id]?.online ? "online" : "offline"}</small>
+                WhatsApp {id}
+                <small>
+                  {sessionStats[id]?.online ? "Online e disponível" : "Offline"}
+                </small>
               </button>
             ))}
           </div>
@@ -941,7 +1012,53 @@ export default function CampaignsPage() {
           }
 
           .wpp-grid {
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: 1fr;
+          }
+
+          .queue-actions {
+            flex-direction: column;
+          }
+
+          .queue-actions button,
+          .ghost-button {
+            width: 100%;
+          }
+
+          .table-wrap {
+            -webkit-overflow-scrolling: touch;
+          }
+        }
+
+        @media (max-width: 560px) {
+          .campaign-page {
+            padding: 10px;
+          }
+
+          .campaign-hero,
+          .panel,
+          .customers-panel {
+            border-radius: 18px;
+            padding: 16px;
+          }
+
+          .campaign-hero h1 {
+            font-size: 26px;
+          }
+
+          .type-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .metrics-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+
+          .metric-card {
+            padding: 14px;
+          }
+
+          .metric-card strong {
+            font-size: 25px;
           }
         }
       `}</style>

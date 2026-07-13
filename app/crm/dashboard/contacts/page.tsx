@@ -6,61 +6,75 @@ import * as XLSX from "xlsx";
 const SESSIONS = [1, 2, 3, 4, 5];
 
 const STATUS_OPTIONS = [
-  { value: "", label: "Todos" },
+  { value: "", label: "Todos os status" },
   { value: "novo", label: "Novo" },
-  { value: "enviado", label: "Enviado" },
+  { value: "campanha", label: "Em campanha" },
+  { value: "enviado", label: "Mensagem enviada" },
   { value: "respondeu", label: "Respondeu" },
-  { value: "quer_agendar_entrevista", label: "Quer agendar entrevista" },
-  { value: "entrevista_agendada", label: "Agendou entrevista" },
-  { value: "campanha", label: "Campanha" },
-  { value: "reagendar_futuro", label: "Reagendar futuro" },
-  { value: "contratado", label: "Contratado" },
+  { value: "cotacao", label: "Em cotação" },
+  { value: "pedido", label: "Pedido" },
+  { value: "reagendar_futuro", label: "Contatar depois" },
   { value: "sem_interesse", label: "Sem interesse" },
-  { value: "nao_aprovado", label: "Não aprovado" },
 ];
 
 const INTENTS = [
-  { value: "RH_ABERTURA", label: "Abertura de vaga" },
-  { value: "RH_ENTREVISTA", label: "Convite entrevista" },
-  { value: "RH_RELEMBRETE", label: "Lembrete entrevista" },
-  { value: "RH_REAGENDAMENTO", label: "Reagendamento" },
-  { value: "RH_BANCO_TALENTOS", label: "Banco de talentos" },
+  { value: "PROMOCAO_DIARIA", label: "Promoção diária" },
+  { value: "REATIVACAO", label: "Reativação de cliente" },
+  { value: "FOLLOW_UP_COTACAO", label: "Follow-up de cotação" },
+  { value: "AUMENTAR_MIX", label: "Aumentar mix" },
+  { value: "PEDIDO_SEMANAL", label: "Pedido semanal" },
+  { value: "COBRANCA_LEMBRETE", label: "Lembrete comercial" },
 ];
 
-const LEGACY_STATUS: Record<string, string> = {
-  respondido: "respondeu",
-  interesse: "quer_agendar_entrevista",
-  pedido: "entrevista_agendada",
-  reativar_futuro: "reagendar_futuro",
-  finalizado: "contratado",
+type SessionStatus = {
+  online: boolean;
+  loading: boolean;
+  finalSessionId?: string | null;
+  error?: string | null;
 };
 
 function normalizeStatus(value?: string | null) {
-  const status = String(value || "novo").trim();
-  return LEGACY_STATUS[status] || status || "novo";
+  const status = String(value || "novo").trim().toLowerCase();
+
+  const legacy: Record<string, string> = {
+    respondido: "respondeu",
+    interesse: "cotacao",
+    quer_agendar_entrevista: "cotacao",
+    entrevista_agendada: "pedido",
+    contratado: "pedido",
+    reativar_futuro: "reagendar_futuro",
+    finalizado: "pedido",
+  };
+
+  return legacy[status] || status || "novo";
 }
 
 function statusLabel(value?: string | null) {
   const normalized = normalizeStatus(value);
-  return STATUS_OPTIONS.find((item) => item.value === normalized)?.label || normalized;
+
+  return (
+    STATUS_OPTIONS.find((item) => item.value === normalized)?.label ||
+    normalized
+  );
 }
 
-function onlyDigits(value: any) {
+function onlyDigits(value: unknown) {
   return String(value || "").replace(/\D/g, "");
 }
 
-function normalizePhone(value: any) {
+function normalizePhone(value: unknown) {
   const digits = onlyDigits(value);
+
   if (!digits) return "";
   if (digits.startsWith("55") && digits.length >= 12) return digits;
   if (digits.length === 10 || digits.length === 11) return `55${digits}`;
+
   return digits;
 }
 
 function formatPhone(value?: string | null) {
   const digits = normalizePhone(value);
-  if (!digits) return "-";
-  return `+${digits}`;
+  return digits ? `+${digits}` : "-";
 }
 
 function parseBulk(text: string) {
@@ -69,12 +83,22 @@ function parseBulk(text: string) {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const parts = line.split(/[,;\t|]/).map((item) => item.trim());
-      const maybePhone = parts.find((part) => onlyDigits(part).length >= 10);
+      const parts = line
+        .split(/[,;\t|]/)
+        .map((item) => item.trim());
+
+      const maybePhone = parts.find(
+        (part) => onlyDigits(part).length >= 10
+      );
+
       const phone = normalizePhone(maybePhone || "");
+
       const name =
-        parts.find((part) => part !== maybePhone && !/^\d+$/.test(onlyDigits(part))) ||
-        "Candidato";
+        parts.find(
+          (part) =>
+            part !== maybePhone &&
+            !/^\d+$/.test(onlyDigits(part))
+        ) || "Contato";
 
       return phone ? { name, phone } : null;
     })
@@ -83,24 +107,89 @@ function parseBulk(text: string) {
 
 function whatsappLink(value?: string | null) {
   const digits = normalizePhone(value);
-  if (!digits) return "#";
-  return `https://wa.me/${digits}`;
+  return digits ? `https://wa.me/${digits}` : "#";
+}
+
+function isWhatsappOnline(data: any) {
+  const status = String(
+    data?.status ||
+      data?.state ||
+      data?.connectionStatus ||
+      data?.session?.status ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+
+  return Boolean(
+    data?.connected === true ||
+      data?.online === true ||
+      data?.isConnected === true ||
+      data?.ready === true ||
+      data?.me ||
+      data?.session?.connected === true ||
+      ["connected", "online", "open", "ready"].includes(status)
+  );
+}
+
+async function fetchWhatsappStatus(sessionId: number) {
+  const endpoints = [
+    `/api/whatsapp/qr?sessionId=${sessionId}`,
+    `/api/whatsapp/qr/${sessionId}`,
+  ];
+
+  let lastData: any = {};
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, {
+        cache: "no-store",
+        credentials: "include",
+      });
+
+      const data = await response.json().catch(() => ({}));
+      lastData = data;
+
+      if (response.ok || response.status !== 404) {
+        return {
+          online: response.ok && isWhatsappOnline(data),
+          data,
+          error: response.ok
+            ? null
+            : data?.error || `HTTP ${response.status}`,
+        };
+      }
+    } catch (error: any) {
+      lastData = {
+        error: error?.message || "Falha de conexão",
+      };
+    }
+  }
+
+  return {
+    online: isWhatsappOnline(lastData),
+    data: lastData,
+    error: lastData?.error || "Sessão indisponível",
+  };
 }
 
 export default function ContactsDispatchPage() {
   const [contacts, setContacts] = useState<any[]>([]);
-  const [batches, setBatches] = useState<any[]>([]);
   const [queueStats, setQueueStats] = useState<any>({});
+  const [sessionStats, setSessionStats] = useState<
+    Record<number, SessionStatus>
+  >({});
   const [loading, setLoading] = useState(true);
   const [queueLoading, setQueueLoading] = useState(false);
+  const [sessionLoading, setSessionLoading] = useState<number | null>(
+    null
+  );
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [file, setFile] = useState<File | null>(null);
 
   const [filters, setFilters] = useState({
     q: "",
     status: "",
-    batchId: "",
-    jobId: "",
   });
 
   const [manual, setManual] = useState({
@@ -110,33 +199,48 @@ export default function ContactsDispatchPage() {
   });
 
   const [bulkText, setBulkText] = useState("");
-  const [intent, setIntent] = useState("RH_ABERTURA");
-  const [sessionId, setSessionId] = useState("0");
+  const [intent, setIntent] = useState("PROMOCAO_DIARIA");
+  const [sessionId, setSessionId] = useState("1");
 
   async function loadContacts() {
     try {
       setLoading(true);
 
       const params = new URLSearchParams();
-      if (filters.q.trim()) params.set("q", filters.q.trim());
-      if (filters.status) params.set("status", filters.status);
-      if (filters.batchId) params.set("batchId", filters.batchId);
-      if (filters.jobId) params.set("jobId", filters.jobId);
+
+      if (filters.q.trim()) {
+        params.set("q", filters.q.trim());
+      }
+
+      if (filters.status) {
+        params.set("status", filters.status);
+      }
+
       params.set("limit", "1000");
 
-      const res = await fetch(`/api/crm/leads?${params.toString()}`, {
-        cache: "no-store",
-        credentials: "include",
-      });
+      const response = await fetch(
+        `/api/crm/leads?${params.toString()}`,
+        {
+          cache: "no-store",
+          credentials: "include",
+        }
+      );
 
-      const data = await res.json().catch(() => ({}));
+      const data = await response.json().catch(() => ({}));
 
-      if (!res.ok) {
-        alert(data.error || "Erro ao carregar contatos.");
+      if (!response.ok) {
+        alert(data?.error || "Erro ao carregar contatos.");
         return;
       }
 
-      setContacts(data.leads || data || []);
+      setContacts(
+        Array.isArray(data?.leads)
+          ? data.leads
+          : Array.isArray(data)
+            ? data
+            : []
+      );
+
       setSelectedIds([]);
     } finally {
       setLoading(false);
@@ -144,69 +248,106 @@ export default function ContactsDispatchPage() {
   }
 
   async function loadQueueStats() {
-    const res = await fetch("/api/crm/queue", {
-      cache: "no-store",
-      credentials: "include",
-    });
+    try {
+      const response = await fetch("/api/crm/queue", {
+        cache: "no-store",
+        credentials: "include",
+      });
 
-    const data = await res.json().catch(() => ({}));
+      const data = await response.json().catch(() => ({}));
 
-    if (res.ok) setQueueStats(data);
+      if (response.ok) {
+        setQueueStats(data);
+      }
+    } catch {
+      setQueueStats({});
+    }
   }
 
-  async function loadBatches() {
-    const res = await fetch("/api/rh/recruitment-batches", {
-      cache: "no-store",
-      credentials: "include",
-    });
+  async function loadSessionStats() {
+    const entries = await Promise.all(
+      SESSIONS.map(async (id) => {
+        const result = await fetchWhatsappStatus(id);
 
-    const data = await res.json().catch(() => ({}));
+        return [
+          id,
+          {
+            online: result.online,
+            loading: false,
+            finalSessionId:
+              result.data?.finalSessionId || null,
+            error: result.error,
+          },
+        ] as const;
+      })
+    );
 
-    if (res.ok) setBatches(data.batches || []);
+    const next = Object.fromEntries(entries);
+    setSessionStats(next);
+
+    const firstOnline = SESSIONS.find(
+      (id) => next[id]?.online
+    );
+
+    if (
+      firstOnline &&
+      !next[Number(sessionId)]?.online
+    ) {
+      setSessionId(String(firstOnline));
+    }
+  }
+
+  async function refreshAll() {
+    await Promise.all([
+      loadContacts(),
+      loadQueueStats(),
+      loadSessionStats(),
+    ]);
   }
 
   useEffect(() => {
-    loadContacts();
-    loadQueueStats();
-    loadBatches();
+    refreshAll();
 
-    const interval = setInterval(loadQueueStats, 8000);
-    return () => clearInterval(interval);
+    const interval = window.setInterval(() => {
+      Promise.all([
+        loadQueueStats(),
+        loadSessionStats(),
+      ]);
+    }, 10_000);
+
+    return () => window.clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const batchOptions = useMemo(() => batches || [], [batches]);
+  const filteredContacts = useMemo(() => contacts, [contacts]);
 
-  const filteredContacts = useMemo(() => {
-    return contacts.filter((contact) => {
-      if (filters.batchId && String(contact.batch_id || "") !== filters.batchId) return false;
-      if (filters.jobId && String(contact.job_id || contact.current_job_id || "") !== filters.jobId) return false;
-      return true;
-    });
-  }, [contacts, filters.batchId, filters.jobId]);
+  const onlineSessions = useMemo(
+    () =>
+      SESSIONS.filter(
+        (id) => sessionStats[id]?.online
+      ),
+    [sessionStats]
+  );
 
-  function batchName(id?: string | null, contact?: any) {
-    if (!id) return contact?.batch_name || "-";
-    const batch = batches.find((item) => String(item.id) === String(id));
-    return contact?.batch_name || batch?.name || String(id).slice(0, 8);
-  }
-
-  function jobName(id?: string | null, contact?: any) {
-    if (!id) return contact?.job_title || "-";
-    const batch = batches.find((item) => String(item.job_id) === String(id));
-    return contact?.job_title || contact?.job?.title || batch?.job?.title || String(id).slice(0, 8);
-  }
-
-  const stats = useMemo(() => {
-    return {
+  const stats = useMemo(
+    () => ({
       total: filteredContacts.length,
-      enviados: filteredContacts.filter((item) => normalizeStatus(item.status) === "enviado").length,
-      respondeu: filteredContacts.filter((item) => normalizeStatus(item.status) === "respondeu").length,
-      entrevista: filteredContacts.filter((item) =>
-        ["quer_agendar_entrevista", "entrevista_agendada"].includes(normalizeStatus(item.status))
+      enviados: filteredContacts.filter(
+        (item) =>
+          normalizeStatus(item.status) === "enviado"
       ).length,
-    };
-  }, [filteredContacts]);
+      responderam: filteredContacts.filter(
+        (item) =>
+          normalizeStatus(item.status) === "respondeu"
+      ).length,
+      oportunidades: filteredContacts.filter((item) =>
+        ["cotacao", "pedido", "campanha"].includes(
+          normalizeStatus(item.status)
+        )
+      ).length,
+    }),
+    [filteredContacts]
+  );
 
   function toggle(id: string) {
     setSelectedIds((current) =>
@@ -217,21 +358,30 @@ export default function ContactsDispatchPage() {
   }
 
   function toggleAll() {
-    if (selectedIds.length === filteredContacts.length) {
+    if (
+      selectedIds.length === filteredContacts.length
+    ) {
       setSelectedIds([]);
       return;
     }
 
-    setSelectedIds(filteredContacts.map((item) => item.id));
+    setSelectedIds(
+      filteredContacts.map((item) => item.id)
+    );
   }
 
   function selectedContacts() {
-    if (!selectedIds.length) return filteredContacts;
-    return filteredContacts.filter((item) => selectedIds.includes(item.id));
+    if (!selectedIds.length) {
+      return filteredContacts;
+    }
+
+    return filteredContacts.filter((item) =>
+      selectedIds.includes(item.id)
+    );
   }
 
   async function createLead(payload: any) {
-    const res = await fetch("/api/crm/leads", {
+    const response = await fetch("/api/crm/leads", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -240,11 +390,15 @@ export default function ContactsDispatchPage() {
       body: JSON.stringify(payload),
     });
 
-    const data = await res.json().catch(() => ({}));
+    const data = await response.json().catch(() => ({}));
 
-    if (!res.ok) throw new Error(data.error || "Erro ao salvar contato.");
+    if (!response.ok) {
+      throw new Error(
+        data?.error || "Erro ao salvar contato."
+      );
+    }
 
-    return data.lead;
+    return data?.lead;
   }
 
   async function addManual() {
@@ -255,16 +409,23 @@ export default function ContactsDispatchPage() {
 
     try {
       await createLead({
-        name: manual.name || "Candidato",
+        name: manual.name || "Contato",
         phone: manual.phone,
         email: manual.email || null,
         status: "novo",
       });
 
-      setManual({ name: "", phone: "", email: "" });
+      setManual({
+        name: "",
+        phone: "",
+        email: "",
+      });
+
       await loadContacts();
     } catch (error: any) {
-      alert(error.message || "Erro ao adicionar contato.");
+      alert(
+        error?.message || "Erro ao adicionar contato."
+      );
     }
   }
 
@@ -272,7 +433,9 @@ export default function ContactsDispatchPage() {
     const rows = parseBulk(bulkText);
 
     if (!rows.length) {
-      alert("Cole contatos no formato: Nome, Telefone");
+      alert(
+        "Cole contatos no formato: Nome, Telefone"
+      );
       return;
     }
 
@@ -287,9 +450,12 @@ export default function ContactsDispatchPage() {
 
       setBulkText("");
       await loadContacts();
-      alert(`${rows.length} contato(s) adicionados.`);
+      alert(`${rows.length} contato(s) adicionado(s).`);
     } catch (error: any) {
-      alert(error.message || "Erro ao adicionar em massa.");
+      alert(
+        error?.message ||
+          "Erro ao adicionar contatos em massa."
+      );
     }
   }
 
@@ -301,26 +467,50 @@ export default function ContactsDispatchPage() {
 
     try {
       const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: "array" });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json<any>(sheet, { defval: "" });
+      const workbook = XLSX.read(buffer, {
+        type: "array",
+      });
+      const sheet =
+        workbook.Sheets[workbook.SheetNames[0]];
+
+      const rows = XLSX.utils.sheet_to_json<any>(
+        sheet,
+        {
+          defval: "",
+        }
+      );
 
       let imported = 0;
 
       for (const row of rows) {
         const keys = Object.keys(row);
-        const nameKey = keys.find((key) => /nome|name|candidato/i.test(key));
-        const phoneKey = keys.find((key) => /telefone|celular|whats|phone/i.test(key));
-        const emailKey = keys.find((key) => /email|e-mail/i.test(key));
 
-        const phone = normalizePhone(phoneKey ? row[phoneKey] : "");
+        const nameKey = keys.find((key) =>
+          /nome|name|cliente|empresa/i.test(key)
+        );
+
+        const phoneKey = keys.find((key) =>
+          /telefone|celular|whats|phone/i.test(key)
+        );
+
+        const emailKey = keys.find((key) =>
+          /email|e-mail/i.test(key)
+        );
+
+        const phone = normalizePhone(
+          phoneKey ? row[phoneKey] : ""
+        );
 
         if (!phone) continue;
 
         await createLead({
-          name: nameKey ? row[nameKey] : "Candidato",
+          name: nameKey
+            ? row[nameKey]
+            : "Contato",
           phone,
-          email: emailKey ? row[emailKey] : null,
+          email: emailKey
+            ? row[emailKey]
+            : null,
           status: "novo",
         });
 
@@ -329,97 +519,173 @@ export default function ContactsDispatchPage() {
 
       setFile(null);
       await loadContacts();
-      alert(`${imported} contato(s) importados.`);
-    } catch (error: any) {
+      alert(`${imported} contato(s) importado(s).`);
+    } catch (error) {
       console.error(error);
       alert("Erro ao importar planilha.");
     }
   }
 
-  async function enqueueSelected(smart = true) {
-    const items = selectedContacts().filter((item) => item.phone);
+  async function enqueueSelected(
+    intelligent = true
+  ) {
+    const items = selectedContacts().filter(
+      (item) =>
+        normalizePhone(
+          item.phone ||
+            item.telefone ||
+            item.mobile
+        )
+    );
 
     if (!items.length) {
       alert("Nenhum contato com telefone.");
       return;
     }
 
-    if (!confirm(`Adicionar ${items.length} contato(s) na fila de disparo?`)) return;
+    if (!onlineSessions.length) {
+      alert(
+        "Nenhum WhatsApp está online. Conecte uma sessão antes do disparo."
+      );
+      return;
+    }
+
+    const manualSession = Number(sessionId || 1);
+
+    if (
+      !intelligent &&
+      !sessionStats[manualSession]?.online
+    ) {
+      alert(
+        `O WhatsApp ${manualSession} não está online.`
+      );
+      return;
+    }
+
+    if (
+      !confirm(
+        `Adicionar ${items.length} contato(s) na fila de disparo?`
+      )
+    ) {
+      return;
+    }
 
     setQueueLoading(true);
 
     try {
-      let ok = 0;
-      let fail = 0;
+      let success = 0;
+      let failures = 0;
+      const errors: string[] = [];
 
-      for (const item of items) {
-        const res = await fetch("/api/crm/queue", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          credentials: "include",
-          body: JSON.stringify({
-            lead_id: item.id,
-            job_id: item.job_id || item.current_job_id || null,
-            batch_id: item.batch_id || null,
-            intent,
-            session_id: smart ? 0 : Number(sessionId || 1),
-          }),
-        });
+      for (let index = 0; index < items.length; index++) {
+        const item = items[index];
 
-        if (res.ok) ok++;
-        else fail++;
+        const selectedSession = intelligent
+          ? onlineSessions[
+              index % onlineSessions.length
+            ]
+          : manualSession;
+
+        const response = await fetch(
+          "/api/crm/queue",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            credentials: "include",
+            body: JSON.stringify({
+              lead_id: item.id,
+              intent,
+              session_id: selectedSession,
+            }),
+          }
+        );
+
+        const data = await response
+          .json()
+          .catch(() => ({}));
+
+        if (response.ok) {
+          success++;
+        } else {
+          failures++;
+          errors.push(
+            data?.error ||
+              `Erro em ${item.name || item.nome || item.id}`
+          );
+        }
       }
 
-      await loadContacts();
-      await loadQueueStats();
+      await Promise.all([
+        loadContacts(),
+        loadQueueStats(),
+      ]);
 
-      alert(`Fila criada. Sucesso: ${ok}. Erros: ${fail}.`);
+      alert(
+        failures
+          ? `Fila criada: ${success} sucesso(s), ${failures} erro(s).\n${errors
+              .slice(0, 3)
+              .join("\n")}`
+          : `${success} contato(s) colocado(s) na fila.`
+      );
     } finally {
       setQueueLoading(false);
     }
   }
 
-
   async function deleteContacts(ids: string[]) {
-    const uniqueIds = [...new Set(ids)].filter(Boolean);
+    const uniqueIds = [
+      ...new Set(ids),
+    ].filter(Boolean);
 
     if (!uniqueIds.length) {
       alert("Selecione pelo menos um contato.");
       return;
     }
 
-    if (!confirm(`Excluir ${uniqueIds.length} contato(s)?`)) return;
+    if (
+      !confirm(
+        `Excluir ${uniqueIds.length} contato(s)?`
+      )
+    ) {
+      return;
+    }
 
-    const res = await fetch("/api/crm/leads", {
+    const response = await fetch("/api/crm/leads", {
       method: "DELETE",
       headers: {
         "Content-Type": "application/json",
       },
       credentials: "include",
-      body: JSON.stringify({ ids: uniqueIds }),
+      body: JSON.stringify({
+        ids: uniqueIds,
+      }),
     });
 
-    const data = await res.json().catch(() => ({}));
+    const data = await response.json().catch(() => ({}));
 
-    if (!res.ok) {
-      alert(data.error || "Erro ao excluir contato(s).");
+    if (!response.ok) {
+      alert(
+        data?.error ||
+          "Erro ao excluir contato(s)."
+      );
       return;
     }
 
     setSelectedIds([]);
     await loadContacts();
-    await loadQueueStats();
-    alert(`${data.deleted || uniqueIds.length} contato(s) excluído(s).`);
+
+    alert(
+      `${data?.deleted || uniqueIds.length} contato(s) excluído(s).`
+    );
   }
 
-  async function deleteSelectedContacts() {
-    await deleteContacts(selectedIds);
-  }
-
-  async function queueAction(action: "pause" | "resume") {
-    const res = await fetch("/api/crm/queue", {
+  async function queueAction(
+    action: "pause" | "resume"
+  ) {
+    const response = await fetch("/api/crm/queue", {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
@@ -428,56 +694,111 @@ export default function ContactsDispatchPage() {
       body: JSON.stringify({ action }),
     });
 
-    const data = await res.json().catch(() => ({}));
+    const data = await response.json().catch(() => ({}));
 
-    if (!res.ok) {
-      alert(data.error || "Erro na fila.");
+    if (!response.ok) {
+      alert(data?.error || "Erro ao atualizar a fila.");
       return;
     }
 
     await loadQueueStats();
-    alert(`${data.updated || 0} item(ns) atualizados.`);
+
+    alert(
+      action === "pause"
+        ? "Fila pausada."
+        : "Fila retomada."
+    );
   }
 
   async function startSession(id: number) {
-    const res = await fetch(`/api/whatsapp/start/${id}`, {
-      method: "POST",
-      credentials: "include",
-    });
+    setSessionLoading(id);
 
-    const data = await res.json().catch(() => ({}));
+    try {
+      const response = await fetch(
+        `/api/whatsapp/start/${id}`,
+        {
+          method: "POST",
+          credentials: "include",
+        }
+      );
 
-    if (!res.ok || data.success === false) {
-      alert(data.error || "Erro ao iniciar WhatsApp.");
-      return;
+      const data = await response.json().catch(() => ({}));
+
+      if (
+        !response.ok ||
+        data?.success === false
+      ) {
+        alert(
+          data?.error ||
+            `Erro ao iniciar o WhatsApp ${id}.`
+        );
+        return;
+      }
+
+      alert(
+        `WhatsApp ${id} iniciado. Atualizando status...`
+      );
+
+      window.setTimeout(() => {
+        loadSessionStats();
+      }, 1500);
+    } finally {
+      setSessionLoading(null);
     }
-
-    await loadQueueStats();
-    alert(`WhatsApp ${id} iniciado.`);
   }
 
   async function restartSession(id: number) {
-    const res = await fetch(`/api/whatsapp/restart/${id}`, {
-      method: "POST",
-      credentials: "include",
-    });
-
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok || data.success === false) {
-      alert(data.error || "Erro ao reiniciar WhatsApp.");
+    if (
+      !confirm(
+        `Reiniciar o WhatsApp ${id}?`
+      )
+    ) {
       return;
     }
 
-    await loadQueueStats();
-    alert(`WhatsApp ${id} reiniciado.`);
+    setSessionLoading(id);
+
+    try {
+      const response = await fetch(
+        `/api/whatsapp/restart/${id}`,
+        {
+          method: "POST",
+          credentials: "include",
+        }
+      );
+
+      const data = await response.json().catch(() => ({}));
+
+      if (
+        !response.ok ||
+        data?.success === false
+      ) {
+        alert(
+          data?.error ||
+            `Erro ao reiniciar o WhatsApp ${id}.`
+        );
+        return;
+      }
+
+      window.setTimeout(() => {
+        loadSessionStats();
+      }, 1500);
+    } finally {
+      setSessionLoading(null);
+    }
   }
 
   async function copyPhones() {
     const text = selectedContacts()
       .map((item) => {
-        const phone = item.phone || item.telefone || item.mobile;
-        return phone ? `${item.name || item.nome || "Contato"}, ${phone}` : null;
+        const phone =
+          item.phone ||
+          item.telefone ||
+          item.mobile;
+
+        return phone
+          ? `${item.name || item.nome || "Contato"}, ${phone}`
+          : null;
       })
       .filter(Boolean)
       .join("\n");
@@ -492,271 +813,1174 @@ export default function ContactsDispatchPage() {
   }
 
   return (
-    <main style={styles.page}>
-      <section style={styles.hero}>
+    <main className="contacts-page">
+      <section className="hero">
         <div>
-          <p style={styles.kicker}>Zentra RH</p>
-          <h1 style={styles.title}>Contatos e Disparos</h1>
-          <p style={styles.subtitle}>
-            Importe candidatos, cole contatos em massa, distribua disparos entre WhatsApps e acompanhe o limite antiban.
+          <p className="kicker">
+            Zentra Sales AI · PMG Atacadista
+          </p>
+          <h1>Contatos e Disparos</h1>
+          <p>
+            Gerencie sua carteira comercial, importe clientes e
+            distribua mensagens somente entre os WhatsApps online
+            do vendedor conectado.
           </p>
         </div>
 
-        <button style={styles.primaryButton} onClick={() => { loadContacts(); loadQueueStats(); loadBatches(); }}>
-          Atualizar
+        <button
+          className="button primary"
+          onClick={refreshAll}
+        >
+          Atualizar tudo
         </button>
       </section>
 
-      <section style={styles.whatsappGrid}>
+      <section className="session-grid">
         {SESSIONS.map((id) => {
-          const item = queueStats?.stats?.[id] || {};
-          const used = Number(item.used || 0);
-          const limit = Number(item.limit || queueStats?.antiban?.maxPerSessionDay || 80);
-          const online = Boolean(item.online);
+          const session = sessionStats[id] || {
+            online: false,
+            loading: true,
+          };
+
+          const queueItem =
+            queueStats?.stats?.[id] || {};
+
+          const used = Number(queueItem?.used || 0);
+          const limit = Number(
+            queueItem?.limit ||
+              queueStats?.antiban?.maxPerSessionDay ||
+              80
+          );
+
+          const percentage = limit
+            ? Math.min(
+                100,
+                Math.round((used / limit) * 100)
+              )
+            : 0;
 
           return (
-            <div key={id} style={styles.whatsappCard}>
-              <div style={styles.whatsappTop}>
-                <strong>WhatsApp {id}</strong>
-                <span style={online ? styles.online : styles.offline}>
-                  {online ? "Online" : "Offline"}
+            <article
+              key={id}
+              className={`session-card ${
+                session.online ? "is-online" : ""
+              }`}
+            >
+              <div className="session-top">
+                <div>
+                  <small>Sessão {id}</small>
+                  <strong>WhatsApp {id}</strong>
+                </div>
+
+                <span
+                  className={
+                    session.online
+                      ? "badge online"
+                      : "badge offline"
+                  }
+                >
+                  {session.online
+                    ? "Online"
+                    : "Offline"}
                 </span>
               </div>
 
-              <div style={styles.limitText}>{used}/{limit}</div>
-              <div style={styles.progress}>
-                <div style={{ ...styles.progressBar, width: `${Math.min(100, Math.round((used / limit) * 100))}%` }} />
+              <div className="usage">
+                <strong>
+                  {used}/{limit}
+                </strong>
+                <span>envios hoje</span>
               </div>
 
-              <div style={styles.whatsappActions}>
-                <button style={styles.secondaryButton} onClick={() => startSession(id)}>Conectar</button>
-                <button style={styles.secondaryButton} onClick={() => restartSession(id)}>Reiniciar</button>
+              <div className="progress">
+                <div
+                  style={{
+                    width: `${percentage}%`,
+                  }}
+                />
               </div>
-            </div>
+
+              <div className="session-actions">
+                <button
+                  className="button secondary"
+                  onClick={() => startSession(id)}
+                  disabled={sessionLoading === id}
+                >
+                  {sessionLoading === id
+                    ? "Aguarde..."
+                    : "Conectar"}
+                </button>
+
+                <button
+                  className="button ghost"
+                  onClick={() =>
+                    restartSession(id)
+                  }
+                  disabled={sessionLoading === id}
+                >
+                  Reiniciar
+                </button>
+              </div>
+            </article>
           );
         })}
       </section>
 
-      <section style={styles.statsGrid}>
+      <section className="metrics">
         <Metric label="Total" value={stats.total} />
         <Metric label="Enviados" value={stats.enviados} />
-        <Metric label="Responderam" value={stats.respondeu} />
-        <Metric label="Entrevista" value={stats.entrevista} />
-        <Metric label="Na fila" value={queueStats?.pending || 0} />
-        <Metric label="Pausados" value={queueStats?.paused || 0} />
+        <Metric
+          label="Responderam"
+          value={stats.responderam}
+        />
+        <Metric
+          label="Oportunidades"
+          value={stats.oportunidades}
+        />
+        <Metric
+          label="Na fila"
+          value={queueStats?.pending || 0}
+        />
+        <Metric
+          label="WhatsApps online"
+          value={onlineSessions.length}
+        />
       </section>
 
-      <section style={styles.gridTwo}>
-        <div style={styles.card}>
-          <h2 style={styles.sectionTitle}>Importar planilha</h2>
-          <p style={styles.smallText}>Aceita XLSX/CSV com Nome, Telefone e Email.</p>
+      <section className="two-columns">
+        <div className="panel">
+          <h2>Importar planilha</h2>
+          <p>
+            Aceita XLSX ou CSV com nome, telefone e e-mail.
+          </p>
 
           <input
             type="file"
             accept=".xlsx,.xls,.csv"
-            style={styles.fileInput}
-            onChange={(event) => setFile(event.target.files?.[0] || null)}
+            onChange={(event) =>
+              setFile(
+                event.target.files?.[0] || null
+              )
+            }
           />
 
-          <button style={styles.primaryButton} onClick={importSpreadsheet}>
-            Importar
+          <button
+            className="button primary"
+            onClick={importSpreadsheet}
+          >
+            Importar contatos
           </button>
         </div>
 
-        <div style={styles.card}>
-          <h2 style={styles.sectionTitle}>Adicionar manual</h2>
+        <div className="panel">
+          <h2>Adicionar contato</h2>
 
-          <div style={styles.formGrid}>
-            <input style={styles.input} placeholder="Nome" value={manual.name} onChange={(e) => setManual({ ...manual, name: e.target.value })} />
-            <input style={styles.input} placeholder="Telefone" value={manual.phone} onChange={(e) => setManual({ ...manual, phone: e.target.value })} />
-            <input style={styles.input} placeholder="E-mail" value={manual.email} onChange={(e) => setManual({ ...manual, email: e.target.value })} />
+          <div className="form-grid">
+            <input
+              placeholder="Nome ou empresa"
+              value={manual.name}
+              onChange={(event) =>
+                setManual({
+                  ...manual,
+                  name: event.target.value,
+                })
+              }
+            />
+
+            <input
+              placeholder="WhatsApp"
+              value={manual.phone}
+              onChange={(event) =>
+                setManual({
+                  ...manual,
+                  phone: event.target.value,
+                })
+              }
+            />
+
+            <input
+              placeholder="E-mail"
+              value={manual.email}
+              onChange={(event) =>
+                setManual({
+                  ...manual,
+                  email: event.target.value,
+                })
+              }
+            />
           </div>
 
-          <button style={styles.primaryButton} onClick={addManual}>
+          <button
+            className="button primary"
+            onClick={addManual}
+          >
             Adicionar
           </button>
         </div>
       </section>
 
-      <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>Colar contatos em massa</h2>
-        <p style={styles.smallText}>Formato: Nome, Telefone. Um por linha.</p>
+      <section className="panel">
+        <h2>Adicionar em massa</h2>
+        <p>
+          Use uma linha por contato no formato: Nome, Telefone.
+        </p>
 
         <textarea
-          style={{ ...styles.input, minHeight: 130 }}
-          placeholder={`João, 11999999999\nMaria, 11988888888`}
+          rows={5}
+          placeholder={`Mercado Central, 11999999999\nLoja Primavera, 11988888888`}
           value={bulkText}
-          onChange={(event) => setBulkText(event.target.value)}
+          onChange={(event) =>
+            setBulkText(event.target.value)
+          }
         />
 
-        <button style={styles.primaryButton} onClick={addBulk}>
-          Adicionar em massa
+        <button
+          className="button primary"
+          onClick={addBulk}
+        >
+          Adicionar lista
         </button>
       </section>
 
-      <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>Disparo</h2>
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <h2>Configurar disparo</h2>
+            <p>
+              A distribuição inteligente alterna apenas entre
+              sessões realmente online.
+            </p>
+          </div>
 
-        <div style={styles.dispatchGrid}>
-          <select style={styles.input} value={intent} onChange={(e) => setIntent(e.target.value)}>
+          <span className="online-summary">
+            {onlineSessions.length} online
+          </span>
+        </div>
+
+        <div className="dispatch-grid">
+          <select
+            value={intent}
+            onChange={(event) =>
+              setIntent(event.target.value)
+            }
+          >
             {INTENTS.map((item) => (
-              <option key={item.value} value={item.value}>{item.label}</option>
+              <option
+                key={item.value}
+                value={item.value}
+              >
+                {item.label}
+              </option>
             ))}
           </select>
 
-          <select style={styles.input} value={sessionId} onChange={(e) => setSessionId(e.target.value)}>
-            <option value="0">Distribuição inteligente</option>
+          <select
+            value={sessionId}
+            onChange={(event) =>
+              setSessionId(event.target.value)
+            }
+          >
             {SESSIONS.map((id) => (
-              <option key={id} value={id}>WhatsApp {id}</option>
+              <option
+                key={id}
+                value={id}
+                disabled={!sessionStats[id]?.online}
+              >
+                WhatsApp {id} —{" "}
+                {sessionStats[id]?.online
+                  ? "online"
+                  : "offline"}
+              </option>
             ))}
           </select>
 
-          <button style={styles.primaryButton} disabled={queueLoading} onClick={() => enqueueSelected(true)}>
-            {queueLoading ? "Enfileirando..." : "Disparo inteligente"}
+          <button
+            className="button primary"
+            disabled={
+              queueLoading ||
+              !onlineSessions.length
+            }
+            onClick={() =>
+              enqueueSelected(true)
+            }
+          >
+            {queueLoading
+              ? "Enfileirando..."
+              : "Distribuição inteligente"}
           </button>
 
-          <button style={styles.secondaryButton} disabled={queueLoading} onClick={() => enqueueSelected(false)}>
-            Disparo manual
+          <button
+            className="button secondary"
+            disabled={
+              queueLoading ||
+              !onlineSessions.length
+            }
+            onClick={() =>
+              enqueueSelected(false)
+            }
+          >
+            Usar WhatsApp selecionado
           </button>
 
-          <button style={styles.dangerButton} onClick={() => queueAction("pause")}>
-            Pausar
+          <button
+            className="button danger"
+            onClick={() =>
+              queueAction("pause")
+            }
+          >
+            Pausar fila
           </button>
 
-          <button style={styles.successButton} onClick={() => queueAction("resume")}>
-            Retomar
+          <button
+            className="button success"
+            onClick={() =>
+              queueAction("resume")
+            }
+          >
+            Retomar fila
           </button>
         </div>
       </section>
 
-      <section style={styles.card}>
-        <div style={styles.listHeader}>
+      <section className="panel">
+        <div className="panel-heading">
           <div>
-            <h2 style={styles.sectionTitle}>Base de contatos</h2>
-            <p style={styles.smallText}>
+            <h2>Carteira de contatos</h2>
+            <p>
               {selectedIds.length
                 ? `${selectedIds.length} contato(s) selecionado(s).`
-                : "Nenhum selecionado. O disparo usa todos da lista filtrada."}
+                : "Sem seleção, o disparo considera todos os resultados filtrados."}
             </p>
           </div>
         </div>
 
-        <div style={styles.filters}>
-          <input style={styles.input} placeholder="Buscar nome, telefone, e-mail ou mensagem..." value={filters.q} onChange={(event) => setFilters({ ...filters, q: event.target.value })} />
+        <div className="filters">
+          <input
+            placeholder="Buscar nome, telefone, e-mail ou mensagem"
+            value={filters.q}
+            onChange={(event) =>
+              setFilters({
+                ...filters,
+                q: event.target.value,
+              })
+            }
+          />
 
-          <select style={styles.input} value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}>
-            {STATUS_OPTIONS.map((status) => (
-              <option key={status.value || "all"} value={status.value}>{status.label}</option>
+          <select
+            value={filters.status}
+            onChange={(event) =>
+              setFilters({
+                ...filters,
+                status: event.target.value,
+              })
+            }
+          >
+            {STATUS_OPTIONS.map((item) => (
+              <option
+                key={item.value || "all"}
+                value={item.value}
+              >
+                {item.label}
+              </option>
             ))}
           </select>
 
-          <select style={styles.input} value={filters.batchId} onChange={(event) => setFilters({ ...filters, batchId: event.target.value })}>
-            <option value="">Todos os lotes</option>
-            {batchOptions.map((batch) => (
-              <option key={batch.id} value={batch.id}>{batch.name || batch.id}</option>
-            ))}
-          </select>
+          <button
+            className="button secondary"
+            onClick={loadContacts}
+          >
+            Filtrar
+          </button>
 
-          <button style={styles.secondaryButton} onClick={loadContacts}>Filtrar</button>
-          <button style={styles.secondaryButton} onClick={toggleAll}>{selectedIds.length === filteredContacts.length ? "Desmarcar todos" : "Selecionar todos"}</button>
-          <button style={styles.secondaryButton} onClick={copyPhones}>Copiar telefones</button>
-          <button style={styles.dangerButton} onClick={deleteSelectedContacts}>Excluir selecionados</button>
+          <button
+            className="button ghost"
+            onClick={toggleAll}
+          >
+            {selectedIds.length ===
+              filteredContacts.length &&
+            filteredContacts.length
+              ? "Desmarcar todos"
+              : "Selecionar todos"}
+          </button>
+
+          <button
+            className="button ghost"
+            onClick={copyPhones}
+          >
+            Copiar telefones
+          </button>
+
+          <button
+            className="button danger"
+            onClick={() =>
+              deleteContacts(selectedIds)
+            }
+          >
+            Excluir selecionados
+          </button>
         </div>
 
-        {loading && <p style={styles.smallText}>Carregando contatos...</p>}
-
-        {!loading && filteredContacts.length === 0 && (
-          <div style={styles.empty}>Nenhum contato encontrado.</div>
+        {loading && (
+          <div className="empty">
+            Carregando contatos...
+          </div>
         )}
 
-        <div style={styles.tableWrap}>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={styles.th}><input type="checkbox" checked={filteredContacts.length > 0 && selectedIds.length === filteredContacts.length} onChange={toggleAll} /></th>
-                <th style={styles.th}>Nome</th>
-                <th style={styles.th}>Telefone</th>
-                <th style={styles.th}>E-mail</th>
-                <th style={styles.th}>Vaga</th>
-                <th style={styles.th}>Lote</th>
-                <th style={styles.th}>Status</th>
-                <th style={styles.th}>Última mensagem</th>
-                <th style={styles.th}>Ações</th>
-              </tr>
-            </thead>
+        {!loading &&
+          filteredContacts.length === 0 && (
+            <div className="empty">
+              Nenhum contato encontrado.
+            </div>
+          )}
 
-            <tbody>
-              {filteredContacts.map((contact) => (
-                <tr key={contact.id}>
-                  <td style={styles.td}><input type="checkbox" checked={selectedIds.includes(contact.id)} onChange={() => toggle(contact.id)} /></td>
-                  <td style={styles.td}><strong>{contact.name || contact.nome || "Sem nome"}</strong><br /><span style={styles.smallText}>Sessão {contact.session_id || "-"}</span></td>
-                  <td style={styles.td}>{formatPhone(contact.phone || contact.telefone)}</td>
-                  <td style={styles.td}>{contact.email || "-"}</td>
-                  <td style={styles.td}>{jobName(contact.job_id || contact.current_job_id, contact)}</td>
-                  <td style={styles.td}>{batchName(contact.batch_id, contact)}</td>
-                  <td style={styles.td}><span style={styles.badge}>{statusLabel(contact.status)}</span></td>
-                  <td style={styles.td}>{contact.last_message || "-"}</td>
-                  <td style={styles.td}>
-                    <div style={styles.actions}>
-                      <a style={styles.successButton} href={whatsappLink(contact.phone || contact.telefone)} target="_blank" rel="noreferrer">WhatsApp</a>
-                      <button style={styles.dangerButton} onClick={() => deleteContacts([contact.id])}>Excluir</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {!loading &&
+          filteredContacts.length > 0 && (
+            <>
+              <div className="desktop-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>
+                        <input
+                          type="checkbox"
+                          checked={
+                            filteredContacts.length >
+                              0 &&
+                            selectedIds.length ===
+                              filteredContacts.length
+                          }
+                          onChange={toggleAll}
+                        />
+                      </th>
+                      <th>Contato</th>
+                      <th>WhatsApp</th>
+                      <th>E-mail</th>
+                      <th>Status</th>
+                      <th>Última mensagem</th>
+                      <th>Ações</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {filteredContacts.map(
+                      (contact) => (
+                        <tr key={contact.id}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={selectedIds.includes(
+                                contact.id
+                              )}
+                              onChange={() =>
+                                toggle(contact.id)
+                              }
+                            />
+                          </td>
+                          <td>
+                            <strong>
+                              {contact.name ||
+                                contact.nome ||
+                                "Sem nome"}
+                            </strong>
+                          </td>
+                          <td>
+                            {formatPhone(
+                              contact.phone ||
+                                contact.telefone ||
+                                contact.mobile
+                            )}
+                          </td>
+                          <td>
+                            {contact.email || "-"}
+                          </td>
+                          <td>
+                            <span className="status">
+                              {statusLabel(
+                                contact.status
+                              )}
+                            </span>
+                          </td>
+                          <td>
+                            {contact.last_message ||
+                              "-"}
+                          </td>
+                          <td>
+                            <div className="row-actions">
+                              <a
+                                className="button success"
+                                href={whatsappLink(
+                                  contact.phone ||
+                                    contact.telefone ||
+                                    contact.mobile
+                                )}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                WhatsApp
+                              </a>
+
+                              <button
+                                className="button danger"
+                                onClick={() =>
+                                  deleteContacts([
+                                    contact.id,
+                                  ])
+                                }
+                              >
+                                Excluir
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mobile-list">
+                {filteredContacts.map(
+                  (contact) => (
+                    <article
+                      className="contact-card"
+                      key={contact.id}
+                    >
+                      <div className="contact-card-top">
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.includes(
+                              contact.id
+                            )}
+                            onChange={() =>
+                              toggle(contact.id)
+                            }
+                          />
+                          Selecionar
+                        </label>
+
+                        <span className="status">
+                          {statusLabel(contact.status)}
+                        </span>
+                      </div>
+
+                      <h3>
+                        {contact.name ||
+                          contact.nome ||
+                          "Sem nome"}
+                      </h3>
+
+                      <p>
+                        {formatPhone(
+                          contact.phone ||
+                            contact.telefone ||
+                            contact.mobile
+                        )}
+                      </p>
+
+                      <small>
+                        {contact.email ||
+                          "Sem e-mail"}
+                      </small>
+
+                      {contact.last_message && (
+                        <blockquote>
+                          {contact.last_message}
+                        </blockquote>
+                      )}
+
+                      <div className="row-actions">
+                        <a
+                          className="button success"
+                          href={whatsappLink(
+                            contact.phone ||
+                              contact.telefone ||
+                              contact.mobile
+                          )}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Abrir WhatsApp
+                        </a>
+
+                        <button
+                          className="button danger"
+                          onClick={() =>
+                            deleteContacts([
+                              contact.id,
+                            ])
+                          }
+                        >
+                          Excluir
+                        </button>
+                      </div>
+                    </article>
+                  )
+                )}
+              </div>
+            </>
+          )}
       </section>
+
+      <style jsx>{`
+        * {
+          box-sizing: border-box;
+        }
+
+        .contacts-page {
+          min-height: 100vh;
+          padding: 20px;
+          color: #0f172a;
+          background: linear-gradient(
+            135deg,
+            #f0fdf4,
+            #ffffff 42%,
+            #ecfdf5
+          );
+        }
+
+        .hero,
+        .panel,
+        .session-card,
+        .metric {
+          background: #ffffff;
+          border: 1px solid #d1fae5;
+          box-shadow: 0 18px 50px
+            rgba(22, 163, 74, 0.07);
+        }
+
+        .hero {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 18px;
+          padding: 24px;
+          border-radius: 28px;
+        }
+
+        .hero h1 {
+          margin: 8px 0;
+          font-size: clamp(28px, 4vw, 38px);
+          font-weight: 950;
+        }
+
+        .hero p {
+          max-width: 760px;
+          margin: 0;
+          color: #64748b;
+          line-height: 1.55;
+        }
+
+        .kicker {
+          color: #15803d !important;
+          font-size: 12px;
+          font-weight: 900;
+          letter-spacing: 0.2em;
+          text-transform: uppercase;
+        }
+
+        .session-grid {
+          display: grid;
+          grid-template-columns: repeat(
+            5,
+            minmax(0, 1fr)
+          );
+          gap: 12px;
+          margin-top: 16px;
+        }
+
+        .session-card {
+          display: grid;
+          gap: 12px;
+          min-width: 0;
+          padding: 16px;
+          border-radius: 22px;
+        }
+
+        .session-card.is-online {
+          border-color: #86efac;
+          box-shadow: 0 16px 35px
+            rgba(22, 163, 74, 0.12);
+        }
+
+        .session-top {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 8px;
+        }
+
+        .session-top small,
+        .session-top strong {
+          display: block;
+        }
+
+        .session-top small {
+          margin-bottom: 4px;
+          color: #64748b;
+          font-size: 10px;
+          font-weight: 900;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+        }
+
+        .session-top strong {
+          font-size: 15px;
+        }
+
+        .badge,
+        .status,
+        .online-summary {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 999px;
+          padding: 6px 10px;
+          font-size: 11px;
+          font-weight: 900;
+          white-space: nowrap;
+        }
+
+        .badge.online,
+        .online-summary {
+          color: #166534;
+          background: #dcfce7;
+        }
+
+        .badge.offline {
+          color: #b91c1c;
+          background: #fee2e2;
+        }
+
+        .usage {
+          display: flex;
+          align-items: baseline;
+          gap: 6px;
+        }
+
+        .usage strong {
+          font-size: 24px;
+        }
+
+        .usage span {
+          color: #64748b;
+          font-size: 11px;
+        }
+
+        .progress {
+          height: 8px;
+          overflow: hidden;
+          border-radius: 999px;
+          background: #dcfce7;
+        }
+
+        .progress div {
+          height: 100%;
+          border-radius: inherit;
+          background: linear-gradient(
+            135deg,
+            #22c55e,
+            #15803d
+          );
+        }
+
+        .session-actions,
+        .row-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+
+        .metrics {
+          display: grid;
+          grid-template-columns: repeat(
+            6,
+            minmax(0, 1fr)
+          );
+          gap: 12px;
+          margin-top: 16px;
+        }
+
+        .metric {
+          display: grid;
+          gap: 7px;
+          padding: 16px;
+          border-radius: 20px;
+        }
+
+        .metric span {
+          color: #64748b;
+          font-size: 12px;
+          font-weight: 800;
+        }
+
+        .metric strong {
+          font-size: 28px;
+        }
+
+        .two-columns {
+          display: grid;
+          grid-template-columns: repeat(
+            2,
+            minmax(0, 1fr)
+          );
+          gap: 16px;
+        }
+
+        .panel {
+          margin-top: 18px;
+          padding: 20px;
+          border-radius: 26px;
+        }
+
+        .panel h2 {
+          margin: 0 0 6px;
+          font-size: 22px;
+        }
+
+        .panel p {
+          margin: 0 0 14px;
+          color: #64748b;
+          font-size: 13px;
+          line-height: 1.5;
+        }
+
+        .panel-heading {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+        }
+
+        .form-grid,
+        .dispatch-grid,
+        .filters {
+          display: grid;
+          gap: 12px;
+        }
+
+        .form-grid {
+          grid-template-columns: repeat(
+            3,
+            minmax(0, 1fr)
+          );
+          margin-bottom: 12px;
+        }
+
+        .dispatch-grid {
+          grid-template-columns: repeat(
+            6,
+            minmax(150px, 1fr)
+          );
+        }
+
+        .filters {
+          grid-template-columns:
+            minmax(220px, 2fr)
+            minmax(160px, 1fr)
+            repeat(4, auto);
+          margin-top: 14px;
+        }
+
+        input,
+        select,
+        textarea {
+          width: 100%;
+          border: 1px solid #bbf7d0;
+          border-radius: 14px;
+          padding: 12px 14px;
+          outline: none;
+          color: #0f172a;
+          background: #f8fffb;
+          font: inherit;
+        }
+
+        input:focus,
+        select:focus,
+        textarea:focus {
+          border-color: #16a34a;
+          box-shadow: 0 0 0 4px
+            rgba(22, 163, 74, 0.1);
+        }
+
+        input[type="file"] {
+          margin: 10px 0 14px;
+          border-style: dashed;
+        }
+
+        .button {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 42px;
+          border: 0;
+          border-radius: 14px;
+          padding: 10px 14px;
+          font-size: 13px;
+          font-weight: 900;
+          text-align: center;
+          text-decoration: none;
+          cursor: pointer;
+        }
+
+        .button:disabled {
+          opacity: 0.55;
+          cursor: not-allowed;
+        }
+
+        .primary {
+          color: #ffffff;
+          background: linear-gradient(
+            135deg,
+            #22c55e,
+            #15803d
+          );
+        }
+
+        .secondary {
+          color: #15803d;
+          border: 1px solid #86efac;
+          background: #ffffff;
+        }
+
+        .ghost {
+          color: #334155;
+          border: 1px solid #e2e8f0;
+          background: #ffffff;
+        }
+
+        .success {
+          color: #ffffff;
+          background: #16a34a;
+        }
+
+        .danger {
+          color: #ffffff;
+          background: #dc2626;
+        }
+
+        .empty {
+          margin-top: 16px;
+          border: 1px dashed #86efac;
+          border-radius: 18px;
+          padding: 24px;
+          color: #64748b;
+          text-align: center;
+        }
+
+        .desktop-table {
+          margin-top: 16px;
+          overflow-x: auto;
+          border: 1px solid #dcfce7;
+          border-radius: 18px;
+          -webkit-overflow-scrolling: touch;
+        }
+
+        table {
+          width: 100%;
+          min-width: 920px;
+          border-collapse: collapse;
+        }
+
+        th,
+        td {
+          padding: 12px;
+          border-bottom: 1px solid #ecfdf5;
+          text-align: left;
+          vertical-align: top;
+        }
+
+        th {
+          color: #166534;
+          background: #f0fdf4;
+          font-size: 12px;
+          white-space: nowrap;
+        }
+
+        td {
+          color: #334155;
+          font-size: 13px;
+        }
+
+        .status {
+          color: #166534;
+          border: 1px solid #bbf7d0;
+          background: #f0fdf4;
+        }
+
+        .mobile-list {
+          display: none;
+        }
+
+        .contact-card {
+          border: 1px solid #dcfce7;
+          border-radius: 18px;
+          padding: 16px;
+          background: #ffffff;
+        }
+
+        .contact-card-top {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+        }
+
+        .contact-card-top label {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          color: #64748b;
+          font-size: 12px;
+          font-weight: 800;
+        }
+
+        .contact-card h3 {
+          margin: 14px 0 5px;
+        }
+
+        .contact-card p {
+          margin: 0 0 4px;
+          color: #0f172a;
+          font-weight: 800;
+        }
+
+        .contact-card small {
+          color: #64748b;
+        }
+
+        blockquote {
+          margin: 12px 0;
+          border-left: 3px solid #22c55e;
+          padding: 8px 12px;
+          color: #475569;
+          background: #f8fffb;
+          font-size: 12px;
+        }
+
+        @media (max-width: 1180px) {
+          .session-grid {
+            grid-template-columns: repeat(
+              3,
+              minmax(0, 1fr)
+            );
+          }
+
+          .metrics {
+            grid-template-columns: repeat(
+              3,
+              minmax(0, 1fr)
+            );
+          }
+
+          .dispatch-grid {
+            grid-template-columns: repeat(
+              3,
+              minmax(0, 1fr)
+            );
+          }
+
+          .filters {
+            grid-template-columns: repeat(
+              3,
+              minmax(0, 1fr)
+            );
+          }
+        }
+
+        @media (max-width: 760px) {
+          .contacts-page {
+            padding: 10px;
+          }
+
+          .hero {
+            align-items: stretch;
+            flex-direction: column;
+            border-radius: 20px;
+            padding: 18px;
+          }
+
+          .hero .button {
+            width: 100%;
+          }
+
+          .session-grid {
+            grid-template-columns: repeat(
+              2,
+              minmax(0, 1fr)
+            );
+          }
+
+          .metrics {
+            grid-template-columns: repeat(
+              2,
+              minmax(0, 1fr)
+            );
+          }
+
+          .two-columns,
+          .form-grid,
+          .dispatch-grid,
+          .filters {
+            grid-template-columns: 1fr;
+          }
+
+          .panel {
+            border-radius: 20px;
+            padding: 16px;
+          }
+
+          .panel-heading {
+            align-items: stretch;
+            flex-direction: column;
+          }
+
+          .dispatch-grid .button,
+          .filters .button {
+            width: 100%;
+          }
+
+          .desktop-table {
+            display: none;
+          }
+
+          .mobile-list {
+            display: grid;
+            gap: 12px;
+            margin-top: 16px;
+          }
+        }
+
+        @media (max-width: 460px) {
+          .session-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .session-actions .button,
+          .row-actions .button {
+            flex: 1;
+          }
+
+          .metric strong {
+            font-size: 24px;
+          }
+        }
+      `}</style>
     </main>
   );
 }
 
-function Metric({ label, value }: { label: string; value: any }) {
+function Metric({
+  label,
+  value,
+}: {
+  label: string;
+  value: number | string;
+}) {
   return (
-    <div style={styles.metric}>
+    <div className="metric">
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  page: { minHeight: "100vh", padding: 20, background: "linear-gradient(135deg, #eff6ff, #ffffff, #dbeafe)", color: "#0f172a" },
-  hero: { background: "#fff", border: "1px solid #bfdbfe", borderRadius: 28, padding: 24, display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", boxShadow: "0 18px 50px rgba(37,99,235,.08)" },
-  kicker: { margin: 0, color: "#2563eb", fontWeight: 900, letterSpacing: ".22em", fontSize: 12, textTransform: "uppercase" },
-  title: { margin: "8px 0", fontSize: 36, fontWeight: 950 },
-  subtitle: { margin: 0, color: "#64748b", fontSize: 14, maxWidth: 760 },
-  primaryButton: { border: 0, borderRadius: 16, padding: "12px 16px", background: "linear-gradient(135deg, #38bdf8, #2563eb)", color: "#fff", fontWeight: 900, cursor: "pointer", textDecoration: "none" },
-  secondaryButton: { border: "1px solid #bfdbfe", borderRadius: 14, padding: "10px 12px", background: "#fff", color: "#2563eb", fontWeight: 900, cursor: "pointer", textDecoration: "none", textAlign: "center" },
-  successButton: { border: 0, borderRadius: 14, padding: "10px 12px", background: "#16a34a", color: "#fff", fontWeight: 900, cursor: "pointer", textDecoration: "none", textAlign: "center" },
-  dangerButton: { border: 0, borderRadius: 14, padding: "10px 12px", background: "#ef4444", color: "#fff", fontWeight: 900, cursor: "pointer" },
-  whatsappGrid: { marginTop: 16, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 },
-  whatsappCard: { background: "#fff", border: "1px solid #bfdbfe", borderRadius: 22, padding: 16, display: "grid", gap: 10, boxShadow: "0 12px 30px rgba(37,99,235,.06)" },
-  whatsappTop: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 },
-  online: { color: "#16a34a", fontWeight: 900, fontSize: 12 },
-  offline: { color: "#ef4444", fontWeight: 900, fontSize: 12 },
-  limitText: { fontSize: 24, fontWeight: 950 },
-  progress: { height: 8, background: "#e0f2fe", borderRadius: 999, overflow: "hidden" },
-  progressBar: { height: "100%", background: "linear-gradient(135deg, #38bdf8, #2563eb)", borderRadius: 999 },
-  whatsappActions: { display: "flex", gap: 8, flexWrap: "wrap" },
-  statsGrid: { marginTop: 16, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 },
-  metric: { background: "#fff", border: "1px solid #bfdbfe", borderRadius: 20, padding: 16, display: "grid", gap: 8 },
-  gridTwo: { marginTop: 18, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16 },
-  card: { marginTop: 18, background: "#fff", border: "1px solid #bfdbfe", borderRadius: 28, padding: 20, boxShadow: "0 18px 50px rgba(37,99,235,.06)" },
-  sectionTitle: { margin: 0, fontSize: 22, fontWeight: 950 },
-  smallText: { margin: "4px 0", color: "#64748b", fontSize: 12 },
-  fileInput: { margin: "14px 0", border: "1px dashed #93c5fd", borderRadius: 16, padding: 14, background: "#f8fafc", width: "100%" },
-  formGrid: { marginTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 },
-  input: { width: "100%", boxSizing: "border-box", borderRadius: 16, border: "1px solid #bfdbfe", background: "#f8fafc", padding: "13px 14px", outline: "none", fontSize: 14, color: "#0f172a" },
-  dispatchGrid: { marginTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 },
-  listHeader: { display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" },
-  filters: { marginTop: 14, display: "grid", gridTemplateColumns: "2fr 1fr 1fr auto auto auto auto", gap: 12, alignItems: "center" },
-  empty: { marginTop: 16, border: "1px dashed #93c5fd", borderRadius: 20, padding: 24, textAlign: "center", color: "#64748b" },
-  tableWrap: { marginTop: 16, overflowX: "auto", border: "1px solid #dbeafe", borderRadius: 18 },
-  table: { width: "100%", borderCollapse: "collapse", minWidth: 1180 },
-  th: { background: "#eff6ff", color: "#1e3a8a", padding: 12, textAlign: "left", borderBottom: "1px solid #bfdbfe", fontSize: 12, fontWeight: 900, whiteSpace: "nowrap" },
-  td: { padding: 12, borderBottom: "1px solid #e2e8f0", fontSize: 13, verticalAlign: "top" },
-  badge: { display: "inline-block", border: "1px solid #bfdbfe", background: "#eff6ff", color: "#1d4ed8", borderRadius: 999, padding: "6px 10px", fontSize: 11, fontWeight: 900 },
-  actions: { display: "flex", gap: 8, flexWrap: "wrap" },
-};
