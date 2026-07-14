@@ -293,7 +293,7 @@ function wantsCheapest(query: string): boolean {
   );
 }
 
-function requestedProduct(query: string): "MUCARELA" | "CALABRESA" | "REQUEIJAO" | "PRESUNTO" | "APRESUNTADO" | "AZEITONA" | "MORTADELA" | null {
+function requestedProduct(query: string): "MUCARELA" | "CALABRESA" | "REQUEIJAO" | "PRESUNTO" | "APRESUNTADO" | "AZEITONA" | "MORTADELA" | "GORGONZOLA" | null {
   const q = normalize(query);
   if (/\bmucarela\b/.test(q)) return "MUCARELA";
   if (/\bcalabresa\b/.test(q)) return "CALABRESA";
@@ -302,6 +302,7 @@ function requestedProduct(query: string): "MUCARELA" | "CALABRESA" | "REQUEIJAO"
   if (/\bpresunto\b/.test(q)) return "PRESUNTO";
   if (/\bazeitona\b/.test(q)) return "AZEITONA";
   if (/\bmortadela\b/.test(q)) return "MORTADELA";
+  if (/\bgorgonzola\b/.test(q)) return "GORGONZOLA";
   return null;
 }
 
@@ -853,6 +854,48 @@ function getBilledQuantity(quantity: number, requestedUnit: string, option: any)
         commercialUnitPrice: unitPrice * pieces * pieceKg,
         equivalentText: `${quantity * pieces} PÇ / ${quantity * pieces * pieceKg} KG`,
       };
+    }
+  }
+
+  /*
+   * Conversão genérica para produtos vendidos por KG.
+   *
+   * Exemplos:
+   * - Gorgonzola 3 KG (CX 2 PÇ), tabela em KG:
+   *   1 PÇ = 3 KG.
+   * - Presunto 3,5 KG (CX 2 PÇ), tabela em KG:
+   *   1 PÇ = 3,5 KG.
+   *
+   * Essa regra é aplicada somente quando:
+   * - a tabela vende por KG;
+   * - o vendedor pediu PÇ ou CX;
+   * - o peso da peça está explícito no nome oficial.
+   *
+   * Assim não inventamos peso quando o PDF não informa.
+   */
+  if (sellUnit === "KG" && (unit === "PÇ" || unit === "CX")) {
+    const pieceKg = kg;
+
+    if (pieceKg && pieceKg > 0) {
+      if (unit === "PÇ") {
+        return {
+          billedQuantity: quantity * pieceKg,
+          displayUnit: "PÇ",
+          commercialUnitPrice: unitPrice * pieceKg,
+          equivalentText: `${quantity * pieceKg} KG`,
+        };
+      }
+
+      const piecesPerBox = extractContainerMultiplier(name, "CX", "PÇ");
+
+      if (piecesPerBox && piecesPerBox > 0) {
+        return {
+          billedQuantity: quantity * piecesPerBox * pieceKg,
+          displayUnit: "CX",
+          commercialUnitPrice: unitPrice * piecesPerBox * pieceKg,
+          equivalentText: `${quantity * piecesPerBox} PÇ / ${quantity * piecesPerBox * pieceKg} KG`,
+        };
+      }
     }
   }
 
