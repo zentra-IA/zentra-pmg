@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 export const dynamic = "force-dynamic";
 
 const WHATSAPP_SERVER =
-  process.env.NEXT_PUBLIC_WHATSAPP_SERVER || "http://localhost:3011";
+  process.env.NEXT_PUBLIC_WHATSAPP_SERVER || "http://localhost:3013";
 
 const DEFAULT_COMPANY_ID = process.env.DEFAULT_COMPANY_ID || "";
 const DEFAULT_BRANCH_ID = process.env.DEFAULT_BRANCH_ID || null;
@@ -92,6 +92,229 @@ function getIncomingMessageId(body: any) {
     body?.data?.key?.id ||
     null
   );
+}
+
+type IncomingMedia = {
+  url: string | null;
+  base64: string | null;
+  mimeType: string | null;
+  mediaType: "image" | "video" | "audio" | "document" | "sticker" | null;
+  fileName: string | null;
+  caption: string | null;
+};
+
+function normalizeMediaType(value: any, mimeType?: string | null): IncomingMedia["mediaType"] {
+  const raw = clean(value).toLowerCase();
+  const mime = clean(mimeType).toLowerCase();
+
+  if (raw.includes("image") || mime.startsWith("image/")) return "image";
+  if (raw.includes("video") || mime.startsWith("video/")) return "video";
+  if (raw.includes("audio") || raw.includes("ptt") || mime.startsWith("audio/")) return "audio";
+  if (raw.includes("sticker")) return "sticker";
+  if (raw.includes("document") || raw.includes("file") || mime) return "document";
+
+  return null;
+}
+
+function getNestedMediaMessage(body: any) {
+  const message =
+    body?.messageObject ||
+    body?.message_object ||
+    body?.data?.message ||
+    body?.data?.messages?.[0]?.message ||
+    body?.message?.message ||
+    body?.message ||
+    {};
+
+  return (
+    message?.imageMessage ||
+    message?.videoMessage ||
+    message?.audioMessage ||
+    message?.documentMessage ||
+    message?.documentWithCaptionMessage?.message?.documentMessage ||
+    message?.stickerMessage ||
+    {}
+  );
+}
+
+function extractIncomingMedia(body: any): IncomingMedia {
+  const nested = getNestedMediaMessage(body);
+
+  const mimeType =
+    clean(
+      body?.mimetype ||
+        body?.mimeType ||
+        body?.mime_type ||
+        body?.mediaMimeType ||
+        body?.media_mime_type ||
+        nested?.mimetype ||
+        nested?.mimeType ||
+        ""
+    ) || null;
+
+  const explicitType =
+    body?.mediaType ||
+    body?.media_type ||
+    body?.type ||
+    body?.messageType ||
+    body?.message_type ||
+    nested?.type ||
+    "";
+
+  const url =
+    clean(
+      body?.mediaUrl ||
+        body?.media_url ||
+        body?.fileUrl ||
+        body?.file_url ||
+        body?.downloadUrl ||
+        body?.download_url ||
+        body?.url ||
+        nested?.url ||
+        nested?.mediaUrl ||
+        nested?.media_url ||
+        ""
+    ) || null;
+
+  let base64 =
+    clean(
+      body?.base64 ||
+        body?.mediaBase64 ||
+        body?.media_base64 ||
+        body?.fileBase64 ||
+        body?.file_base64 ||
+        nested?.base64 ||
+        ""
+    ) || null;
+
+  if (base64?.startsWith("data:")) {
+    const comma = base64.indexOf(",");
+    if (comma >= 0) base64 = base64.slice(comma + 1);
+  }
+
+  const fileName =
+    clean(
+      body?.fileName ||
+        body?.filename ||
+        body?.file_name ||
+        nested?.fileName ||
+        nested?.filename ||
+        ""
+    ) || null;
+
+  const caption =
+    clean(
+      body?.caption ||
+        body?.mediaCaption ||
+        body?.media_caption ||
+        nested?.caption ||
+        ""
+    ) || null;
+
+  return {
+    url,
+    base64,
+    mimeType,
+    mediaType: normalizeMediaType(explicitType, mimeType),
+    fileName,
+    caption,
+  };
+}
+
+function extensionFromMime(mimeType?: string | null, mediaType?: string | null) {
+  const mime = clean(mimeType).toLowerCase();
+
+  const known: Record<string, string> = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+    "video/mp4": "mp4",
+    "video/webm": "webm",
+    "audio/ogg": "ogg",
+    "audio/mpeg": "mp3",
+    "audio/mp4": "m4a",
+    "audio/aac": "aac",
+    "application/pdf": "pdf",
+  };
+
+  if (known[mime]) return known[mime];
+
+  const subtype = mime.split("/")[1]?.split(";")[0]?.trim();
+  if (subtype) return subtype.replace("jpeg", "jpg");
+
+  if (mediaType === "image") return "jpg";
+  if (mediaType === "video") return "mp4";
+  if (mediaType === "audio") return "ogg";
+  if (mediaType === "sticker") return "webp";
+
+  return "bin";
+}
+
+function mediaLabel(mediaType?: string | null) {
+  const labels: Record<string, string> = {
+    image: "📷 Imagem",
+    video: "🎥 Vídeo",
+    audio: "🎧 Áudio",
+    document: "📎 Documento",
+    sticker: "🖼️ Figurinha",
+  };
+
+  return labels[String(mediaType || "")] || "📎 Mídia";
+}
+
+async function persistIncomingMedia({
+  supabase,
+  companyId,
+  userId,
+  messageId,
+  media,
+}: {
+  supabase: any;
+  companyId: string;
+  userId?: string | null;
+  messageId?: string | null;
+  media: IncomingMedia;
+}) {
+  if (media.url) return media.url;
+  if (!media.base64) return null;
+
+  try {
+    const bytes = Buffer.from(media.base64, "base64");
+    const extension = extensionFromMime(media.mimeType, media.mediaType);
+    const safeMessageId = clean(messageId || crypto.randomUUID()).replace(
+      /[^a-zA-Z0-9_-]/g,
+      "_"
+    );
+
+    const objectPath = [
+      companyId,
+      userId || "legacy",
+      new Date().toISOString().slice(0, 10),
+      `${safeMessageId}.${extension}`,
+    ].join("/");
+
+    const { error: uploadError } = await supabase.storage
+      .from("whatsapp-media")
+      .upload(objectPath, bytes, {
+        contentType: media.mimeType || "application/octet-stream",
+        upsert: true,
+      });
+
+    if (uploadError) {
+      console.error("ERRO AO SALVAR MÍDIA RECEBIDA:", uploadError);
+      return null;
+    }
+
+    const { data } = supabase.storage
+      .from("whatsapp-media")
+      .getPublicUrl(objectPath);
+
+    return data?.publicUrl || null;
+  } catch (error) {
+    console.error("ERRO AO PROCESSAR MÍDIA RECEBIDA:", error);
+    return null;
+  }
 }
 
 function normalizeSessionNumber(value: any) {
@@ -543,26 +766,66 @@ async function wasMessageAlreadyProcessed(
 
 async function saveReceivedMessage(
   supabase: any,
-  leadId: string,
-  companyId: string,
-  branchId: string | null,
-  message: string,
-  messageId?: string | null
+  {
+    leadId,
+    companyId,
+    branchId,
+    userId,
+    sessionId,
+    message,
+    messageId,
+    mediaUrl,
+    mediaType,
+    mimeType,
+    fileName,
+    remoteJid,
+    lid,
+  }: {
+    leadId: string;
+    companyId: string;
+    branchId: string | null;
+    userId?: string | null;
+    sessionId: number;
+    message: string;
+    messageId?: string | null;
+    mediaUrl?: string | null;
+    mediaType?: string | null;
+    mimeType?: string | null;
+    fileName?: string | null;
+    remoteJid?: string | null;
+    lid?: string | null;
+  }
 ) {
+  const content = message || mediaLabel(mediaType);
+  const extension = mediaType || "text";
+
   const { error } = await supabase.from("messages").insert({
     company_id: companyId,
     branch_id: branchId,
     lead_id: leadId,
     direction: "received",
     topic: "whatsapp",
-    extension: "text",
-    content: message,
+    extension,
+    content,
     event: "message_received",
-    payload: { message_id: messageId || null },
+    payload: {
+      message_id: messageId || null,
+      owner_user_id: userId || null,
+      session_id: sessionId,
+      media_url: mediaUrl || null,
+      media_type: mediaType || "text",
+      mime_type: mimeType || null,
+      file_name: fileName || null,
+      remote_jid: remoteJid || null,
+      lid: lid || null,
+    },
     created_at: new Date().toISOString(),
   });
 
-  if (error) console.error("ERRO AO SALVAR MENSAGEM RECEBIDA:", error);
+  if (error) {
+    console.error("ERRO AO SALVAR MENSAGEM RECEBIDA:", error);
+    throw new Error(`Não foi possível salvar a mensagem recebida: ${error.message}`);
+  }
 }
 
 async function saveSentMessage(
@@ -1815,7 +2078,9 @@ export async function POST(req: Request) {
         ? ""
         : normalizePhone(rawNumber);
     const email = clean(body.email || body.candidate_email || "");
-    const message = clean(body.message || body.text || body.body || "");
+    const incomingMedia = extractIncomingMedia(body);
+    const explicitMessage = clean(body.message || body.text || body.body || "");
+    const message = explicitMessage || incomingMedia.caption || "";
     const pushName = clean(body.pushName || body.name || "");
 
     const resolved = await resolveCompanyBySession(
@@ -1829,9 +2094,20 @@ export async function POST(req: Request) {
     const sessionId = resolved.sessionId;
     const sendSessionId = buildSendSession(companyId, userId, sessionId);
 
-    if ((!phone && !lid) || !message) {
+    const mediaUrl = await persistIncomingMedia({
+      supabase,
+      companyId,
+      userId,
+      messageId,
+      media: incomingMedia,
+    });
+
+    const hasMedia = Boolean(mediaUrl || incomingMedia.url || incomingMedia.base64);
+    const historyMessage = message || mediaLabel(incomingMedia.mediaType);
+
+    if ((!phone && !lid) || (!message && !hasMedia)) {
       return NextResponse.json(
-        { success: false, error: "Telefone/LID ou mensagem inválida" },
+        { success: false, error: "Telefone/LID ou conteúdo da mensagem inválido" },
         { status: 400 }
       );
     }
@@ -1879,7 +2155,7 @@ export async function POST(req: Request) {
         ai_paused: false,
         current_flow_step: 1,
         unread_count: 1,
-        last_message: message,
+        last_message: historyMessage,
         last_message_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
@@ -1937,7 +2213,21 @@ if (queueContext) {
       return NextResponse.json({ success: true, action: "duplicate_ignored" });
     }
 
-    await saveReceivedMessage(supabase, lead.id, companyId, lead.branch_id || branchId, message, messageId);
+    await saveReceivedMessage(supabase, {
+      leadId: lead.id,
+      companyId,
+      branchId: lead.branch_id || branchId,
+      userId,
+      sessionId,
+      message: historyMessage,
+      messageId,
+      mediaUrl: mediaUrl || incomingMedia.url,
+      mediaType: incomingMedia.mediaType,
+      mimeType: incomingMedia.mimeType,
+      fileName: incomingMedia.fileName,
+      remoteJid,
+      lid,
+    });
 
     const lockedStatuses = [
       "pedido_fechado",
@@ -1966,7 +2256,7 @@ const nextStatus =
       .update({
         status: nextStatus,
         unread_count: Number(lead.unread_count || 0) + 1,
-        last_message: message,
+        last_message: historyMessage,
         last_message_at: new Date().toISOString(),
         whatsapp_lid: lead.whatsapp_lid || lid || null,
 remote_jid: lead.remote_jid || remoteJid || null,
@@ -1989,7 +2279,7 @@ remote_jid: lead.remote_jid || remoteJid || null,
       status: nextStatus,
      whatsapp_lid: lead.whatsapp_lid || lid || null,
 remote_jid: lead.remote_jid || remoteJid || null,
-      last_message: message,
+      last_message: historyMessage,
     };
 
     if (lead.ai_paused === true) {
@@ -2042,13 +2332,24 @@ console.log("CONTEXTO FINAL DO LEAD PARA TEMPLATE:", {
   current_job_id: lead.current_job_id,
   batch_id: lead.batch_id,
 });
-    const finalReply = await getFinalSalesReply({
-      supabase,
-      intent,
-      message,
-      lead,
-      companyId,
-    });
+    const finalReply = message
+      ? await getFinalSalesReply({
+          supabase,
+          intent,
+          message,
+          lead,
+          companyId,
+        })
+      : {
+          reply: null,
+          mediaUrl: null,
+          mediaType: "text",
+          kanbanStatus: null,
+          notifyEnabled: false,
+          notifyNumber: null,
+          notifyMessage: null,
+          source: "media_without_text",
+        };
 
     let replied = false;
 
@@ -2129,6 +2430,9 @@ console.log("CONTEXTO FINAL DO LEAD PARA TEMPLATE:", {
       send_session_id: sendSessionId,
       kanban_status: finalKanbanStatus || nextStatus,
       replied,
+      media_saved: Boolean(mediaUrl || incomingMedia.url),
+      media_type: incomingMedia.mediaType || null,
+      owner_user_id: userId,
       notify_sent: Boolean(finalReply.notifyEnabled && finalReply.notifyNumber),
     });
   } catch (error: any) {
