@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { requireCompany } from "@/lib/server-company";
+import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 function getSupabase() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -109,7 +110,12 @@ function bool(value: any) {
   return value === true || value === "true" || value === "1" || value === 1;
 }
 
-function templatePayload(body: any, companyId: string, branchId: string | null) {
+function templatePayload(
+  body: any,
+  companyId: string,
+  branchId: string | null,
+  ownerUserId: string
+) {
   const name = clean(body.name || body.title || body.nome);
   const title = clean(body.title || body.name || body.nome);
   const baseMessage = clean(
@@ -125,17 +131,22 @@ function templatePayload(body: any, companyId: string, branchId: string | null) 
   const flowMode = normalizeFlowMode(body.flow_mode || body.flowMode);
   const flowStep = nullableInteger(body.flow_step || body.flowStep);
   const nextStep = nullableInteger(body.next_step || body.nextStep);
-  const triggerKeywords = normalizeListToText(
-    body.trigger_keywords ||
-      body.triggerKeywords ||
-      body.keywords ||
-      body.trigger_text ||
-      body.triggerText
+  const triggerValues = normalizeList(
+    body.trigger_keywords ??
+      body.triggerKeywords ??
+      body.keywords ??
+      body.trigger_text ??
+      body.triggerText ??
+      body.trigger_words ??
+      body.triggerWords
   );
+
+  const triggerKeywords = triggerValues.join("\n");
 
   const payload: any = {
     company_id: companyId,
     branch_id: branchId || null,
+    owner_user_id: ownerUserId,
 
     name,
     title: title || name,
@@ -146,9 +157,14 @@ function templatePayload(body: any, companyId: string, branchId: string | null) 
     base_message: baseMessage,
     message: baseMessage,
 
-    trigger_keywords: triggerKeywords,
-    keywords: triggerKeywords,
-    trigger_text: clean(body.trigger_text || body.triggerText) || triggerKeywords || null,
+    /*
+      Mantemos os quatro campos sincronizados para compatibilidade
+      com versões antigas e novas da tela.
+    */
+    trigger_keywords: triggerKeywords || null,
+    keywords: triggerKeywords || null,
+    trigger_text: triggerKeywords || null,
+    trigger_words: triggerValues.length ? triggerValues : null,
 
     match_type: clean(body.match_type || body.matchType || "contains") || "contains",
     match_mode: clean(body.match_mode || body.matchMode || "contains") || "contains",
@@ -209,7 +225,7 @@ function validateTemplate(payload: any) {
 export async function GET(req: NextRequest) {
   try {
     const supabase = getSupabase();
-    const { companyId } = await requireCompany(req);
+    const { companyId, userId } = await requireCompanyAccess(req);
     const { searchParams } = new URL(req.url);
 
     const intent = clean(searchParams.get("intent"));
@@ -219,6 +235,7 @@ export async function GET(req: NextRequest) {
       .from("message_templates")
       .select("*")
       .eq("company_id", companyId)
+      .eq("owner_user_id", userId)
       .order("created_at", { ascending: false });
 
     if (intent) query = query.eq("intent", intent);
@@ -242,10 +259,10 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const supabase = getSupabase();
-    const { companyId, branchId } = await requireCompany(req);
+    const { companyId, branchId, userId } = await requireCompanyAccess(req);
     const body = await req.json();
 
-    const payload = templatePayload(body, companyId, branchId || null);
+    const payload = templatePayload(body, companyId, branchId || null, userId);
     const validationError = validateTemplate(payload);
 
     if (validationError) {
@@ -279,7 +296,7 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const supabase = getSupabase();
-    const { companyId, branchId } = await requireCompany(req);
+    const { companyId, branchId, userId } = await requireCompanyAccess(req);
     const body = await req.json();
 
     const id = clean(body.id);
@@ -288,10 +305,52 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "ID obrigatório." }, { status: 400 });
     }
 
-    const payload = templatePayload(body, companyId, branchId || null);
+    const { data: existing, error: existingError } = await supabase
+      .from("message_templates")
+      .select("*")
+      .eq("id", id)
+      .eq("company_id", companyId)
+      .eq("owner_user_id", userId)
+      .maybeSingle();
+
+    if (existingError) throw new Error(existingError.message);
+
+    if (!existing) {
+      return NextResponse.json(
+        { error: "Mensagem não encontrada ou não pertence ao usuário atual." },
+        { status: 404 }
+      );
+    }
+
+    const mergedBody = {
+      ...existing,
+      ...body,
+      trigger_keywords:
+        body.trigger_keywords !== undefined
+          ? body.trigger_keywords
+          : body.trigger_text !== undefined
+            ? body.trigger_text
+            : body.keywords !== undefined
+              ? body.keywords
+              : body.trigger_words !== undefined
+                ? body.trigger_words
+                : existing.trigger_keywords ??
+                  existing.trigger_text ??
+                  existing.keywords ??
+                  existing.trigger_words ??
+                  "",
+    };
+
+    const payload = templatePayload(
+      mergedBody,
+      companyId,
+      branchId || existing.branch_id || null,
+      userId
+    );
 
     delete payload.company_id;
     delete payload.branch_id;
+    delete payload.owner_user_id;
     delete payload.created_at;
 
     const validationError = validateTemplate({
@@ -308,6 +367,7 @@ export async function PATCH(req: NextRequest) {
       .update(payload)
       .eq("id", id)
       .eq("company_id", companyId)
+      .eq("owner_user_id", userId)
       .select("*")
       .single();
 
@@ -329,7 +389,7 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const supabase = getSupabase();
-    const { companyId } = await requireCompany(req);
+    const { companyId, userId } = await requireCompanyAccess(req);
     const { searchParams } = new URL(req.url);
     const id = clean(searchParams.get("id"));
 
@@ -341,7 +401,8 @@ export async function DELETE(req: NextRequest) {
       .from("message_templates")
       .delete()
       .eq("id", id)
-      .eq("company_id", companyId);
+      .eq("company_id", companyId)
+      .eq("owner_user_id", userId);
 
     if (error) throw new Error(error.message);
 

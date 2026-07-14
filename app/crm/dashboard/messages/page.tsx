@@ -163,6 +163,16 @@ function formatTriggers(value: any) {
   return "";
 }
 
+function getTemplateTriggers(item: any) {
+  return formatTriggers(
+    item?.trigger_text ??
+      item?.trigger_keywords ??
+      item?.keywords ??
+      item?.trigger_words ??
+      ""
+  );
+}
+
 function formatVariations(value: any) {
   if (Array.isArray(value)) {
     return value
@@ -484,11 +494,11 @@ const quoteLink = `${origin}/crm/dashboard/cotador`;
         : ""
     );
 
-    setTriggerKeywords(
-      Array.isArray(item.trigger_keywords)
-        ? item.trigger_keywords.join("\n")
-        : ""
-    );
+    /*
+      Recarrega o texto salvo ao editar.
+      Funciona quando o banco retorna string ou array.
+    */
+    setTriggerKeywords(getTemplateTriggers(item));
 
     setMatchType(item.match_type || "contains");
     setKanbanStatus(item.kanban_status || "");
@@ -548,6 +558,12 @@ const quoteLink = `${origin}/crm/dashboard/cotador`;
           base_message: baseMessage,
           message_variations: messageVariations,
           trigger_keywords: triggerKeywords,
+          trigger_text: triggerKeywords,
+          keywords: triggerKeywords,
+          trigger_words: formatTriggers(triggerKeywords)
+            .split("\n")
+            .map((item) => item.trim())
+            .filter(Boolean),
           match_type: matchType,
           media_url: mediaUrl || null,
           media_type: mediaUrl ? mediaType : "text",
@@ -1028,11 +1044,11 @@ const quoteLink = `${origin}/crm/dashboard/cotador`;
                 </div>
               </div>
 
-              {item.trigger_keywords?.length > 0 && (
+              {getTemplateTriggers(item) && (
                 <div className="mt-4 rounded-2xl border border-green-100 bg-green-50 p-4 text-sm text-green-800">
                   <strong>Cliente pode escrever:</strong>
                   <pre className="mt-2 whitespace-pre-wrap text-xs">
-                    {formatTriggers(item.trigger_keywords)}
+                    {getTemplateTriggers(item)}
                   </pre>
                 </div>
               )}
