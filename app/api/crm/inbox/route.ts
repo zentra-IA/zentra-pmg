@@ -126,7 +126,8 @@ function getMessageOwnerId(message: any) {
   const payload = asObject(message?.payload);
 
   return clean(
-    payload.owner_user_id ||
+    message?.owner_user_id ||
+      payload.owner_user_id ||
       payload.user_id ||
       payload.seller_user_id ||
       payload.whatsapp_owner_user_id
@@ -289,18 +290,14 @@ async function getOwnedLeadIds(
 ) {
   const ids = new Set<string>();
 
-  const [
-    messagesResult,
-    queueResult,
-  ] = await Promise.all([
+  const [messagesResult, queueResult] = await Promise.all([
     supabase
       .from("messages")
-      .select("lead_id, payload")
+      .select("lead_id")
       .eq("company_id", companyId)
+      .eq("owner_user_id", userId)
       .not("lead_id", "is", null)
-      .order("created_at", {
-        ascending: false,
-      })
+      .order("created_at", { ascending: false })
       .limit(3000),
 
     supabase
@@ -309,41 +306,25 @@ async function getOwnedLeadIds(
       .eq("company_id", companyId)
       .eq("owner_user_id", userId)
       .not("lead_id", "is", null)
-      .order("created_at", {
-        ascending: false,
-      })
+      .order("created_at", { ascending: false })
       .limit(3000),
   ]);
 
   if (messagesResult.error) {
-    throw new Error(
-      messagesResult.error.message
-    );
+    throw new Error(messagesResult.error.message);
   }
 
   if (queueResult.error) {
-    throw new Error(
-      queueResult.error.message
-    );
+    throw new Error(queueResult.error.message);
   }
 
-  for (
-    const message of
-    messagesResult.data || []
-  ) {
-    if (
-      getMessageOwnerId(message) ===
-        userId &&
-      message?.lead_id
-    ) {
+  for (const message of messagesResult.data || []) {
+    if (message?.lead_id) {
       ids.add(String(message.lead_id));
     }
   }
 
-  for (
-    const item of
-    queueResult.data || []
-  ) {
+  for (const item of queueResult.data || []) {
     if (item?.lead_id) {
       ids.add(String(item.lead_id));
     }
@@ -476,6 +457,7 @@ async function getLatestMessageByLead(
     .from("messages")
     .select("*")
     .eq("company_id", companyId)
+    .eq("owner_user_id", userId)
     .in("lead_id", leadIds)
     .order("created_at", {
       ascending: false,
@@ -487,13 +469,6 @@ async function getLatestMessageByLead(
   }
 
   for (const message of data || []) {
-    if (
-      getMessageOwnerId(message) !==
-      userId
-    ) {
-      continue;
-    }
-
     const leadId = clean(
       message?.lead_id
     );
@@ -596,13 +571,9 @@ async function listConversations(
           access.userId,
         last_message:
           latest?.content ||
-          lead.last_message ||
           null,
         last_message_at:
           latest?.created_at ||
-          lead.last_message_at ||
-          lead.updated_at ||
-          lead.created_at ||
           null,
         last_message_direction:
           latest?.direction ||
@@ -746,6 +717,10 @@ async function getConversationMessages(
       "company_id",
       access.companyId
     )
+    .eq(
+      "owner_user_id",
+      access.userId
+    )
     .in("lead_id", targetIds)
     .order("created_at", {
       ascending: true,
@@ -758,56 +733,13 @@ async function getConversationMessages(
     throw new Error(error.message);
   }
 
-  const messages = (
-    data || []
-  )
-    .filter(
-      (message) =>
-        getMessageOwnerId(message) ===
-        access.userId
-    )
-    .map(normalizeMessage);
+  const messages = (data || []).map(normalizeMessage);
 
   /*
-   * Compatibilidade com conversas antigas:
-   * se o lead possui última mensagem mas o histórico ainda não,
-   * adiciona uma visualização temporária sem gravar duplicado.
+   * Não usamos lead.last_message como fallback.
+   * Esse campo pertence ao lead compartilhado da empresa e poderia
+   * exibir o resumo de outro vendedor.
    */
-  if (
-    !messages.length &&
-    lead.last_message
-  ) {
-    messages.push({
-      id: `fallback-${lead.id}`,
-      company_id:
-        access.companyId,
-      branch_id:
-        lead.branch_id || null,
-      lead_id: lead.id,
-      direction: "received",
-      topic: "whatsapp",
-      extension: "text",
-      content: lead.last_message,
-      event:
-        "message_received_fallback",
-      payload: {
-        owner_user_id:
-          access.userId,
-        fallback: true,
-      },
-      owner_user_id:
-        access.userId,
-      media_url: null,
-      media_type: "text",
-      mime_type: null,
-      file_name: null,
-      caption: null,
-      created_at:
-        lead.last_message_at ||
-        lead.updated_at ||
-        lead.created_at,
-    });
-  }
 
   /*
    * Marca apenas este contato como lido.

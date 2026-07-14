@@ -569,6 +569,7 @@ async function saveSentMessage({
       company_id: companyId,
       branch_id: branchId || null,
       lead_id: leadId,
+      owner_user_id: userId,
       direction: "sent",
       topic: "whatsapp",
       extension: media.kind || "text",

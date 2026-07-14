@@ -743,18 +743,28 @@ async function sendMediaToWhatsApp(payload: any) {
 
 async function wasMessageAlreadyProcessed(
   supabase: any,
+  companyId: string,
+  userId: string | null | undefined,
   leadId: string,
   messageId?: string | null
 ) {
   if (!messageId) return false;
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("messages")
     .select("id")
+    .eq("company_id", companyId)
     .eq("lead_id", leadId)
     .eq("direction", "received")
-    .contains("payload", { message_id: messageId })
-    .limit(1);
+    .contains("payload", { message_id: messageId });
+
+  if (userId) {
+    query = query.eq("owner_user_id", userId);
+  } else {
+    query = query.is("owner_user_id", null);
+  }
+
+  const { data, error } = await query.limit(1);
 
   if (error) {
     console.error("ERRO AO VERIFICAR DUPLICIDADE:", error);
@@ -803,6 +813,7 @@ async function saveReceivedMessage(
     company_id: companyId,
     branch_id: branchId,
     lead_id: leadId,
+    owner_user_id: userId || null,
     direction: "received",
     topic: "whatsapp",
     extension,
@@ -833,6 +844,7 @@ async function saveSentMessage(
   leadId: string,
   companyId: string,
   branchId: string | null,
+  userId: string | null | undefined,
   reply: string,
   mediaUrl?: string | null,
   mediaType?: string | null
@@ -841,19 +853,26 @@ async function saveSentMessage(
     company_id: companyId,
     branch_id: branchId,
     lead_id: leadId,
+    owner_user_id: userId || null,
     direction: "sent",
     topic: "whatsapp",
     extension: mediaType || "text",
     content: reply,
     event: "message_sent",
     payload: {
+      owner_user_id: userId || null,
+      user_id: userId || null,
       media_url: mediaUrl || null,
       media_type: mediaType || "text",
     },
+    status: "sent",
     created_at: new Date().toISOString(),
   });
 
-  if (error) console.error("ERRO AO SALVAR MENSAGEM ENVIADA:", error);
+  if (error) {
+    console.error("ERRO AO SALVAR MENSAGEM ENVIADA:", error);
+    throw new Error(`Não foi possível salvar a resposta no histórico: ${error.message}`);
+  }
 }
 
 function getJobIdFromLead(lead: any) {
@@ -1460,6 +1479,7 @@ async function replyAndSave({
   remoteJid,
   lead,
   leadId,
+  userId,
   reply,
   mediaUrl,
   mediaType,
@@ -1494,6 +1514,7 @@ async function replyAndSave({
       leadId,
       lead.company_id,
       lead.branch_id || null,
+      userId,
       reply,
       null,
       "text"
@@ -1515,6 +1536,7 @@ async function replyAndSave({
       leadId,
       lead.company_id,
       lead.branch_id || null,
+      userId,
       reply || "",
       mediaUrl,
       mediaType || "document"
@@ -2207,7 +2229,13 @@ if (queueContext) {
   }
 }
 
-    const duplicated = await wasMessageAlreadyProcessed(supabase, lead.id, messageId);
+    const duplicated = await wasMessageAlreadyProcessed(
+      supabase,
+      companyId,
+      userId,
+      lead.id,
+      messageId
+    );
 
     if (duplicated) {
       return NextResponse.json({ success: true, action: "duplicate_ignored" });
@@ -2363,6 +2391,7 @@ console.log("CONTEXTO FINAL DO LEAD PARA TEMPLATE:", {
           remoteJid,
           lead,
           leadId: lead.id,
+          userId,
           reply: finalReply.reply,
           mediaUrl: finalReply.mediaUrl,
           mediaType: finalReply.mediaType,
