@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireCompanyAccess } from "@/lib/server-company";
 import { buildWhatsappSessionKey } from "@/lib/whatsapp-session";
+import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
@@ -377,38 +378,31 @@ export async function POST(req: NextRequest) {
      */
     let commandCenterSynced = false;
 
-    try {
-      const { error: activityError } = await supabase
-        .from("SalesCustomerActivity")
-        .insert({
-          company_id: companyId,
-          seller_id: userId,
-          lead_id: lead.id,
-          customer_id: null,
-          phone: normalizedLeadPhone || null,
-          type: "mensagem",
-          origin: "whatsapp",
-          title: "Mensagem enviada",
-          description: message,
-          priority: "media",
-          status: "concluida",
-          created_at: sentAt,
-        });
+try {
+  await prisma.salesCustomerActivity.create({
+    data: {
+      company_id: companyId,
+      seller_id: userId,
+      customer_id: null,
+      lead_id: lead.id,
+      phone: normalizedLeadPhone || null,
+      type: "mensagem",
+      origin: "whatsapp",
+      title: "Mensagem enviada",
+      description: message,
+      priority: "media",
+      status: "concluida",
+      created_at: new Date(sentAt),
+    },
+  });
 
-      if (activityError) {
-        console.error(
-          "WHATSAPP_SEND_ACTIVITY_INSERT_ERROR:",
-          activityError
-        );
-      } else {
-        commandCenterSynced = true;
-      }
-    } catch (activityError) {
-      console.error(
-        "WHATSAPP_SEND_COMMAND_CENTER_SYNC_ERROR:",
-        activityError
-      );
-    }
+  commandCenterSynced = true;
+} catch (activityError) {
+  console.error(
+    "WHATSAPP_SEND_COMMAND_CENTER_SYNC_ERROR:",
+    activityError
+  );
+}
 
     /*
      * Atualiza o lead sem bloquear o envio caso o CRM falhe.
