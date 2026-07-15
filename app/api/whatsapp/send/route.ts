@@ -379,6 +379,8 @@ export async function POST(req: NextRequest) {
     let commandCenterSynced = false;
 
 try {
+  console.log("=== TESTE COMMAND CENTER ===");
+
   await prisma.salesCustomerActivity.create({
     data: {
       company_id: companyId,
@@ -396,12 +398,12 @@ try {
     },
   });
 
+  console.log("ATIVIDADE GRAVADA COM SUCESSO");
+
   commandCenterSynced = true;
 } catch (activityError) {
-  console.error(
-    "WHATSAPP_SEND_COMMAND_CENTER_SYNC_ERROR:",
-    activityError
-  );
+  console.error("ERRO AO GRAVAR ATIVIDADE");
+  console.error(activityError);
 }
 
     /*
