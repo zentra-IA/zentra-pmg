@@ -10,7 +10,9 @@ const WHATSAPP_SERVER =
 
 // Antiban manual: limite por sessão/WhatsApp por dia.
 // Pode ajustar no .env.local com CRM_MAX_PER_SESSION_DAY=80
-const MAX_PER_SESSION_DAY = Number(process.env.CRM_MAX_PER_SESSION_DAY || 80);
+const MAX_PER_SESSION_DAY = Number(
+  process.env.CRM_MAX_PER_SESSION_DAY || 80
+);
 
 function clean(value: any) {
   return String(value || "").replace(/\D/g, "");
@@ -21,7 +23,9 @@ function normalizePhone(value: any) {
 
   if (!phone) return "";
   if (phone.startsWith("55")) return phone;
-  if (phone.length === 10 || phone.length === 11) return `55${phone}`;
+  if (phone.length === 10 || phone.length === 11) {
+    return `55${phone}`;
+  }
 
   return phone;
 }
@@ -46,31 +50,56 @@ function normalizeSessionNumber(value: any) {
   return Math.round(number);
 }
 
-function buildSession(companyId: string, userId: string, sessionId: string | number) {
-  return buildWhatsappSessionKey({ companyId, userId, sessionId: sessionId || 1 });
+function buildSession(
+  companyId: string,
+  userId: string,
+  sessionId: string | number
+) {
+  return buildWhatsappSessionKey({
+    companyId,
+    userId,
+    sessionId: sessionId || 1,
+  });
 }
 
-async function isSessionOnline(companyId: string, userId: string, sessionNumber: number) {
+async function isSessionOnline(
+  companyId: string,
+  userId: string,
+  sessionNumber: number
+) {
   try {
-    const finalSessionId = buildSession(companyId, userId, sessionNumber);
+    const finalSessionId = buildSession(
+      companyId,
+      userId,
+      sessionNumber
+    );
 
-    const res = await fetch(`${WHATSAPP_SERVER}/status/${finalSessionId}`, {
-      cache: "no-store",
-    });
+    const res = await fetch(
+      `${WHATSAPP_SERVER}/status/${finalSessionId}`,
+      {
+        cache: "no-store",
+      }
+    );
 
     const data = await res.json().catch(() => ({}));
 
-    return data.status === "online" && Boolean(data?.me?.id || data?.me);
+    return (
+      data.status === "online" &&
+      Boolean(data?.me?.id || data?.me)
+    );
   } catch {
     return false;
   }
 }
 
-async function countQueueSentToday(companyId: string, sessionNumber: number) {
+async function countQueueSentToday(
+  companyId: string,
+  sessionNumber: number
+) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const { count } = await supabase
+  const { count, error } = await supabase
     .from("automation_queue")
     .select("*", { count: "exact", head: true })
     .eq("company_id", companyId)
@@ -78,14 +107,25 @@ async function countQueueSentToday(companyId: string, sessionNumber: number) {
     .eq("status", "sent")
     .gte("sent_at", today.toISOString());
 
+  if (error) {
+    console.error(
+      "WHATSAPP_SEND_COUNT_QUEUE_ERROR:",
+      error
+    );
+    return 0;
+  }
+
   return count || 0;
 }
 
-async function countManualSentToday(companyId: string, finalSessionId: string) {
+async function countManualSentToday(
+  companyId: string,
+  finalSessionId: string
+) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const { count } = await supabase
+  const { count, error } = await supabase
     .from("messages")
     .select("*", { count: "exact", head: true })
     .eq("direction", "sent")
@@ -95,6 +135,14 @@ async function countManualSentToday(companyId: string, finalSessionId: string) {
       session_id: finalSessionId,
     })
     .gte("created_at", today.toISOString());
+
+  if (error) {
+    console.error(
+      "WHATSAPP_SEND_COUNT_MANUAL_ERROR:",
+      error
+    );
+    return 0;
+  }
 
   return count || 0;
 }
@@ -125,7 +173,9 @@ function nextLeadStatus(currentStatus: any) {
 
   const normalized = legacyMap[status] || status;
 
-  if (!normalized || normalized === "novo") return "enviado";
+  if (!normalized || normalized === "novo") {
+    return "enviado";
+  }
 
   return normalized;
 }
@@ -138,15 +188,21 @@ export async function POST(req: NextRequest) {
 
     if (!companyId || !userId) {
       return NextResponse.json(
-        { success: false, error: "Empresa ou usuário não identificado." },
+        {
+          success: false,
+          error: "Empresa ou usuário não identificado.",
+        },
         { status: 401 }
       );
     }
 
     const body = await req.json();
 
-    const contactId = body.contactId || body.leadId || body.id;
+    const contactId =
+      body.contactId || body.leadId || body.id;
+
     const message = String(body.message || "").trim();
+
     const sessionNumber = normalizeSessionNumber(
       body.sessionId || body.session_id || "1"
     );
@@ -155,20 +211,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           success: false,
-          error: "contactId/leadId e message obrigatórios",
+          error:
+            "contactId/leadId e message obrigatórios",
         },
         { status: 400 }
       );
     }
 
-    const { data: lead, error } = await supabase
+    const { data: lead, error: leadError } = await supabase
       .from("leads")
       .select("*")
       .eq("id", contactId)
       .eq("company_id", companyId)
       .maybeSingle();
 
-    if (error || !lead) {
+    if (leadError || !lead) {
       return NextResponse.json(
         {
           success: false,
@@ -178,9 +235,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const finalSession = buildSession(companyId, userId, sessionNumber);
+    const finalSession = buildSession(
+      companyId,
+      userId,
+      sessionNumber
+    );
 
-    const online = await isSessionOnline(companyId, userId, sessionNumber);
+    const online = await isSessionOnline(
+      companyId,
+      userId,
+      sessionNumber
+    );
 
     if (!online) {
       return NextResponse.json(
@@ -210,8 +275,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const lid = normalizeLid(lead.whatsapp_lid || lead.remote_jid);
-    const phone = lid ? "" : normalizePhone(lead.phone || lead.telefone || lead.mobile || "");
+    const lid = normalizeLid(
+      lead.whatsapp_lid || lead.remote_jid
+    );
+
+    const normalizedLeadPhone = normalizePhone(
+      lead.phone || lead.telefone || lead.mobile || ""
+    );
+
+    const phone = lid ? "" : normalizedLeadPhone;
 
     if (!phone && !lid) {
       return NextResponse.json(
@@ -223,65 +295,142 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const response = await fetch(`${WHATSAPP_SERVER}/send`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        sessionId: finalSession,
-        number: phone,
-        phone,
-        lid,
-        jid: lid,
-        message,
-      }),
-    });
+    const response = await fetch(
+      `${WHATSAPP_SERVER}/send`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sessionId: finalSession,
+          number: phone,
+          phone,
+          lid,
+          jid: lid,
+          message,
+        }),
+      }
+    );
 
-    const result = await response.json().catch(() => ({}));
+    const result = await response
+      .json()
+      .catch(() => ({}));
 
     if (!response.ok || result.success === false) {
       return NextResponse.json(
         {
           success: false,
-          error: result.error || "Falha ao enviar pelo WhatsApp",
+          error:
+            result.error ||
+            "Falha ao enviar pelo WhatsApp",
           result,
         },
         { status: 500 }
       );
     }
 
-    await supabase.from("messages").insert({
-      lead_id: lead.id,
-      direction: "sent",
-      topic: "whatsapp",
-      extension: "text",
-      content: message,
-      event: "manual_message_sent",
-      payload: {
-        company_id: companyId,
-        user_id: userId,
-        session_number: sessionNumber,
-        session_id: finalSession,
-        jid: result.jid || null,
-        message_id: result.messageId || null,
-        antiban_limit: MAX_PER_SESSION_DAY,
-        sent_today_before_this_message: usedToday,
-      },
-      created_at: new Date().toISOString(),
-    });
+    const sentAt = new Date().toISOString();
 
-    await supabase
+    /*
+     * Mantém o comportamento original:
+     * registra a mensagem enviada na tabela messages.
+     *
+     * O erro é registrado no log, mas não transforma um envio já
+     * confirmado pelo WhatsApp em falha para o usuário.
+     */
+    const { error: messageInsertError } = await supabase
+      .from("messages")
+      .insert({
+        lead_id: lead.id,
+        direction: "sent",
+        topic: "whatsapp",
+        extension: "text",
+        content: message,
+        event: "manual_message_sent",
+        payload: {
+          company_id: companyId,
+          user_id: userId,
+          session_number: sessionNumber,
+          session_id: finalSession,
+          jid: result.jid || null,
+          message_id: result.messageId || null,
+          antiban_limit: MAX_PER_SESSION_DAY,
+          sent_today_before_this_message: usedToday,
+        },
+        created_at: sentAt,
+      });
+
+    if (messageInsertError) {
+      console.error(
+        "WHATSAPP_SEND_MESSAGE_INSERT_ERROR:",
+        messageInsertError
+      );
+    }
+
+    /*
+     * Sincronização com o Command Center.
+     *
+     * A atividade identifica o vendedor responsável pelo lead.
+     * Ela é best-effort: se falhar, o envio do WhatsApp continua
+     * sendo considerado bem-sucedido.
+     */
+    let commandCenterSynced = false;
+
+    try {
+      const { error: activityError } = await supabase
+        .from("SalesCustomerActivity")
+        .insert({
+          company_id: companyId,
+          seller_id: userId,
+          lead_id: lead.id,
+          customer_id: null,
+          phone: normalizedLeadPhone || null,
+          type: "mensagem",
+          origin: "whatsapp",
+          title: "Mensagem enviada",
+          description: message,
+          priority: "media",
+          status: "concluida",
+          created_at: sentAt,
+        });
+
+      if (activityError) {
+        console.error(
+          "WHATSAPP_SEND_ACTIVITY_INSERT_ERROR:",
+          activityError
+        );
+      } else {
+        commandCenterSynced = true;
+      }
+    } catch (activityError) {
+      console.error(
+        "WHATSAPP_SEND_COMMAND_CENTER_SYNC_ERROR:",
+        activityError
+      );
+    }
+
+    /*
+     * Atualiza o lead sem bloquear o envio caso o CRM falhe.
+     */
+    const { error: leadUpdateError } = await supabase
       .from("leads")
       .update({
         status: nextLeadStatus(lead.status),
         last_message: message,
-        last_message_at: new Date().toISOString(),
-        campaign_sent_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        last_message_at: sentAt,
+        campaign_sent_at: sentAt,
+        updated_at: sentAt,
       })
       .eq("id", lead.id)
       .eq("company_id", companyId);
+
+    if (leadUpdateError) {
+      console.error(
+        "WHATSAPP_SEND_LEAD_UPDATE_ERROR:",
+        leadUpdateError
+      );
+    }
 
     return NextResponse.json({
       success: true,
@@ -291,8 +440,12 @@ export async function POST(req: NextRequest) {
       phone,
       lid,
       usedToday: usedToday + 1,
-      remainingToday: Math.max(0, MAX_PER_SESSION_DAY - usedToday - 1),
+      remainingToday: Math.max(
+        0,
+        MAX_PER_SESSION_DAY - usedToday - 1
+      ),
       limit: MAX_PER_SESSION_DAY,
+      commandCenterSynced,
       result,
     });
   } catch (error: any) {
@@ -301,7 +454,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: error?.message || "Erro ao enviar WhatsApp",
+        error:
+          error?.message || "Erro ao enviar WhatsApp",
       },
       { status: 500 }
     );

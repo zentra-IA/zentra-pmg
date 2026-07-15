@@ -14,7 +14,8 @@ async function resolveCompanyId(incomingCompanyId: unknown) {
   if (isValidUuid(incomingCompanyId)) return String(incomingCompanyId);
 
   const envCompany =
-    process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID || process.env.DEFAULT_COMPANY_ID;
+    process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID ||
+    process.env.DEFAULT_COMPANY_ID;
 
   if (isValidUuid(envCompany)) return String(envCompany);
 
@@ -28,7 +29,9 @@ async function resolveCompanyId(incomingCompanyId: unknown) {
 
 function asNumber(value: unknown, fallback = 0) {
   if (value === null || value === undefined || value === "") return fallback;
-  if (typeof value === "number") return Number.isFinite(value) ? value : fallback;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : fallback;
+  }
   if (typeof value === "bigint") return Number(value);
 
   const raw = String(value).replace(/R\$/gi, "").trim();
@@ -61,10 +64,27 @@ function normalizeQuoteItem(item: any) {
     cleanString(item?.descricao) ||
     "Produto sem nome";
 
-  const quantity = asNumber(item?.quantity ?? item?.qty ?? item?.quantidade, 0);
-  const unit = cleanString(item?.unit ?? item?.quantityUnit ?? item?.sellUnit ?? item?.unidade);
-  const unitPrice = asNumber(item?.unitPrice ?? item?.price ?? item?.precoUnitario, 0);
-  const total = asNumber(item?.subtotal ?? item?.total ?? item?.totalItem, unitPrice * quantity);
+  const quantity = asNumber(
+    item?.quantity ?? item?.qty ?? item?.quantidade,
+    0
+  );
+
+  const unit = cleanString(
+    item?.unit ??
+      item?.quantityUnit ??
+      item?.sellUnit ??
+      item?.unidade
+  );
+
+  const unitPrice = asNumber(
+    item?.unitPrice ?? item?.price ?? item?.precoUnitario,
+    0
+  );
+
+  const total = asNumber(
+    item?.subtotal ?? item?.total ?? item?.totalItem,
+    unitPrice * quantity
+  );
 
   return {
     code,
@@ -80,7 +100,16 @@ function normalizeQuoteItem(item: any) {
 }
 
 function toInputJson(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(JSON.stringify(value ?? null)) as Prisma.InputJsonValue;
+  return JSON.parse(
+    JSON.stringify(value ?? null)
+  ) as Prisma.InputJsonValue;
+}
+
+function formatCurrency(value: number) {
+  return value.toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
 }
 
 export async function GET(req: NextRequest) {
@@ -88,15 +117,25 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
 
     const companyId = await resolveCompanyId(
-      searchParams.get("companyId") || searchParams.get("company_id")
+      searchParams.get("companyId") ||
+        searchParams.get("company_id")
     );
 
     if (!companyId) {
-      return NextResponse.json({ error: "companyId obrigatório" }, { status: 400 });
+      return NextResponse.json(
+        { error: "companyId obrigatório" },
+        { status: 400 }
+      );
     }
 
-    const customerId = searchParams.get("customerId") || searchParams.get("customer_id");
-    const limit = Math.min(Number(searchParams.get("limit") || 100), 500);
+    const customerId =
+      searchParams.get("customerId") ||
+      searchParams.get("customer_id");
+
+    const requestedLimit = Number(searchParams.get("limit") || 100);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(Math.max(requestedLimit, 1), 500)
+      : 100;
 
     const logs = await prisma.activity_logs.findMany({
       where: {
@@ -121,14 +160,21 @@ export async function GET(req: NextRequest) {
         id: log.id,
         companyId: log.company_id,
         createdAt: log.created_at,
-        ...(typeof log.metadata === "object" && log.metadata ? (log.metadata as any) : {}),
+        ...(typeof log.metadata === "object" && log.metadata
+          ? (log.metadata as any)
+          : {}),
       })),
     });
   } catch (error: any) {
     console.error("QUOTE_HISTORY_GET_ERROR", error);
 
     return NextResponse.json(
-      { success: false, error: error?.message || "Erro ao buscar histórico de cotações." },
+      {
+        success: false,
+        error:
+          error?.message ||
+          "Erro ao buscar histórico de cotações.",
+      },
       { status: 500 }
     );
   }
@@ -138,33 +184,145 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    const companyId = await resolveCompanyId(body.companyId || body.company_id);
+    const companyId = await resolveCompanyId(
+      body.companyId || body.company_id
+    );
 
     if (!companyId) {
       return NextResponse.json(
-        { success: false, error: "companyId obrigatório ou inválido." },
+        {
+          success: false,
+          error: "companyId obrigatório ou inválido.",
+        },
         { status: 400 }
       );
     }
 
-    const customerId = cleanString(body.customerId || body.customer_id);
-    const customerInternalCode = cleanString(body.customerInternalCode || body.clientId || body.internalCode);
-    const customerName = cleanString(body.customerName || body.clientName || body.name);
+    const incomingCustomerId = cleanString(
+      body.customerId || body.customer_id
+    );
 
-    if (!customerId && !customerInternalCode && !customerName) {
+    const customerInternalCode = cleanString(
+      body.customerInternalCode ||
+        body.clientId ||
+        body.internalCode
+    );
+
+    const customerName = cleanString(
+      body.customerName ||
+        body.clientName ||
+        body.name
+    );
+
+    if (
+      !incomingCustomerId &&
+      !customerInternalCode &&
+      !customerName
+    ) {
       return NextResponse.json(
-        { success: false, error: "Selecione ou informe um cliente antes de salvar o histórico." },
+        {
+          success: false,
+          error:
+            "Selecione ou informe um cliente antes de salvar o histórico.",
+        },
         { status: 400 }
       );
     }
 
     const rawItems = Array.isArray(body.items) ? body.items : [];
-    const items = rawItems.map(normalizeQuoteItem).filter((item) => item.name);
+    const items = rawItems
+      .map(normalizeQuoteItem)
+      .filter((item) => item.name);
 
     const total = asNumber(
       body.total,
-      items.reduce((sum, item) => sum + asNumber(item.total), 0)
+      items.reduce(
+        (sum, item) => sum + asNumber(item.total),
+        0
+      )
     );
+
+    /*
+     * Resolve o cliente antes de salvar o histórico.
+     *
+     * Ordem:
+     * 1. ID do cliente;
+     * 2. código interno/ERP;
+     * 3. nome empresarial ou fantasia.
+     *
+     * O select é intencionalmente pequeno para não carregar dados
+     * desnecessários nem alterar o fluxo já existente da cotação.
+     */
+    let resolvedCustomer: {
+      id: string;
+      seller_id: string | null;
+    } | null = null;
+
+    if (incomingCustomerId) {
+      resolvedCustomer = await prisma.salesCustomer.findFirst({
+        where: {
+          company_id: companyId,
+          id: incomingCustomerId,
+        },
+        select: {
+          id: true,
+          seller_id: true,
+        },
+      });
+    }
+
+    if (!resolvedCustomer && customerInternalCode) {
+      resolvedCustomer = await prisma.salesCustomer.findFirst({
+        where: {
+          company_id: companyId,
+          OR: [
+            { internal_code: customerInternalCode },
+            { erp_code: customerInternalCode },
+          ],
+        },
+        select: {
+          id: true,
+          seller_id: true,
+        },
+      });
+    }
+
+    if (!resolvedCustomer && customerName) {
+      resolvedCustomer = await prisma.salesCustomer.findFirst({
+        where: {
+          company_id: companyId,
+          OR: [
+            {
+              legal_name: {
+                equals: customerName,
+                mode: "insensitive",
+              },
+            },
+            {
+              trade_name: {
+                equals: customerName,
+                mode: "insensitive",
+              },
+            },
+          ],
+        },
+        select: {
+          id: true,
+          seller_id: true,
+        },
+      });
+    }
+
+    const customerId =
+      resolvedCustomer?.id || incomingCustomerId || null;
+
+    const requestedUserId = body.userId || body.user_id;
+    const authenticatedUserId = isValidUuid(requestedUserId)
+      ? String(requestedUserId)
+      : null;
+
+    const sellerId =
+      authenticatedUserId || resolvedCustomer?.seller_id || null;
 
     const metadata = {
       source: "quotes_ai",
@@ -174,7 +332,11 @@ export async function POST(req: NextRequest) {
       customerId,
       customerInternalCode,
       customerName,
-      title: cleanString(body.title) || `Cotação ${customerName || customerInternalCode || ""}`.trim(),
+      title:
+        cleanString(body.title) ||
+        `Cotação ${
+          customerName || customerInternalCode || ""
+        }`.trim(),
       requestText: cleanString(body.requestText),
       outputText: cleanString(body.outputText),
       total,
@@ -186,15 +348,89 @@ export async function POST(req: NextRequest) {
       metadata: body.metadata || {},
     };
 
+    /*
+     * Mantém o comportamento original:
+     * o histórico da cotação continua sendo salvo em activity_logs.
+     */
     const saved = await prisma.activity_logs.create({
       data: {
         company_id: companyId,
-        user_id: isValidUuid(body.userId || body.user_id) ? String(body.userId || body.user_id) : null,
+        user_id: authenticatedUserId,
         action: "quote_saved",
         entity: "quote",
         metadata: toInputJson(metadata),
       },
     });
+
+    /*
+     * Sincronização adicional para o Command Center.
+     *
+     * Ela fica isolada em try/catch para que um problema pontual na
+     * sincronização não impeça o histórico da cotação de ser salvo.
+     */
+    let commandCenterSync = {
+      customerResolved: Boolean(resolvedCustomer),
+      customerUpdated: false,
+      activityCreated: false,
+      warning: null as string | null,
+    };
+
+    if (resolvedCustomer) {
+      try {
+        const quotedAt = new Date();
+
+        await prisma.$transaction([
+          prisma.salesCustomer.update({
+            where: {
+              id: resolvedCustomer.id,
+            },
+            data: {
+              last_quote_at: quotedAt,
+            },
+          }),
+
+          prisma.salesCustomerActivity.create({
+            data: {
+              company_id: companyId,
+              seller_id: sellerId,
+              customer_id: resolvedCustomer.id,
+              lead_id: null,
+              phone: null,
+              type: "cotacao",
+              origin: "quotes_ai",
+              title: "Cotação gerada",
+              description: `Cotação gerada com ${
+                items.length
+              } item(ns), no valor total de ${formatCurrency(
+                total
+              )}.`,
+              priority: "media",
+              status: "concluida",
+              created_at: quotedAt,
+            },
+          }),
+        ]);
+
+        commandCenterSync = {
+          customerResolved: true,
+          customerUpdated: true,
+          activityCreated: true,
+          warning: null,
+        };
+      } catch (syncError: any) {
+        console.error(
+          "QUOTE_HISTORY_COMMAND_CENTER_SYNC_ERROR",
+          syncError
+        );
+
+        commandCenterSync.warning =
+          syncError?.message ||
+          "A cotação foi salva, mas não foi possível sincronizar o Command Center.";
+      }
+    } else {
+      commandCenterSync.warning =
+        "A cotação foi salva, mas o cliente não foi localizado no SalesCustomer para atualizar o Command Center.";
+    }
 
     return NextResponse.json({
       success: true,
@@ -204,12 +440,18 @@ export async function POST(req: NextRequest) {
         createdAt: saved.created_at,
         ...metadata,
       },
+      commandCenterSync,
     });
   } catch (error: any) {
     console.error("QUOTE_HISTORY_POST_ERROR", error);
 
     return NextResponse.json(
-      { success: false, error: error?.message || "Erro ao salvar histórico da cotação." },
+      {
+        success: false,
+        error:
+          error?.message ||
+          "Erro ao salvar histórico da cotação.",
+      },
       { status: 500 }
     );
   }

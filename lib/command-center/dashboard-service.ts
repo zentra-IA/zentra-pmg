@@ -127,22 +127,23 @@ export async function buildCommandCenterDashboard({
 }: Params) {
   const range = getRange(period, from, to);
   const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth() + 1;
+  const referenceDate = range.start;
+  const year = referenceDate.getFullYear();
+  const month = referenceDate.getMonth() + 1;
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
   const [
-    company,
-    companyUsers,
-    customers,
-    orders,
-    orderItems,
-    leads,
-    activities,
-    messages,
-    crmMessages,
-    goals,
-  ] = await Promise.all([
+  company,
+  companyUsers,
+  customers,
+  orders,
+  leads,
+  activities,
+  messages,
+  crmMessages,
+  goals,
+  radarExports,
+] = await Promise.all([
     prisma.companies.findUnique({
       where: { id: companyId },
       select: { id: true, name: true, logo_url: true },
@@ -163,6 +164,7 @@ export async function buildCommandCenterDashboard({
       },
       orderBy: { name: "asc" },
     }),
+
 
     prisma.salesCustomer.findMany({
       where: { company_id: companyId },
@@ -214,21 +216,6 @@ export async function buildCommandCenterDashboard({
       },
     }),
 
-    prisma.salesOrderItem.findMany({
-      where: {
-        company_id: companyId,
-        created_at: { gte: range.start, lte: range.end },
-      },
-      select: {
-        id: true,
-        order_id: true,
-        product_code: true,
-        product_name: true,
-        quantity: true,
-        total: true,
-      },
-    }),
-
     prisma.leads.findMany({
       where: {
         company_id: companyId,
@@ -277,17 +264,20 @@ export async function buildCommandCenterDashboard({
     }),
 
     prisma.messages.findMany({
-      where: {
-        company_id: companyId,
-        created_at: { gte: range.start, lte: range.end },
-      },
-      select: {
-        id: true,
-        lead_id: true,
-        direction: true,
-        created_at: true,
-      },
-    }),
+  where: {
+    company_id: companyId,
+    created_at: {
+      gte: range.start,
+      lte: range.end,
+    },
+  },
+  select: {
+    id: true,
+    lead_id: true,
+    direction: true,
+    created_at: true,
+  },
+}),
 
     prisma.crmMessage.findMany({
       where: {
@@ -302,18 +292,55 @@ export async function buildCommandCenterDashboard({
       },
     }),
 
-    prisma.sales_goals.findMany({
-      where: {
-        company_id: companyId,
-        year,
-        month,
-      },
-      select: {
-        seller_id: true,
-        goal_amount: true,
-      },
-    }),
-  ]);
+   prisma.sales_goals.findMany({
+  where: {
+    company_id: companyId,
+    year,
+    month,
+  },
+  select: {
+    seller_id: true,
+    goal_amount: true,
+  },
+}),
+
+prisma.prospectExport.findMany({
+  where: {
+    company_id: companyId,
+    action: "REVEAL",
+    createdAt: {
+      gte: range.start,
+      lte: range.end,
+    },
+  },
+  select: {
+    id: true,
+    clientId: true,
+    createdAt: true,
+    action: true,
+  },
+}),
+]);
+
+  const orderItems =
+    orders.length > 0
+      ? await prisma.salesOrderItem.findMany({
+          where: {
+            company_id: companyId,
+            order_id: {
+              in: orders.map((order) => order.id),
+            },
+          },
+          select: {
+            id: true,
+            order_id: true,
+            product_code: true,
+            product_name: true,
+            quantity: true,
+            total: true,
+          },
+        })
+      : [];
 
   await prisma.$executeRaw`
     CREATE TABLE IF NOT EXISTS sales_commissions (
@@ -352,7 +379,28 @@ export async function buildCommandCenterDashboard({
     for (const name of names) customersByName.set(normalize(name), customer);
 
     const phones = [customer.phone, customer.whatsapp].filter(Boolean).map(digits);
-    for (const phone of phones) if (phone) customersByPhone.set(phone, customer);
+    for (const phone of phones) {
+      if (!phone) continue;
+
+      customersByPhone.set(phone, customer);
+
+      // Também cria aliases pelos últimos dígitos para tolerar DDI/DDD
+      // diferentes entre CRM, WhatsApp e importações do ERP.
+      if (phone.length >= 8) customersByPhone.set(phone.slice(-8), customer);
+      if (phone.length >= 9) customersByPhone.set(phone.slice(-9), customer);
+    }
+  }
+
+  function findCustomerByPhone(value: unknown) {
+    const phone = digits(value);
+    if (!phone) return null;
+
+    return (
+      customersByPhone.get(phone) ||
+      (phone.length >= 9 ? customersByPhone.get(phone.slice(-9)) : null) ||
+      (phone.length >= 8 ? customersByPhone.get(phone.slice(-8)) : null) ||
+      null
+    );
   }
 
   const leadOwner = new Map<string, string>();
@@ -457,12 +505,15 @@ export async function buildCommandCenterDashboard({
         const sellerName = normalize(seller.name);
         const sellerEmail = normalize(seller.email);
 
-        return (
-          orderSeller.includes(sellerName) ||
-          sellerName.includes(orderSeller) ||
-          orderSeller.includes(sellerEmail) ||
-          sellerEmail.includes(orderSeller)
-        );
+        const nameMatches =
+          Boolean(sellerName) &&
+          (orderSeller.includes(sellerName) || sellerName.includes(orderSeller));
+
+        const emailMatches =
+          Boolean(sellerEmail) &&
+          (orderSeller.includes(sellerEmail) || sellerEmail.includes(orderSeller));
+
+        return nameMatches || emailMatches;
       });
 
       if (bySellerName?.user_id) return String(bySellerName.user_id);
@@ -475,29 +526,59 @@ export async function buildCommandCenterDashboard({
 
   function resolveLeadSeller(lead: any) {
     if (leadOwner.has(String(lead.id))) {
-      return leadOwner.get(String(lead.id));
+      return leadOwner.get(String(lead.id)) || "sem_vendedor";
     }
 
-    const phone = digits(lead.phone);
-    const customer = customersByPhone.get(phone);
-
+    const customer = findCustomerByPhone(lead.phone);
     if (customer?.seller_id) return String(customer.seller_id);
 
     return "sem_vendedor";
   }
 
-  function resolveMessageSeller(message: any) {
-    if (message.lead_id && leadOwner.has(String(message.lead_id))) {
-      return leadOwner.get(String(message.lead_id));
+  const leadsById = new Map(leads.map((lead) => [String(lead.id), lead]));
+
+ function resolveMessageSeller(message: any) {
+  if (
+    message.lead_id &&
+    leadOwner.has(String(message.lead_id))
+  ) {
+    return (
+      leadOwner.get(String(message.lead_id)) ||
+      "sem_vendedor"
+    );
+  }
+
+  if (message.lead_id) {
+    const lead = leadsById.get(String(message.lead_id));
+
+    if (lead) {
+      return resolveLeadSeller(lead);
     }
+  }
+
+  return "sem_vendedor";
+}
+
+  function resolveCrmMessageSeller(message: any) {
+    const customer = findCustomerByPhone(message.phone);
+    if (customer?.seller_id) return String(customer.seller_id);
 
     return "sem_vendedor";
   }
 
-  function resolveCrmMessageSeller(message: any) {
-    const phone = digits(message.phone);
-    const customer = customersByPhone.get(phone);
+  function resolveActivitySeller(activity: any) {
+    if (activity.seller_id) return String(activity.seller_id);
 
+    if (activity.customer_id) {
+      const customer = customersById.get(String(activity.customer_id));
+      if (customer?.seller_id) return String(customer.seller_id);
+    }
+
+    if (activity.lead_id && leadOwner.has(String(activity.lead_id))) {
+      return leadOwner.get(String(activity.lead_id)) || "sem_vendedor";
+    }
+
+    const customer = findCustomerByPhone(activity.phone);
     if (customer?.seller_id) return String(customer.seller_id);
 
     return "sem_vendedor";
@@ -508,7 +589,9 @@ export async function buildCommandCenterDashboard({
 
     const sellerCustomers = customers.filter((c) => String(c.seller_id || "") === sellerId);
     const sellerOrders = orders.filter((order) => resolveOrderSeller(order) === sellerId);
-    const sellerActivities = activities.filter((a) => String(a.seller_id || "") === sellerId);
+    const sellerActivities = activities.filter(
+      (activity) => resolveActivitySeller(activity) === sellerId
+    );
     const sellerLeads = leads.filter((lead) => resolveLeadSeller(lead) === sellerId);
     const sellerMessages = messages.filter((message) => resolveMessageSeller(message) === sellerId);
     const sellerCrmMessages = crmMessages.filter((message) => resolveCrmMessageSeller(message) === sellerId);
@@ -534,15 +617,30 @@ export async function buildCommandCenterDashboard({
 
     const goalPercent = goal > 0 ? Math.round((sold / goal) * 100) : 0;
 
-    const quoteActivities = sellerActivities.filter((activity) => {
-      const text = normalize(`${activity.type} ${activity.origin} ${activity.title} ${activity.description}`);
-      return text.includes("cotacao") || text.includes("quote");
-    });
+    const sellerQuotes = customers.filter((customer) => {
+  if (!customer.last_quote_at) return false;
 
-    const radarActivities = sellerActivities.filter((activity) => {
-      const text = normalize(`${activity.type} ${activity.origin} ${activity.title} ${activity.description}`);
-      return text.includes("radar");
-    });
+  if (
+    customer.last_quote_at < range.start ||
+    customer.last_quote_at > range.end
+  ) {
+    return false;
+  }
+
+  return (
+    String(customer.seller_id) === String(seller.user_id)
+  );
+});
+
+const quotes = sellerQuotes.length;
+
+    const sellerRadarViews = radarExports.filter((item) => {
+  if (!item.clientId) return false;
+
+  return String(item.clientId) === String(seller.user_id);
+});
+
+const radarViews = sellerRadarViews.length;
 
     const kanban: Record<string, number> = {};
 
@@ -582,15 +680,15 @@ export async function buildCommandCenterDashboard({
       messagesSent > 0 ? Math.round((messagesAnswered / messagesSent) * 100) : 0;
 
     const zentraIndex = calcIndex({
-      goalPercent,
-      orders: sellerOrders.length,
-      quotes: quoteActivities.length,
-      messagesSent,
-      messagesAnswered,
-      radarViews: radarActivities.length,
-      customers: sellerCustomers.length,
-      customersWithoutContact,
-    });
+  goalPercent,
+  orders: sellerOrders.length,
+  quotes,
+  messagesSent,
+  messagesAnswered,
+  radarViews,
+  customers: sellerCustomers.length,
+  customersWithoutContact,
+});
 
     const commissionPercent = Number(
       commissions.find((item) => String(item.seller_id) === sellerId)
@@ -622,16 +720,16 @@ export async function buildCommandCenterDashboard({
       averageTicket,
       averageTicketFormatted: money(averageTicket),
 
-      quotes: quoteActivities.length,
-      quoteAverage: quoteActivities.length > 0 ? sold / quoteActivities.length : 0,
-      quoteAverageFormatted: money(quoteActivities.length > 0 ? sold / quoteActivities.length : 0),
+      quotes,
+quoteAverage: quotes > 0 ? sold / quotes : 0,
+quoteAverageFormatted: money(quotes > 0 ? sold / quotes : 0),
 
       messagesSent,
       messagesAnswered,
       messagesNotAnswered: Math.max(messagesSent - messagesAnswered, 0),
       messageResponseRate,
 
-      radarViews: radarActivities.length,
+      radarViews,
 
       customers: sellerCustomers.length,
       customersActive,
@@ -651,15 +749,15 @@ export async function buildCommandCenterDashboard({
         sellerOrders.length === 0
           ? `${sellerName} não registrou pedidos no período.`
           : `${sellerName} vendeu ${money(sold)} em ${sellerOrders.length} pedido(s).`,
-        quoteActivities.length === 0
-          ? `${sellerName} não gerou cotações no período.`
-          : `${sellerName} gerou ${quoteActivities.length} cotação(ões).`,
+        quotes === 0
+  ? `${sellerName} não gerou cotações no período.`
+  : `${sellerName} gerou ${quotes} cotação(ões).`,
         messagesSent === 0
           ? `${sellerName} não realizou disparos de mensagem no período.`
           : `${sellerName} enviou ${messagesSent} mensagem(ns) e recebeu ${messagesAnswered} resposta(s).`,
-        radarActivities.length === 0
-          ? `${sellerName} não usou o Radar no período.`
-          : `${sellerName} visualizou ${radarActivities.length} contato(s) no Radar.`,
+        radarViews === 0
+  ? `${sellerName} não usou o Radar no período.`
+  : `${sellerName} visualizou ${radarViews} contato(s) no Radar.`,
         customersWithoutContact > 0
           ? `${sellerName} possui ${customersWithoutContact} cliente(s) sem contato recente.`
           : `${sellerName} está com boa cadência de contato.`,
@@ -671,18 +769,244 @@ export async function buildCommandCenterDashboard({
     };
   });
 
-  const teamRevenue = sellersDTO.reduce((sum, s) => sum + s.sold, 0);
-  const teamGoal = sellersDTO.reduce((sum, s) => sum + s.goal, 0);
-  const teamOrders = sellersDTO.reduce((sum, s) => sum + s.orders, 0);
-  const teamQuotes = sellersDTO.reduce((sum, s) => sum + s.quotes, 0);
-  const teamMessagesSent = sellersDTO.reduce((sum, s) => sum + s.messagesSent, 0);
-  const teamMessagesAnswered = sellersDTO.reduce((sum, s) => sum + s.messagesAnswered, 0);
-  const teamRadarViews = sellersDTO.reduce((sum, s) => sum + s.radarViews, 0);
-  const teamCustomers = sellersDTO.reduce((sum, s) => sum + s.customers, 0);
-  const teamCustomersWithoutContact = sellersDTO.reduce(
-    (sum, s) => sum + s.customersWithoutContact,
+  const unassignedCustomers = customers.filter(
+    (customer) => !customer.seller_id
+  );
+  const unassignedOrders = orders.filter(
+    (order) => resolveOrderSeller(order) === "sem_vendedor"
+  );
+  const unassignedLeads = leads.filter(
+    (lead) => resolveLeadSeller(lead) === "sem_vendedor"
+  );
+  const unassignedActivities = activities.filter(
+    (activity) => resolveActivitySeller(activity) === "sem_vendedor"
+  );
+  const unassignedMessages = messages.filter(
+    (message) => resolveMessageSeller(message) === "sem_vendedor"
+  );
+  const unassignedCrmMessages = crmMessages.filter(
+    (message) => resolveCrmMessageSeller(message) === "sem_vendedor"
+  );
+
+  const unassignedAllMessages = [
+    ...unassignedMessages.map((message) => ({ direction: message.direction })),
+    ...unassignedCrmMessages.map((message) => ({ direction: message.direction })),
+  ];
+
+  const unassignedMessagesSent = unassignedAllMessages.filter((message) =>
+    ["out", "outbound", "sent", "enviada", "enviado"].includes(
+      normalize(message.direction)
+    )
+  ).length;
+
+  const unassignedMessagesAnswered = unassignedAllMessages.filter((message) =>
+    ["in", "inbound", "received", "recebida", "recebido"].includes(
+      normalize(message.direction)
+    )
+  ).length;
+
+  const unassignedSold = unassignedOrders.reduce(
+    (sum, order) => sum + Number(order.total || 0),
     0
   );
+
+  const unassignedQuotes = unassignedCustomers.filter((customer) => {
+  if (!customer.last_quote_at) return false;
+
+  return (
+    customer.last_quote_at >= range.start &&
+    customer.last_quote_at <= range.end
+  );
+});
+
+const unassignedQuoteCount = unassignedQuotes.length;
+
+  const companyUserIds = new Set(
+  companyUsers.map((user) => String(user.user_id))
+);
+
+const unassignedRadarViews = radarExports.filter((item) => {
+  if (!item.clientId) return true;
+
+  return !companyUserIds.has(String(item.clientId));
+}).length;
+
+  const unassignedKanban: Record<string, number> = {};
+  for (const lead of unassignedLeads) {
+    const label = kanbanLabel(lead.status);
+    unassignedKanban[label] = (unassignedKanban[label] || 0) + 1;
+  }
+
+  const unassignedCustomersWithoutContact = unassignedCustomers.filter(
+    (customer) =>
+      !customer.last_contact_at || new Date(customer.last_contact_at) < sevenDaysAgo
+  ).length;
+
+  const unassignedOrderIds = new Set(
+    unassignedOrders.map((order) => String(order.id))
+  );
+
+  const unassignedProductMix = new Set(
+    orderItems
+      .filter((item) => unassignedOrderIds.has(String(item.order_id)))
+      .map((item) => item.product_code || item.product_name)
+  ).size;
+
+  const hasUnassignedData =
+  unassignedCustomers.length > 0 ||
+  unassignedOrders.length > 0 ||
+  unassignedLeads.length > 0 ||
+  unassignedActivities.length > 0 ||
+  unassignedMessages.length > 0 ||
+  unassignedCrmMessages.length > 0 ||
+  unassignedQuoteCount > 0 ||
+  unassignedRadarViews > 0;
+
+  const unassignedDTO = {
+    id: "sem_vendedor",
+    name: "Sem vendedor definido",
+    email: "",
+    phone: "",
+    role: "UNASSIGNED",
+
+    goal: 0,
+    goalFormatted: money(0),
+    sold: unassignedSold,
+    soldFormatted: money(unassignedSold),
+    goalPercent: 0,
+
+    commissionPercent: 0,
+    commissionValue: 0,
+    commissionValueFormatted: money(0),
+
+    orders: unassignedOrders.length,
+    averageTicket:
+      unassignedOrders.length > 0
+        ? unassignedSold / unassignedOrders.length
+        : 0,
+    averageTicketFormatted: money(
+      unassignedOrders.length > 0
+        ? unassignedSold / unassignedOrders.length
+        : 0
+    ),
+
+    quotes: unassignedQuoteCount,
+quoteAverage:
+  unassignedQuoteCount > 0
+    ? unassignedSold / unassignedQuoteCount
+    : 0,
+quoteAverageFormatted: money(
+  unassignedQuoteCount > 0
+    ? unassignedSold / unassignedQuoteCount
+    : 0
+),
+
+    messagesSent: unassignedMessagesSent,
+    messagesAnswered: unassignedMessagesAnswered,
+    messagesNotAnswered: Math.max(
+      unassignedMessagesSent - unassignedMessagesAnswered,
+      0
+    ),
+    messageResponseRate:
+      unassignedMessagesSent > 0
+        ? Math.round(
+            (unassignedMessagesAnswered / unassignedMessagesSent) * 100
+          )
+        : 0,
+
+    radarViews: unassignedRadarViews,
+
+    customers: unassignedCustomers.length,
+    customersActive: unassignedCustomers.filter(
+      (customer) => normalize(customer.status) === "ativo"
+    ).length,
+    customersInactive: unassignedCustomers.filter(
+      (customer) => normalize(customer.status) === "inativo"
+    ).length,
+    customersRisk: unassignedCustomers.filter(
+      (customer) =>
+        normalize(customer.status) === "risco" ||
+        normalize(customer.risk_level) === "alto"
+    ).length,
+    customersWithoutContact: unassignedCustomersWithoutContact,
+
+    boletoOverdue: unassignedOrders.filter(
+      (order) =>
+        order.boleto_due_date &&
+        new Date(order.boleto_due_date) < now &&
+        normalize(order.status) !== "pago"
+    ).length,
+    productMix: unassignedProductMix,
+
+    activities: unassignedActivities.length,
+    kanban: unassignedKanban,
+
+    zentraIndex: 0,
+
+    insights: [
+      `${unassignedOrders.length} pedido(s) ainda estão sem vendedor definido.`,
+      `${unassignedLeads.length} lead(s) ainda estão sem responsável.`,
+      `${unassignedCustomers.length} cliente(s) ainda estão sem vendedor.`,
+      `${
+        unassignedMessages.length + unassignedCrmMessages.length
+      } mensagem(ns) ainda não puderam ser associadas a um vendedor.`,
+    ],
+
+    recentOrders: unassignedOrders.slice(0, 10),
+    recentActivities: unassignedActivities.slice(0, 10),
+    recentCustomers: unassignedCustomers.slice(0, 10),
+  };
+
+  const completeSellersDTO = hasUnassignedData
+    ? [...sellersDTO, unassignedDTO]
+    : sellersDTO;
+
+  // Os totais da supervisão são calculados diretamente nos dados da empresa.
+  // Assim, nenhum registro desaparece por falta de vínculo com um vendedor.
+  const teamRevenue = orders.reduce(
+    (sum, order) => sum + Number(order.total || 0),
+    0
+  );
+  const teamGoal = sellersDTO.reduce((sum, seller) => sum + seller.goal, 0);
+  const teamOrders = orders.length;
+
+  
+  const teamQuotes = customers.filter((customer) => {
+  if (!customer.last_quote_at) return false;
+
+  return (
+    customer.last_quote_at >= range.start &&
+    customer.last_quote_at <= range.end
+  );
+}).length;
+
+const allCompanyMessages = [
+  ...messages.map((message) => ({
+    direction: message.direction,
+  })),
+  ...crmMessages.map((message) => ({
+    direction: message.direction,
+  })),
+];
+  const teamMessagesSent = allCompanyMessages.filter((message) =>
+    ["out", "outbound", "sent", "enviada", "enviado"].includes(
+      normalize(message.direction)
+    )
+  ).length;
+
+  const teamMessagesAnswered = allCompanyMessages.filter((message) =>
+    ["in", "inbound", "received", "recebida", "recebido"].includes(
+      normalize(message.direction)
+    )
+  ).length;
+
+  const teamRadarViews = radarExports.length;
+
+  const teamCustomers = customers.length;
+  const teamCustomersWithoutContact = customers.filter(
+    (customer) =>
+      !customer.last_contact_at || new Date(customer.last_contact_at) < sevenDaysAgo
+  ).length;
 
   const attentionSellers = sellersDTO.filter(
     (s) =>
@@ -694,7 +1018,7 @@ export async function buildCommandCenterDashboard({
       s.goalPercent < 70
   );
 
-  const ranking = [...sellersDTO].sort((a, b) => b.sold - a.sold);
+  const ranking = [...completeSellersDTO].sort((a, b) => b.sold - a.sold);
 
   return {
     ok: true,
@@ -709,6 +1033,20 @@ export async function buildCommandCenterDashboard({
       ordersFound: orders.length,
       leadsFound: leads.length,
       activitiesFound: activities.length,
+      messagesFound: messages.length,
+
+      crmMessagesFound: crmMessages.length,
+      orderItemsFound: orderItems.length,
+radarExportsFound: radarExports.length,
+      unassigned: {
+        customers: unassignedCustomers.length,
+        orders: unassignedOrders.length,
+        leads: unassignedLeads.length,
+        activities: unassignedActivities.length,
+        messages: unassignedMessages.length + unassignedCrmMessages.length,
+quotes: unassignedQuoteCount,
+radarViews: unassignedRadarViews,
+      },
     },
 
     period: {

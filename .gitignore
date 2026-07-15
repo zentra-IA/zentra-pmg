@@ -32,4 +32,4 @@ prisma/dev.db-journal
 
 # Arquivos temporários
 *.tmp
-whatsapp-server/
+whatsapp-server/lib/command-center/dashboard-service.backup.ts
