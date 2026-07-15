@@ -13,6 +13,28 @@ type ParsedLine = {
   searchText: string;
 };
 
+function roundMoney(value: number): number {
+  return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+}
+
+function normalizeDiscountPercent(value: unknown): number {
+  const parsed = Number(String(value ?? 0).replace(",", "."));
+
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+
+  // Evita desconto negativo ou acima de 100%.
+  return Math.min(100, roundMoney(parsed));
+}
+
+function applyDiscount(value: number, discountPercent: number): number {
+  const base = roundMoney(value);
+  const percent = normalizeDiscountPercent(discountPercent);
+
+  if (!percent) return base;
+
+  return roundMoney(base * (1 - percent / 100));
+}
+
 function isValidUuid(value: unknown): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     String(value || "")
@@ -202,10 +224,13 @@ function parseLine(raw: string): ParsedLine {
   const quantityMatch = text.match(/(^|\s)(\d+(?:[,.]\d+)?)/);
   const quantity = quantityMatch ? Number(quantityMatch[2].replace(",", ".")) : 1;
 
-  const discountMatch = text.match(/desconto\s*(?:de)?\s*(\d+(?:[,.]\d+)?)\s*%?/);
-  const discountPercent = discountMatch
-    ? Number(discountMatch[1].replace(",", "."))
-    : 0;
+  const discountMatch = text.match(
+    /(?:com\s+)?desconto\s*(?:de)?\s*(\d+(?:[,.]\d+)?)\s*%?/
+  );
+
+  const discountPercent = normalizeDiscountPercent(
+    discountMatch?.[1] ?? 0
+  );
 
   let quantityUnit: string | null = null;
 
@@ -280,6 +305,107 @@ function tokensOf(query: string): string[] {
           "desconto",
         ].includes(token)
     );
+}
+
+
+function tokenMatchesHaystack(haystack: string, token: string): boolean {
+  const words = haystack.split(/\s+/).filter(Boolean);
+
+  if (words.includes(token)) return true;
+
+  // Aceita singular/plural e pequenas variações de OCR/digitação.
+  if (
+    words.some(
+      (word) =>
+        word.length >= 4 &&
+        token.length >= 4 &&
+        (word.startsWith(token) ||
+          token.startsWith(word) ||
+          word.includes(token) ||
+          token.includes(word))
+    )
+  ) {
+    return true;
+  }
+
+  if (token.length >= 5) {
+    for (const word of words) {
+      if (Math.abs(word.length - token.length) > 1) continue;
+
+      let differences = 0;
+      const length = Math.max(word.length, token.length);
+
+      for (let index = 0; index < length; index++) {
+        if (word[index] !== token[index]) differences++;
+        if (differences > 1) break;
+      }
+
+      if (differences <= 1) return true;
+    }
+  }
+
+  return false;
+}
+
+function genericProductMatch(query: string, row: PriceRow): {
+  accepted: boolean;
+  matched: number;
+  total: number;
+  coverage: number;
+} {
+  const tokens = tokensOf(query);
+  const haystack = getHaystack(row);
+
+  if (!tokens.length) {
+    return { accepted: false, matched: 0, total: 0, coverage: 0 };
+  }
+
+  const matches = tokens.map((token) => tokenMatchesHaystack(haystack, token));
+  const matched = matches.filter(Boolean).length;
+  const coverage = matched / tokens.length;
+
+  /*
+   * Regra geral para os mais de 2 mil itens:
+   * - 1 ou 2 termos: todos precisam existir.
+   * - 3 termos: pelo menos 2, mas o primeiro termo (família) é obrigatório.
+   * - 4+ termos: mínimo de 75%, com o primeiro termo obrigatório.
+   *
+   * Isso impede absurdos como:
+   * "azeitona verde média" -> "aguardente Pitú"
+   * "farinha de trigo pizza" -> "farinha de mandioca"
+   */
+  const firstTokenMatches = matches[0] === true;
+
+  let accepted = false;
+
+  if (tokens.length <= 2) {
+    accepted = matched === tokens.length;
+  } else if (tokens.length === 3) {
+    accepted = firstTokenMatches && matched >= 2;
+  } else {
+    accepted = firstTokenMatches && coverage >= 0.75;
+  }
+
+  return {
+    accepted,
+    matched,
+    total: tokens.length,
+    coverage,
+  };
+}
+
+function unitMatchesRequest(row: PriceRow, requestedUnit?: string | null): boolean {
+  if (!requestedUnit) return true;
+
+  const wanted = normalizeUnitAlias(requestedUnit);
+  const sellUnit = normalizeUnitAlias(getUnit(row));
+  const haystack = getHaystack(row);
+
+  if (sellUnit === wanted) return true;
+
+  // Também aceita quando a embalagem solicitada aparece no nome oficial.
+  const pattern = unitPattern(wanted);
+  return new RegExp(`\\b(?:${pattern})\\b`, "i").test(haystack);
 }
 
 function wantsCheapest(query: string): boolean {
@@ -544,22 +670,36 @@ function dedupeScoredRows<T extends { row: PriceRow; score: number; reasons: str
   return Array.from(byCode.values());
 }
 
-function searchRows(rows: PriceRow[], query: string, limit = 20) {
+function searchRows(
+  rows: PriceRow[],
+  query: string,
+  limit = 20,
+  requestedUnit?: string | null
+) {
   const cheapest = wantsCheapest(query);
-  const product = requestedProduct(query);
 
   const scoredRaw = rows
+    .filter((row) => getPrice(row) > 0)
+    .filter((row) => unitMatchesRequest(row, requestedUnit))
     .map((row) => {
+      const generic = genericProductMatch(query, row);
       const result = scoreRow(query, row);
+
       return {
         row,
-        score: result.score,
-        reasons: result.reasons,
+        score:
+          result.score +
+          Math.round(generic.coverage * 500) +
+          generic.matched * 80,
+        reasons: [
+          ...result.reasons,
+          `cobertura dos termos: ${generic.matched}/${generic.total}`,
+        ],
         price: getPrice(row),
+        generic,
       };
     })
-    .filter((item) => item.score > 0)
-    .filter((item) => getPrice(item.row) > 0)
+    .filter((item) => item.generic.accepted)
     .filter((item) => !commercialReject(query, item.row));
 
   const scored = dedupeScoredRows(scoredRaw, query)
@@ -569,41 +709,17 @@ function searchRows(rows: PriceRow[], query: string, limit = 20) {
         const priceB = comparableCommercialPrice(query, b.row);
 
         if (priceA !== priceB) return priceA - priceB;
-        return b.score - a.score;
       }
 
       return b.score - a.score;
     })
     .slice(0, limit);
 
-  // Se o produto foi detectado, NUNCA abre fallback para catálogo inteiro.
-  if (product) {
-    return scored.map((item) => toOption(item.row, item.score, item.reasons));
-  }
-
-  const fallbackRows = dedupeScoredRows(
-    rows
-      .filter((row) => getPrice(row) > 0)
-      .filter((row) => !commercialReject(query, row))
-      .map((row) => ({
-        row,
-        score: 1,
-        price: getPrice(row),
-        reasons: ["fallback: catálogo disponível"],
-      })),
-    query
-  );
-
-  const base = scored.length
-    ? scored
-    : fallbackRows
-        .sort((a, b) => {
-          if (cheapest) return getPrice(a.row) - getPrice(b.row);
-          return 0;
-        })
-        .slice(0, limit);
-
-  return base.map((item) => toOption(item.row, item.score, item.reasons));
+  /*
+   * Nunca mais usamos o catálogo inteiro como fallback.
+   * Se não houver correspondência real, devolvemos [] para revisão manual.
+   */
+  return scored.map((item) => toOption(item.row, item.score, item.reasons));
 }
 
 function extractFirstKg(name: string): number | null {
@@ -917,12 +1033,53 @@ function buildFinalItem(params: {
   discountPercent?: number;
 }) {
   const quantity = Number(params.quantity || 1);
-  const discountPercent = Number(params.discountPercent || 0);
-  const requestedUnit = String(params.quantityUnit || params.option?.sell_unit || "UN").toUpperCase();
+  const discountPercent = normalizeDiscountPercent(params.discountPercent);
+  const requestedUnit = String(
+    params.quantityUnit || params.option?.sell_unit || "UN"
+  ).toUpperCase();
 
   const conversion = getBilledQuantity(quantity, requestedUnit, params.option);
-  const subtotalRaw = conversion.billedQuantity * Number(params.option?.price || 0);
-  const subtotal = subtotalRaw - subtotalRaw * (discountPercent / 100);
+
+  const originalTableUnitPrice = roundMoney(
+    Number(params.option?.price || 0)
+  );
+
+  const originalCommercialUnitPrice = roundMoney(
+    Number(conversion.commercialUnitPrice || 0)
+  );
+
+  /*
+   * Regra financeira rígida:
+   * preço final da unidade = preço original × (1 - desconto / 100)
+   * total = preço final da unidade × quantidade solicitada
+   *
+   * Exemplos:
+   * R$ 100,00 - 3% = R$ 97,00
+   * R$ 100,00 - 2,95% = R$ 97,05
+   *
+   * A unidade pode ser KG, PÇ, CX, BD, PCT etc.
+   */
+  const discountedCommercialUnitPrice = applyDiscount(
+    originalCommercialUnitPrice,
+    discountPercent
+  );
+
+  const discountedTableUnitPrice = applyDiscount(
+    originalTableUnitPrice,
+    discountPercent
+  );
+
+  const subtotal = roundMoney(
+    discountedCommercialUnitPrice * quantity
+  );
+
+  const discountAmountPerUnit = roundMoney(
+    originalCommercialUnitPrice - discountedCommercialUnitPrice
+  );
+
+  const totalDiscountAmount = roundMoney(
+    discountAmountPerUnit * quantity
+  );
 
   return {
     raw: params.raw,
@@ -932,8 +1089,17 @@ function buildFinalItem(params: {
     unit: conversion.displayUnit,
     billedQuantity: conversion.billedQuantity,
     tableUnit: params.option?.sell_unit || "UN",
-    unitPrice: conversion.commercialUnitPrice,
-    tableUnitPrice: Number(params.option?.price || 0),
+
+    // Compatibilidade com o frontend existente:
+    unitPrice: discountedCommercialUnitPrice,
+    tableUnitPrice: discountedTableUnitPrice,
+
+    originalUnitPrice: originalCommercialUnitPrice,
+    originalTableUnitPrice,
+    discountedUnitPrice: discountedCommercialUnitPrice,
+    discountAmountPerUnit,
+    totalDiscountAmount,
+
     equivalentText: conversion.equivalentText,
     subtotal,
     discountPercent,
@@ -966,10 +1132,27 @@ if (item.equivalentText) {
   lines.push(`📐 Conversão: ${item.equivalentText}`);
 }
 
-const finalUnitPrice =
-  item.quantity > 0 ? item.subtotal / item.quantity : item.unitPrice;
+const finalUnitPrice = roundMoney(
+  Number(item.discountedUnitPrice ?? item.unitPrice ?? 0)
+);
 
-lines.push(`💰 Preço unitário final: ${moneyBR(finalUnitPrice)}`);
+if (Number(item.discountPercent || 0) > 0) {
+  lines.push(
+    `🏷️ Desconto aplicado: ${String(item.discountPercent).replace(".", ",")}%`
+  );
+  lines.push(
+    `💰 Preço original por ${item.unit}: ${moneyBR(item.originalUnitPrice)}`
+  );
+  lines.push(
+    `✅ Preço com desconto por ${item.unit}: ${moneyBR(finalUnitPrice)}`
+  );
+  lines.push(
+    `💸 Economia neste item: ${moneyBR(item.totalDiscountAmount)}`
+  );
+} else {
+  lines.push(`💰 Preço unitário final: ${moneyBR(finalUnitPrice)}`);
+}
+
 lines.push(`💲Valor total deste item: ${moneyBR(item.subtotal)}`);
 
     lines.push("");
@@ -989,17 +1172,15 @@ function hasExplicitCommercialUnit(raw: string): boolean {
 }
 
 function isCheapestOptionsRequest(raw: string): boolean {
-  const q = normalize(raw);
-
-  if (!wantsCheapest(q)) return false;
-
-  // Regra de negócio:
-  // "6 muçarelas mais baratas" = listar 6 opções de muçarela mais baratas.
-  // "6 peças muçarela mais barata" = cotar 6 peças da opção mais barata.
-  // Ou seja: sem unidade explícita, o número é quantidade de sugestões, não quantidade comprada.
-  if (hasExplicitCommercialUnit(q)) return false;
-
-  return requestedProduct(q) !== null;
+  /*
+   * Regra global solicitada:
+   * "10 muçarelas mais baratas" -> 10 opções
+   * "5 manteigas balde mais baratas" -> 5 opções em balde
+   * "8 farinhas de trigo pizza mais baratas" -> 8 opções
+   *
+   * Vale para qualquer produto dos mais de 2 mil itens do catálogo.
+   */
+  return wantsCheapest(raw);
 }
 
 function formatCheapestOptionsQuote(params: {
@@ -1007,6 +1188,7 @@ function formatCheapestOptionsQuote(params: {
   blocks: Array<{
     raw: string;
     options: any[];
+    discountPercent?: number;
   }>;
 }) {
   const lines: string[] = [];
@@ -1029,12 +1211,30 @@ function formatCheapestOptionsQuote(params: {
       return;
     }
 
+    const discountPercent = normalizeDiscountPercent(
+      block.discountPercent
+    );
+
     block.options.forEach((option, index) => {
       const unit = String(option.sell_unit || option.unit || "UN").toUpperCase();
-      const price = moneyBR(Number(option.price || 0));
+      const originalPrice = roundMoney(Number(option.price || 0));
+      const finalPrice = applyDiscount(originalPrice, discountPercent);
 
       lines.push(`${index + 1}º ${option.official_name}`);
-      lines.push(`   Vend. por: ${unit} • Preço: ${price}`);
+
+      if (discountPercent > 0) {
+        lines.push(
+          `   Vend. por: ${unit} • Original: ${moneyBR(originalPrice)}`
+        );
+        lines.push(
+          `   Desconto: ${String(discountPercent).replace(".", ",")}% • Final: ${moneyBR(finalPrice)}`
+        );
+      } else {
+        lines.push(
+          `   Vend. por: ${unit} • Preço: ${moneyBR(originalPrice)}`
+        );
+      }
+
       lines.push("");
     });
 
@@ -1051,6 +1251,7 @@ function formatMixedQuote(params: {
   optionBlocks: Array<{
     raw: string;
     options: any[];
+    discountPercent?: number;
   }>;
   items: any[];
   total: number;
@@ -1184,7 +1385,12 @@ export async function POST(req: NextRequest) {
     const tableDate = getTableDate(rows);
 
     if (body.searchOnly) {
-      const options = searchRows(rows, rawText, Number(body.limit || 80));
+      const options = searchRows(
+        rows,
+        rawText,
+        Number(body.limit || 80),
+        body.quantityUnit || body.unit || null
+      );
 
       return NextResponse.json({
         success: true,
@@ -1220,7 +1426,12 @@ export async function POST(req: NextRequest) {
         })
         .filter(Boolean);
 
-      const total = items.reduce((sum: number, item: any) => sum + Number(item.subtotal || 0), 0);
+      const total = roundMoney(
+        items.reduce(
+          (sum: number, item: any) => sum + Number(item.subtotal || 0),
+          0
+        )
+      );
       const outputText = formatFinalQuote({
         clientName: body.clientName,
         items,
@@ -1245,7 +1456,11 @@ export async function POST(req: NextRequest) {
 
     const autoItems: any[] = [];
     const candidateGroups: any[] = [];
-    const optionBlocks: Array<{ raw: string; options: any[] }> = [];
+    const optionBlocks: Array<{
+      raw: string;
+      options: any[];
+      discountPercent?: number;
+    }> = [];
 
     lines.forEach((line, index) => {
       const parsed = parseLine(line);
@@ -1256,17 +1471,28 @@ export async function POST(req: NextRequest) {
           Math.min(20, Math.floor(Number(parsed.quantity || 1)))
         );
 
-        const options = searchRows(rows, parsed.searchText || line, optionLimit);
+        const options = searchRows(
+          rows,
+          parsed.searchText || line,
+          optionLimit,
+          parsed.quantityUnit
+        );
 
         optionBlocks.push({
           raw: line,
           options,
+          discountPercent: parsed.discountPercent,
         });
 
         return;
       }
 
-      const options = searchRows(rows, parsed.searchText || line, 20);
+      const options = searchRows(
+        rows,
+        parsed.searchText || line,
+        20,
+        parsed.quantityUnit
+      );
       const canAutoCheapest = wantsCheapest(line) && options.length > 0;
 
       if (canAutoCheapest) {
@@ -1304,7 +1530,12 @@ export async function POST(req: NextRequest) {
     });
 
     if (candidateGroups.length === 0) {
-      const total = autoItems.reduce((sum: number, item: any) => sum + Number(item.subtotal || 0), 0);
+      const total = roundMoney(
+        autoItems.reduce(
+          (sum: number, item: any) => sum + Number(item.subtotal || 0),
+          0
+        )
+      );
       const outputText = formatMixedQuote({
         clientName: body.clientName,
         optionBlocks,
