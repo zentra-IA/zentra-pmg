@@ -263,21 +263,18 @@ export async function buildCommandCenterDashboard({
       orderBy: { created_at: "desc" },
     }),
 
-    prisma.messages.findMany({
-  where: {
-    company_id: companyId,
-    created_at: {
-      gte: range.start,
-      lte: range.end,
-    },
-  },
-  select: {
-    id: true,
-    lead_id: true,
-    direction: true,
-    created_at: true,
-  },
-}),
+    prisma.$queryRaw<any[]>`
+      SELECT
+        id,
+        lead_id,
+        direction,
+        payload,
+        created_at
+      FROM messages
+      WHERE company_id = ${companyId}::uuid
+        AND created_at >= ${range.start}
+        AND created_at <= ${range.end}
+    `,
 
     prisma.crmMessage.findMany({
       where: {
@@ -537,27 +534,50 @@ prisma.prospectExport.findMany({
 
   const leadsById = new Map(leads.map((lead) => [String(lead.id), lead]));
 
- function resolveMessageSeller(message: any) {
-  if (
-    message.lead_id &&
-    leadOwner.has(String(message.lead_id))
-  ) {
-    return (
-      leadOwner.get(String(message.lead_id)) ||
-      "sem_vendedor"
-    );
-  }
+  function resolveMessageSeller(message: any) {
+    const payload =
+      message?.payload &&
+      typeof message.payload === "object" &&
+      !Array.isArray(message.payload)
+        ? message.payload
+        : null;
 
-  if (message.lead_id) {
-    const lead = leadsById.get(String(message.lead_id));
+    const payloadUserId =
+      payload?.user_id ||
+      payload?.userId ||
+      payload?.seller_id ||
+      payload?.sellerId;
 
-    if (lead) {
-      return resolveLeadSeller(lead);
+    if (payloadUserId) {
+      const companyUser = companyUsers.find(
+        (user) => String(user.user_id) === String(payloadUserId)
+      );
+
+      if (companyUser?.user_id) {
+        return String(companyUser.user_id);
+      }
     }
-  }
 
-  return "sem_vendedor";
-}
+    if (
+      message.lead_id &&
+      leadOwner.has(String(message.lead_id))
+    ) {
+      return (
+        leadOwner.get(String(message.lead_id)) ||
+        "sem_vendedor"
+      );
+    }
+
+    if (message.lead_id) {
+      const lead = leadsById.get(String(message.lead_id));
+
+      if (lead) {
+        return resolveLeadSeller(lead);
+      }
+    }
+
+    return "sem_vendedor";
+  }
 
   function resolveCrmMessageSeller(message: any) {
     const customer = findCustomerByPhone(message.phone);
