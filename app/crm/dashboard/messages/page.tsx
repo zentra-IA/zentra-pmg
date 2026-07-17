@@ -159,7 +159,17 @@ function hasFeature(data: any, feature: string) {
 }
 
 function formatTriggers(value: any) {
-  if (Array.isArray(value)) return value.join("\n");
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  if (typeof value === "string") {
+    return value.trim();
+  }
+
   return "";
 }
 
@@ -584,8 +594,23 @@ const quoteLink = `${origin}/crm/dashboard/cotador`;
         return;
       }
 
-      resetForm();
       await loadTemplates();
+
+      const savedId =
+        data?.id ||
+        data?.template?.id ||
+        data?.data?.id ||
+        editingId;
+
+      if (savedId) {
+        setEditingId(String(savedId));
+      }
+
+      alert(
+        editingId
+          ? "Automação atualizada com sucesso."
+          : "Automação salva com sucesso."
+      );
     } finally {
       setLoading(false);
     }

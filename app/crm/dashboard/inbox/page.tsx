@@ -315,6 +315,9 @@ export default function InboxPage() {
   const [sending, setSending] =
     useState(false);
 
+  const [aiUpdating, setAiUpdating] =
+    useState(false);
+
   const [
     mediaDraft,
     setMediaDraft,
@@ -535,6 +538,77 @@ export default function InboxPage() {
       );
     } finally {
       setSending(false);
+    }
+  }
+
+  async function toggleAI() {
+    if (!selectedLead || aiUpdating) return;
+
+    const nextPaused = !Boolean(
+      selectedLead.ai_paused
+    );
+
+    setAiUpdating(true);
+
+    try {
+      const response = await fetch(
+        "/api/crm/inbox",
+        {
+          method: "PATCH",
+          credentials: "include",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            leadId: selectedLead.id,
+            ai_paused: nextPaused,
+          }),
+        }
+      );
+
+      const data = await response
+        .json()
+        .catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "Erro ao atualizar a IA."
+        );
+      }
+
+      const updatedLead =
+        data?.lead || {
+          ...selectedLead,
+          ai_paused: nextPaused,
+        };
+
+      setSelectedLead(
+        updatedLead
+      );
+
+      setLeads((current) =>
+        current.map((lead) =>
+          String(lead.id) ===
+          String(selectedLead.id)
+            ? {
+                ...lead,
+                ...updatedLead,
+                ai_paused:
+                  updatedLead.ai_paused ??
+                  nextPaused,
+              }
+            : lead
+        )
+      );
+    } catch (error: any) {
+      alert(
+        error?.message ||
+          "Erro ao atualizar a IA."
+      );
+    } finally {
+      setAiUpdating(false);
     }
   }
 
@@ -893,7 +967,45 @@ export default function InboxPage() {
                   </span>
                 </div>
 
+                <div className="ai-control">
+                  <span
+                    className={`ai-status ${
+                      selectedLead.ai_paused
+                        ? "paused"
+                        : "active"
+                    }`}
+                  >
+                    <i />
+                    {selectedLead.ai_paused
+                      ? "IA pausada"
+                      : "IA ativa"}
+                  </span>
+
+                  <button
+                    type="button"
+                    className={`ai-toggle ${
+                      selectedLead.ai_paused
+                        ? "activate"
+                        : "pause"
+                    }`}
+                    onClick={toggleAI}
+                    disabled={aiUpdating}
+                    title={
+                      selectedLead.ai_paused
+                        ? "Reativar respostas automáticas"
+                        : "Pausar respostas automáticas"
+                    }
+                  >
+                    {aiUpdating
+                      ? "Salvando..."
+                      : selectedLead.ai_paused
+                        ? "Ativar IA"
+                        : "Pausar IA"}
+                  </button>
+                </div>
+
                 <select
+                  className="status-select"
                   value={normalizeStatus(
                     selectedLead.status
                   )}
@@ -1380,7 +1492,8 @@ export default function InboxPage() {
             auto
             auto
             minmax(0, 1fr)
-            210px;
+            auto
+            190px;
           align-items: center;
           gap: 12px;
           border-bottom: 1px solid
@@ -1408,6 +1521,79 @@ export default function InboxPage() {
           font-size: 12px;
           text-overflow: ellipsis;
           white-space: nowrap;
+        }
+
+        .ai-control {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          white-space: nowrap;
+        }
+
+        .ai-status {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          border-radius: 999px;
+          padding: 7px 10px;
+          font-size: 11px;
+          font-weight: 950;
+        }
+
+        .ai-status i {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: currentColor;
+          box-shadow: 0 0 0 4px
+            rgba(255, 255, 255, 0.75);
+        }
+
+        .ai-status.active {
+          color: #15803d;
+          background: #dcfce7;
+        }
+
+        .ai-status.paused {
+          color: #b45309;
+          background: #fef3c7;
+        }
+
+        .ai-toggle {
+          border-radius: 12px;
+          padding: 9px 12px;
+          font: inherit;
+          font-size: 12px;
+          font-weight: 950;
+          cursor: pointer;
+          transition:
+            transform 0.15s ease,
+            opacity 0.15s ease;
+        }
+
+        .ai-toggle:hover:not(:disabled) {
+          transform: translateY(-1px);
+        }
+
+        .ai-toggle:disabled {
+          opacity: 0.55;
+          cursor: wait;
+        }
+
+        .ai-toggle.activate {
+          border: 1px solid #16a34a;
+          color: #166534;
+          background: #f0fdf4;
+        }
+
+        .ai-toggle.pause {
+          border: 1px solid #f59e0b;
+          color: #92400e;
+          background: #fffbeb;
+        }
+
+        .status-select {
+          min-width: 0;
         }
 
         .mobile-back {
@@ -1724,8 +1910,13 @@ export default function InboxPage() {
               minmax(0, 1fr);
           }
 
+          .ai-control,
           .chat-header select {
             grid-column: 1 / -1;
+          }
+
+          .ai-control {
+            justify-content: space-between;
           }
 
           .conversation-list {
