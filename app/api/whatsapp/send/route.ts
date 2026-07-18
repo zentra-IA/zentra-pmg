@@ -95,6 +95,7 @@ async function isSessionOnline(
 
 async function countQueueSentToday(
   companyId: string,
+  userId: string,
   sessionNumber: number
 ) {
   const today = new Date();
@@ -104,6 +105,7 @@ async function countQueueSentToday(
     .from("automation_queue")
     .select("*", { count: "exact", head: true })
     .eq("company_id", companyId)
+    .eq("owner_user_id", userId)
     .eq("session_id", sessionNumber)
     .eq("status", "sent")
     .gte("sent_at", today.toISOString());
@@ -121,6 +123,7 @@ async function countQueueSentToday(
 
 async function countManualSentToday(
   companyId: string,
+  userId: string,
   finalSessionId: string
 ) {
   const today = new Date();
@@ -133,6 +136,7 @@ async function countManualSentToday(
     .eq("topic", "whatsapp")
     .contains("payload", {
       company_id: companyId,
+      user_id: userId,
       session_id: finalSessionId,
     })
     .gte("created_at", today.toISOString());
@@ -150,12 +154,13 @@ async function countManualSentToday(
 
 async function countTotalSentToday(
   companyId: string,
+  userId: string,
   sessionNumber: number,
   finalSessionId: string
 ) {
   const [queueSent, manualSent] = await Promise.all([
-    countQueueSentToday(companyId, sessionNumber),
-    countManualSentToday(companyId, finalSessionId),
+    countQueueSentToday(companyId, userId, sessionNumber),
+    countManualSentToday(companyId, userId, finalSessionId),
   ]);
 
   return queueSent + manualSent;
@@ -186,6 +191,17 @@ export async function POST(req: NextRequest) {
     const access = await requireCompanyAccess(req);
     const companyId = access.companyId;
     const userId = access.userId;
+    const role = String(access.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Acesso negado.",
+        },
+        { status: 403 }
+      );
+    }
 
     if (!companyId || !userId) {
       return NextResponse.json(
@@ -219,12 +235,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { data: lead, error: leadError } = await supabase
+    let leadQuery = supabase
       .from("leads")
       .select("*")
       .eq("id", contactId)
-      .eq("company_id", companyId)
-      .maybeSingle();
+      .eq("company_id", companyId);
+
+    if (role === "VENDEDOR") {
+      leadQuery = leadQuery.eq("owner_user_id", userId);
+    }
+
+    const { data: lead, error: leadError } =
+      await leadQuery.maybeSingle();
 
     if (leadError || !lead) {
       return NextResponse.json(
@@ -260,6 +282,7 @@ export async function POST(req: NextRequest) {
 
     const usedToday = await countTotalSentToday(
       companyId,
+      userId,
       sessionNumber,
       finalSession
     );
@@ -409,7 +432,7 @@ try {
     /*
      * Atualiza o lead sem bloquear o envio caso o CRM falhe.
      */
-    const { error: leadUpdateError } = await supabase
+    let leadUpdateQuery = supabase
       .from("leads")
       .update({
         status: nextLeadStatus(lead.status),
@@ -420,6 +443,15 @@ try {
       })
       .eq("id", lead.id)
       .eq("company_id", companyId);
+
+    if (role === "VENDEDOR") {
+      leadUpdateQuery = leadUpdateQuery.eq(
+        "owner_user_id",
+        userId
+      );
+    }
+
+    const { error: leadUpdateError } = await leadUpdateQuery;
 
     if (leadUpdateError) {
       console.error(

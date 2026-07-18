@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
 
@@ -10,13 +11,7 @@ function normalizeRole(role?: string | null) {
   return "VENDEDOR";
 }
 
-function getAuth(req: NextRequest) {
-  const companyId = req.cookies.get("zentra_company_id")?.value;
-  const userId = req.cookies.get("zentra_user_id")?.value;
-  const role = normalizeRole(req.cookies.get("zentra_user_role")?.value);
-
-  return { companyId, userId, role };
-}
+type CompanyAccess = Awaited<ReturnType<typeof requireCompanyAccess>>;
 
 function cleanText(value: unknown) {
   return String(value || "").trim();
@@ -35,24 +30,37 @@ function cleanMoney(value: unknown) {
 }
 
 function cleanWeekdays(value: unknown) {
-  if (Array.isArray(value)) return value.map((item) => cleanText(item)).filter(Boolean);
+  if (Array.isArray(value)) {
+    return value.map((item) => cleanText(item)).filter(Boolean);
+  }
+
   const text = cleanText(value);
   if (!text) return [];
+
   return text
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
 }
 
-function mapCustomerPayload(body: any, auth: ReturnType<typeof getAuth>) {
+function mapCustomerPayload(
+  body: any,
+  access: CompanyAccess,
+  role: ReturnType<typeof normalizeRole>
+) {
   return {
-    company_id: auth.companyId!,
-    seller_id: auth.role === "VENDEDOR" ? auth.userId || null : cleanOptional(body?.seller_id) || auth.userId || null,
+    company_id: access.companyId,
+    seller_id:
+      role === "VENDEDOR"
+        ? access.userId || null
+        : cleanOptional(body?.seller_id) || access.userId || null,
 
     internal_code: cleanOptional(body?.internal_code),
     erp_code: cleanOptional(body?.erp_code),
     document: cleanOptional(body?.document),
-    legal_name: cleanText(body?.legal_name || body?.name || body?.razao_social),
+    legal_name: cleanText(
+      body?.legal_name || body?.name || body?.razao_social
+    ),
     trade_name: cleanOptional(body?.trade_name || body?.nome_fantasia),
     segment: cleanOptional(body?.segment),
     category: cleanOptional(body?.category),
@@ -81,20 +89,45 @@ function mapCustomerPayload(body: any, auth: ReturnType<typeof getAuth>) {
   };
 }
 
-function canAccessWhere(auth: ReturnType<typeof getAuth>) {
-  const base: any = { company_id: auth.companyId };
-  if (auth.role === "VENDEDOR") {
-    base.seller_id = auth.userId;
+function canAccessWhere(
+  access: CompanyAccess,
+  role: ReturnType<typeof normalizeRole>
+) {
+  const where: any = {
+    company_id: access.companyId,
+  };
+
+  if (role === "VENDEDOR") {
+    where.seller_id = access.userId;
   }
-  return base;
+
+  return where;
+}
+
+function supervisorForbidden() {
+  return NextResponse.json(
+    {
+      error:
+        "Supervisor não possui acesso a esta rota operacional. Utilize o Command Center.",
+    },
+    { status: 403 }
+  );
 }
 
 export async function GET(req: NextRequest) {
   try {
-    const auth = getAuth(req);
+    const access = await requireCompanyAccess(req);
+    const role = normalizeRole(access.userRole);
 
-    if (!auth.companyId) {
-      return NextResponse.json({ error: "Empresa não encontrada na sessão." }, { status: 401 });
+    if (role === "SUPERVISOR") {
+      return supervisorForbidden();
+    }
+
+    if (role === "VENDEDOR" && !access.userId) {
+      return NextResponse.json(
+        { error: "Usuário não encontrado na sessão." },
+        { status: 401 }
+      );
     }
 
     const { searchParams } = new URL(req.url);
@@ -102,10 +135,18 @@ export async function GET(req: NextRequest) {
     const status = cleanText(searchParams.get("status"));
     const segment = cleanText(searchParams.get("segment"));
 
-    const where: any = canAccessWhere(auth);
+    const where: any = canAccessWhere(access, role);
 
-    if (status) where.status = status;
-    if (segment) where.segment = { contains: segment, mode: "insensitive" };
+    if (status) {
+      where.status = status;
+    }
+
+    if (segment) {
+      where.segment = {
+        contains: segment,
+        mode: "insensitive",
+      };
+    }
 
     if (q) {
       where.OR = [
@@ -127,103 +168,172 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ customers });
   } catch (error: any) {
     console.error("[customers:get]", error);
-    return NextResponse.json({ error: "Erro ao carregar clientes." }, { status: 500 });
+    return NextResponse.json(
+      { error: "Erro ao carregar clientes." },
+      { status: 500 }
+    );
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const auth = getAuth(req);
+    const access = await requireCompanyAccess(req);
+    const role = normalizeRole(access.userRole);
 
-    if (!auth.companyId) {
-      return NextResponse.json({ error: "Empresa não encontrada na sessão." }, { status: 401 });
+    if (role === "SUPERVISOR") {
+      return supervisorForbidden();
     }
 
-    if (auth.role === "VENDEDOR" && !auth.userId) {
-      return NextResponse.json({ error: "Usuário não encontrado na sessão." }, { status: 401 });
+    if (role === "VENDEDOR" && !access.userId) {
+      return NextResponse.json(
+        { error: "Usuário não encontrado na sessão." },
+        { status: 401 }
+      );
     }
 
     const body = await req.json();
-    const data = mapCustomerPayload(body, auth);
+    const data = mapCustomerPayload(body, access, role);
 
     if (!data.legal_name) {
-      return NextResponse.json({ error: "Razão social ou nome do cliente é obrigatório." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Razão social ou nome do cliente é obrigatório." },
+        { status: 400 }
+      );
     }
 
-    const customer = await prisma.salesCustomer.create({ data });
+    const customer = await prisma.salesCustomer.create({
+      data,
+    });
 
-    return NextResponse.json({ success: true, customer });
+    return NextResponse.json({
+      success: true,
+      customer,
+    });
   } catch (error: any) {
     console.error("[customers:post]", error);
-    return NextResponse.json({ error: "Erro ao criar cliente." }, { status: 500 });
+    return NextResponse.json(
+      { error: "Erro ao criar cliente." },
+      { status: 500 }
+    );
   }
 }
 
 export async function PATCH(req: NextRequest) {
   try {
-    const auth = getAuth(req);
+    const access = await requireCompanyAccess(req);
+    const role = normalizeRole(access.userRole);
 
-    if (!auth.companyId) {
-      return NextResponse.json({ error: "Empresa não encontrada na sessão." }, { status: 401 });
+    if (role === "SUPERVISOR") {
+      return supervisorForbidden();
+    }
+
+    if (role === "VENDEDOR" && !access.userId) {
+      return NextResponse.json(
+        { error: "Usuário não encontrado na sessão." },
+        { status: 401 }
+      );
     }
 
     const body = await req.json();
     const id = cleanText(body?.id);
 
     if (!id) {
-      return NextResponse.json({ error: "ID do cliente é obrigatório." }, { status: 400 });
+      return NextResponse.json(
+        { error: "ID do cliente é obrigatório." },
+        { status: 400 }
+      );
     }
 
     const existing = await prisma.salesCustomer.findFirst({
-      where: { id, ...canAccessWhere(auth) },
+      where: {
+        id,
+        ...canAccessWhere(access, role),
+      },
     });
 
     if (!existing) {
-      return NextResponse.json({ error: "Cliente não encontrado ou sem permissão." }, { status: 404 });
+      return NextResponse.json(
+        { error: "Cliente não encontrado ou sem permissão." },
+        { status: 404 }
+      );
     }
 
-    const mapped = mapCustomerPayload(body, auth);
+    const mapped = mapCustomerPayload(body, access, role);
     const { company_id, seller_id, ...data } = mapped;
 
     const customer = await prisma.salesCustomer.update({
-      where: { id },
+      where: {
+        id: existing.id,
+      },
       data,
     });
 
-    return NextResponse.json({ success: true, customer });
+    return NextResponse.json({
+      success: true,
+      customer,
+    });
   } catch (error: any) {
     console.error("[customers:patch]", error);
-    return NextResponse.json({ error: "Erro ao atualizar cliente." }, { status: 500 });
+    return NextResponse.json(
+      { error: "Erro ao atualizar cliente." },
+      { status: 500 }
+    );
   }
 }
 
 export async function DELETE(req: NextRequest) {
   try {
-    const auth = getAuth(req);
+    const access = await requireCompanyAccess(req);
+    const role = normalizeRole(access.userRole);
 
-    if (!auth.companyId) {
-      return NextResponse.json({ error: "Empresa não encontrada na sessão." }, { status: 401 });
+    if (role === "SUPERVISOR") {
+      return supervisorForbidden();
+    }
+
+    if (role === "VENDEDOR" && !access.userId) {
+      return NextResponse.json(
+        { error: "Usuário não encontrado na sessão." },
+        { status: 401 }
+      );
     }
 
     const id = cleanText(new URL(req.url).searchParams.get("id"));
 
     if (!id) {
-      return NextResponse.json({ error: "ID do cliente é obrigatório." }, { status: 400 });
+      return NextResponse.json(
+        { error: "ID do cliente é obrigatório." },
+        { status: 400 }
+      );
     }
 
     const existing = await prisma.salesCustomer.findFirst({
-      where: { id, ...canAccessWhere(auth) },
+      where: {
+        id,
+        ...canAccessWhere(access, role),
+      },
     });
 
     if (!existing) {
-      return NextResponse.json({ error: "Cliente não encontrado ou sem permissão." }, { status: 404 });
+      return NextResponse.json(
+        { error: "Cliente não encontrado ou sem permissão." },
+        { status: 404 }
+      );
     }
 
-    await prisma.salesCustomer.delete({ where: { id } });
+    await prisma.salesCustomer.delete({
+      where: {
+        id: existing.id,
+      },
+    });
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({
+      success: true,
+    });
   } catch (error: any) {
     console.error("[customers:delete]", error);
-    return NextResponse.json({ error: "Erro ao remover cliente." }, { status: 500 });
+    return NextResponse.json(
+      { error: "Erro ao remover cliente." },
+      { status: 500 }
+    );
   }
 }

@@ -13,7 +13,7 @@ function getPhone(p: any) {
 }
 
 async function getUsage(access: Awaited<ReturnType<typeof requireCompanyAccess>>) {
-  const clientId = access.userId || access.companyId;
+  const clientId = access.userId;
   const month = currentMonthKey();
 
   const defaultLimit =
@@ -52,7 +52,28 @@ async function getUsage(access: Awaited<ReturnType<typeof requireCompanyAccess>>
 export async function POST(req: NextRequest) {
   try {
     const access = await requireCompanyAccess(req);
-    const { companyId, branchId } = access;
+    const { companyId, branchId, userId } = access;
+    const role = String(access.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Acesso negado.",
+        },
+        { status: 403 }
+      );
+    }
+
+    if (!companyId || !userId) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Empresa ou usuário não identificado.",
+        },
+        { status: 401 }
+      );
+    }
 
     const body = await req.json();
 
@@ -69,6 +90,28 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const validProspects = await prisma.prospect.findMany({
+      where: {
+        company_id: companyId,
+        id: { in: ids },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    const validIds = validProspects.map((prospect) => prospect.id);
+
+    if (!validIds.length) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Nenhum contato válido foi encontrado para esta empresa.",
+        },
+        { status: 404 }
+      );
+    }
+
     const usage = await getUsage(access);
     const clientId = usage.clientId;
 
@@ -76,7 +119,7 @@ export async function POST(req: NextRequest) {
       where: {
         company_id: companyId,
         clientId,
-        prospectId: { in: ids },
+        prospectId: { in: validIds },
       },
       select: {
         prospectId: true,
@@ -84,7 +127,7 @@ export async function POST(req: NextRequest) {
     });
 
     const alreadyIds = new Set(alreadyExported.map((item) => item.prospectId));
-    const newIds = ids.filter((id) => !alreadyIds.has(id));
+    const newIds = validIds.filter((id) => !alreadyIds.has(id));
 
     if (newIds.length > usage.remaining) {
       return NextResponse.json(
@@ -97,39 +140,41 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    for (const prospectId of newIds) {
-      await prisma.prospectExport.create({
-        data: {
-          company_id: companyId,
-          branch_id: branchId || null,
-          prospectId,
-          clientId,
-          action: "REVEAL",
-        },
-      });
-    }
-
     if (newIds.length) {
-      await prisma.prospectUsage.update({
-        where: {
-          company_id_clientId_month: {
-            company_id: companyId,
-            clientId,
-            month: usage.month,
+      await prisma.$transaction(async (tx) => {
+        for (const prospectId of newIds) {
+          await tx.prospectExport.create({
+            data: {
+              company_id: companyId,
+              branch_id: branchId || null,
+              prospectId,
+              clientId,
+              action: "REVEAL",
+            },
+          });
+        }
+
+        await tx.prospectUsage.update({
+          where: {
+            company_id_clientId_month: {
+              company_id: companyId,
+              clientId,
+              month: usage.month,
+            },
           },
-        },
-        data: {
-          used: {
-            increment: newIds.length,
+          data: {
+            used: {
+              increment: newIds.length,
+            },
           },
-        },
+        });
       });
     }
 
     const revealed = await prisma.prospect.findMany({
       where: {
         company_id: companyId,
-        id: { in: ids },
+        id: { in: validIds },
       },
     });
 

@@ -333,63 +333,53 @@ function buildSendSession(companyId: string, userId: string | null | undefined, 
 }
 
 async function resolveCompanyBySession(supabase: any, incomingSession: any) {
-  const sessionId = normalizeSessionNumber(incomingSession);
   const raw = clean(incomingSession);
   const parts = raw.split("_").filter(Boolean);
 
-  // Novo padrão multiusuário: companyId_userId_sessionNumber
-  if (parts.length >= 3) {
-    const sessionNumber = Number(parts[parts.length - 1]);
-    const userId = parts[parts.length - 2] || null;
-    const companyId = parts.slice(0, -2).join("_") || null;
-
-    if (companyId && userId && Number.isFinite(sessionNumber)) {
-      return {
-        companyId,
-        userId,
-        branchId: DEFAULT_BRANCH_ID,
-        sessionId: sessionNumber,
-      };
-    }
-  }
-
-  // Compatibilidade com sessões antigas: companyId_sessionNumber
-  const legacyParts = raw.match(/^(.+)_(\d+)$/);
-  if (legacyParts?.[1]) {
-    return {
-      companyId: legacyParts[1],
-      userId: null,
-      branchId: DEFAULT_BRANCH_ID,
-      sessionId: Number(legacyParts[2]),
-    };
-  }
-
-  if (DEFAULT_COMPANY_ID) {
-    return {
-      companyId: DEFAULT_COMPANY_ID,
-      userId: null,
-      branchId: DEFAULT_BRANCH_ID,
-      sessionId,
-    };
-  }
-
-  const { data: company } = await supabase
-    .from("companies")
-    .select("id")
-    .limit(1)
-    .maybeSingle();
-
-  if (!company?.id) {
+  if (parts.length < 3) {
     throw new Error(
-      "Empresa não identificada. Configure DEFAULT_COMPANY_ID no .env.local."
+      "Sessão inválida. Use o formato companyId_userId_sessionNumber."
     );
   }
 
+  const sessionNumber = Number(parts[parts.length - 1]);
+  const userId = parts[parts.length - 2] || null;
+  const companyId = parts.slice(0, -2).join("_") || null;
+
+  if (
+    !companyId ||
+    !userId ||
+    !Number.isInteger(sessionNumber) ||
+    sessionNumber < 1 ||
+    sessionNumber > 5
+  ) {
+    throw new Error(
+      "Sessão inválida. Empresa, usuário e número da sessão são obrigatórios."
+    );
+  }
+
+  const { data: companyUser, error } = await supabase
+    .from("company_users")
+    .select("company_id, user_id, active")
+    .eq("company_id", companyId)
+    .eq("user_id", userId)
+    .eq("active", true)
+    .maybeSingle();
+
+  if (error) {
+    console.error("ERRO AO VALIDAR USUÁRIO DA SESSÃO:", error);
+    throw new Error("Não foi possível validar o usuário da sessão.");
+  }
+
+  if (!companyUser) {
+    throw new Error("Sessão sem usuário ativo vinculado à empresa.");
+  }
+
   return {
-    companyId: company.id,
-    userId: null,
+    companyId,
+    userId,
     branchId: DEFAULT_BRANCH_ID,
-    sessionId,
+    sessionId: sessionNumber,
   };
 }
 
@@ -889,9 +879,11 @@ async function getActiveQueueContext({
   companyId,
   leadId,
   phone,
+  userId,
 }: {
   supabase: any;
   companyId: string;
+  userId: string;
   leadId?: string | null;
   phone?: string | null;
 }) {
@@ -918,6 +910,7 @@ async function getActiveQueueContext({
         .from("automation_queue")
         .select("*")
         .eq("company_id", companyId)
+        .eq("owner_user_id", userId)
         .eq("lead_id", leadId)
     );
 
@@ -932,6 +925,7 @@ async function getActiveQueueContext({
         .from("automation_queue")
         .select("*")
         .eq("company_id", companyId)
+        .eq("owner_user_id", userId)
         .eq("phone", normalizedPhone)
     );
 
@@ -1122,12 +1116,14 @@ function publicAgendaLink(slot: any, leadId?: string | null) {
 async function buildVariableContext({
   supabase,
   companyId,
+  userId,
   lead,
   phone,
   lastMessage,
 }: {
   supabase: any;
   companyId: string;
+  userId: string;
   lead: any;
   phone?: string;
   lastMessage?: string;
@@ -1135,6 +1131,7 @@ async function buildVariableContext({
   const queueContext = await getActiveQueueContext({
     supabase,
     companyId,
+    userId,
     leadId: lead?.id,
     phone: lead?.phone || phone,
   });
@@ -1324,16 +1321,19 @@ async function findSalesTriggeredTemplate({
   message,
   lead,
   companyId,
+  userId,
 }: {
   supabase: any;
   message: string;
   lead: any;
   companyId: string;
+  userId: string;
 }) {
   const text = normalizeText(message);
   const extra = await buildVariableContext({
     supabase,
     companyId,
+    userId,
     lead,
     phone: lead?.phone,
     lastMessage: message,
@@ -1343,6 +1343,7 @@ async function findSalesTriggeredTemplate({
     .from("message_templates")
     .select("*")
     .eq("company_id", companyId)
+    .eq("owner_user_id", userId)
     .eq("active", true)
     .order("created_at", { ascending: false });
 
@@ -1383,18 +1384,21 @@ async function getIntentTemplate({
   intent,
   lead,
   companyId,
+  userId,
   message,
 }: {
   supabase: any;
   intent: string;
   lead: any;
   companyId: string;
+  userId: string;
   message: string;
 }) {
   const intents = intentAliases(intent);
   const extra = await buildVariableContext({
     supabase,
     companyId,
+    userId,
     lead,
     phone: lead?.phone,
     lastMessage: message,
@@ -1404,6 +1408,7 @@ async function getIntentTemplate({
     .from("message_templates")
     .select("*")
     .eq("company_id", companyId)
+    .eq("owner_user_id", userId)
     .eq("active", true)
     .in("intent", intents)
     .order("created_at", { ascending: false })
@@ -1436,14 +1441,22 @@ async function getFinalSalesReply({
   message,
   lead,
   companyId,
+  userId,
 }: {
   supabase: any;
   intent: string;
   message: string;
   lead: any;
   companyId: string;
+  userId: string;
 }) {
-  const triggered = await findSalesTriggeredTemplate({ supabase, message, lead, companyId });
+  const triggered = await findSalesTriggeredTemplate({
+    supabase,
+    message,
+    lead,
+    companyId,
+    userId,
+  });
   if (triggered?.reply || triggered?.mediaUrl) {
     if (!triggered.kanbanStatus && shouldForceSalesStatus(message, intent, triggered.reply)) {
       triggered.kanbanStatus = "em_negociacao";
@@ -1451,7 +1464,14 @@ async function getFinalSalesReply({
     return triggered;
   }
 
-  const intentTemplate = await getIntentTemplate({ supabase, intent, message, lead, companyId });
+  const intentTemplate = await getIntentTemplate({
+    supabase,
+    intent,
+    message,
+    lead,
+    companyId,
+    userId,
+  });
   if (intentTemplate?.reply || intentTemplate?.mediaUrl) {
     if (!intentTemplate.kanbanStatus && shouldForceSalesStatus(message, intent, intentTemplate.reply)) {
       intentTemplate.kanbanStatus = "em_negociacao";
@@ -1618,6 +1638,7 @@ function isLeadCompatibleWithPushName(lead: any, pushName?: string | null) {
 async function findLeadFromRecentQueue({
   supabase,
   companyId,
+  userId,
   phone,
   lid,
   remoteJid,
@@ -1626,6 +1647,7 @@ async function findLeadFromRecentQueue({
 }: {
   supabase: any;
   companyId: string;
+  userId: string;
   phone?: string | null;
   lid?: string | null;
   remoteJid?: string | null;
@@ -1650,6 +1672,7 @@ async function findLeadFromRecentQueue({
     .from("automation_queue")
     .select("*")
     .eq("company_id", companyId)
+    .eq("owner_user_id", userId)
     .not("lead_id", "is", null)
     .order("updated_at", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false, nullsFirst: false })
@@ -1679,6 +1702,7 @@ async function findLeadFromRecentQueue({
     .from("leads")
     .select("*")
     .eq("company_id", companyId)
+    .eq("owner_user_id", userId)
     .in("id", leadIds);
 
   if (leadsError) {
@@ -1809,6 +1833,7 @@ for (const item of items as any[]) {
 async function findLead({
   supabase,
   companyId,
+  userId,
   phone,
   lid,
   remoteJid,
@@ -1818,6 +1843,7 @@ async function findLead({
 }: {
   supabase: any;
   companyId: string;
+  userId: string;
   phone: string;
   lid: string | null;
   remoteJid: string | null;
@@ -1865,6 +1891,7 @@ async function findLead({
         .from("leads")
         .select("*")
         .eq("company_id", companyId)
+        .eq("owner_user_id", userId)
         .eq("phone", phone)
         .order("updated_at", { ascending: false })
         .limit(10),
@@ -1878,6 +1905,7 @@ async function findLead({
         .from("leads")
         .select("*")
         .eq("company_id", companyId)
+        .eq("owner_user_id", userId)
         .eq("email", email)
         .order("updated_at", { ascending: false })
         .limit(10),
@@ -1891,6 +1919,7 @@ async function findLead({
         .from("leads")
         .select("*")
         .eq("company_id", companyId)
+        .eq("owner_user_id", userId)
         .eq("whatsapp_lid", lid)
         .order("updated_at", { ascending: false })
         .limit(10),
@@ -1904,6 +1933,7 @@ async function findLead({
         .from("leads")
         .select("*")
         .eq("company_id", companyId)
+        .eq("owner_user_id", userId)
         .eq("remote_jid", remoteJid)
         .order("updated_at", { ascending: false })
         .limit(10),
@@ -1919,6 +1949,7 @@ async function findLead({
     remoteJid,
     sessionId,
     pushName,
+    userId,
   });
 
   if (queueLead?.id) {
@@ -1955,6 +1986,7 @@ async function findLead({
   if (!safeCandidates.length) {
     console.warn("LEAD_CANDIDATO_DESCARTADO_POR_INCOMPATIBILIDADE_DE_NOME:", {
       companyId,
+      userId,
       phone,
       lid,
       remoteJid,
@@ -2107,12 +2139,12 @@ export async function POST(req: Request) {
 
     const resolved = await resolveCompanyBySession(
       supabase,
-      body.sessionId || body.session_id || "1"
+      body.sessionId || body.session_id
     );
 
     const companyId = resolved.companyId;
     const branchId = resolved.branchId;
-    const userId = resolved.userId || null;
+    const userId = resolved.userId;
     const sessionId = resolved.sessionId;
     const sendSessionId = buildSendSession(companyId, userId, sessionId);
 
@@ -2137,6 +2169,7 @@ export async function POST(req: Request) {
     let lead: any = await findLead({
       supabase,
       companyId,
+      userId,
       phone,
       lid,
       remoteJid,
@@ -2153,6 +2186,7 @@ export async function POST(req: Request) {
   lead = await findLead({
     supabase,
     companyId,
+    userId,
     phone,
     lid,
     remoteJid,
@@ -2167,6 +2201,7 @@ export async function POST(req: Request) {
       .insert({
         company_id: companyId,
         branch_id: branchId,
+        owner_user_id: userId,
         name: pushName || "Cliente WhatsApp",
         phone: isRealBrazilPhone(phone) ? normalizePhone(phone) : null,
         email: email || null,
@@ -2191,6 +2226,7 @@ export async function POST(req: Request) {
     const queueContext = await getActiveQueueContext({
   supabase,
   companyId,
+  userId,
   leadId: lead.id,
   phone: lead.phone || phone,
 });
@@ -2218,6 +2254,7 @@ if (queueContext) {
       .update(leadJobPatch)
       .eq("id", lead.id)
       .eq("company_id", companyId)
+      .eq("owner_user_id", userId)
       .select("*")
       .maybeSingle();
 
@@ -2298,7 +2335,8 @@ remote_jid: lead.remote_jid || remoteJid || null,
         updated_at: new Date().toISOString(),
       })
       .eq("id", lead.id)
-      .eq("company_id", companyId);
+      .eq("company_id", companyId)
+      .eq("owner_user_id", userId);
 
     lead = {
       ...lead,
@@ -2367,6 +2405,7 @@ console.log("CONTEXTO FINAL DO LEAD PARA TEMPLATE:", {
           message,
           lead,
           companyId,
+          userId,
         })
       : {
           reply: null,

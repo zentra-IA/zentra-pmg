@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { requireCompany } from "@/lib/server-company";
+import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +22,7 @@ type AccessContext = {
   companyId: string;
   branchId: string | null;
   userId: string;
+  role: string;
 };
 
 function getSupabase() {
@@ -83,10 +84,11 @@ function normalizeMessage(value: unknown) {
 async function requireQueueAccess(
   req: NextRequest
 ): Promise<AccessContext> {
-  const access = await requireCompany(req);
+  const access = await requireCompanyAccess(req);
 
   const companyId = String(access?.companyId || "").trim();
   const userId = String(access?.userId || "").trim();
+  const role = String(access?.userRole || "").trim().toUpperCase();
   const branchId = access?.branchId
     ? String(access.branchId).trim()
     : null;
@@ -103,24 +105,30 @@ async function requireQueueAccess(
     companyId,
     branchId,
     userId,
+    role,
   };
 }
 
 async function countQueue(
   supabase: ReturnType<typeof getSupabase>,
   companyId: string,
-  userId: string,
+  ownerUserId: string | null,
   status: string
 ) {
-  const { count, error } = await supabase
+  let query = supabase
     .from("automation_queue")
     .select("id", {
       count: "exact",
       head: true,
     })
     .eq("company_id", companyId)
-    .eq("owner_user_id", userId)
     .eq("status", status);
+
+  if (ownerUserId) {
+    query = query.eq("owner_user_id", ownerUserId);
+  }
+
+  const { count, error } = await query;
 
   if (error) {
     throw new Error(error.message);
@@ -132,35 +140,41 @@ async function countQueue(
 async function getSessionStats(
   supabase: ReturnType<typeof getSupabase>,
   companyId: string,
-  userId: string,
+  ownerUserId: string | null,
   sessionId: number
 ) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const [sentResult, queuedResult] = await Promise.all([
-    supabase
-      .from("automation_queue")
-      .select("id", {
-        count: "exact",
-        head: true,
-      })
-      .eq("company_id", companyId)
-      .eq("owner_user_id", userId)
-      .eq("session_id", sessionId)
-      .eq("status", "sent")
-      .gte("sent_at", today.toISOString()),
+  let sentQuery = supabase
+    .from("automation_queue")
+    .select("id", {
+      count: "exact",
+      head: true,
+    })
+    .eq("company_id", companyId)
+    .eq("session_id", sessionId)
+    .eq("status", "sent")
+    .gte("sent_at", today.toISOString());
 
-    supabase
-      .from("automation_queue")
-      .select("id", {
-        count: "exact",
-        head: true,
-      })
-      .eq("company_id", companyId)
-      .eq("owner_user_id", userId)
-      .eq("session_id", sessionId)
-      .in("status", ["pending", "processing"]),
+  let queuedQuery = supabase
+    .from("automation_queue")
+    .select("id", {
+      count: "exact",
+      head: true,
+    })
+    .eq("company_id", companyId)
+    .eq("session_id", sessionId)
+    .in("status", ["pending", "processing"]);
+
+  if (ownerUserId) {
+    sentQuery = sentQuery.eq("owner_user_id", ownerUserId);
+    queuedQuery = queuedQuery.eq("owner_user_id", ownerUserId);
+  }
+
+  const [sentResult, queuedResult] = await Promise.all([
+    sentQuery,
+    queuedQuery,
   ]);
 
   if (sentResult.error) {
@@ -179,10 +193,49 @@ async function getSessionStats(
   };
 }
 
+function supervisorForbidden() {
+  return NextResponse.json(
+    {
+      success: false,
+      error: "Supervisor não possui acesso a esta rota operacional.",
+    },
+    {
+      status: 403,
+    }
+  );
+}
+
 export async function GET(req: NextRequest) {
   try {
     const supabase = getSupabase();
     const access = await requireQueueAccess(req);
+
+    if (access.role === "SUPERVISOR") {
+      return supervisorForbidden();
+    }
+
+    const sellerParam = String(
+      req.nextUrl.searchParams.get("seller_id") ||
+        req.nextUrl.searchParams.get("owner_user_id") ||
+        ""
+    ).trim();
+
+    if (sellerParam && !isUuid(sellerParam)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "seller_id inválido.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const scopedOwnerUserId =
+      access.role === "VENDEDOR"
+        ? access.userId
+        : sellerParam || null;
 
     const [
       pending,
@@ -195,31 +248,31 @@ export async function GET(req: NextRequest) {
       countQueue(
         supabase,
         access.companyId,
-        access.userId,
+        scopedOwnerUserId,
         "pending"
       ),
       countQueue(
         supabase,
         access.companyId,
-        access.userId,
+        scopedOwnerUserId,
         "processing"
       ),
       countQueue(
         supabase,
         access.companyId,
-        access.userId,
+        scopedOwnerUserId,
         "sent"
       ),
       countQueue(
         supabase,
         access.companyId,
-        access.userId,
+        scopedOwnerUserId,
         "failed"
       ),
       countQueue(
         supabase,
         access.companyId,
-        access.userId,
+        scopedOwnerUserId,
         "paused"
       ),
       Promise.all(
@@ -228,7 +281,7 @@ export async function GET(req: NextRequest) {
           await getSessionStats(
             supabase,
             access.companyId,
-            access.userId,
+            scopedOwnerUserId,
             sessionId
           ),
         ])
@@ -245,7 +298,7 @@ export async function GET(req: NextRequest) {
       failed,
       paused,
       stats,
-      owner_user_id: access.userId,
+      owner_user_id: scopedOwnerUserId,
       antiban: {
         maxPerSessionDay: MAX_PER_SESSION_DAY,
         delayMinMs: DELAY_MIN_MS,
@@ -277,6 +330,11 @@ export async function POST(req: NextRequest) {
   try {
     const supabase = getSupabase();
     const access = await requireQueueAccess(req);
+
+    if (access.role === "SUPERVISOR") {
+      return supervisorForbidden();
+    }
+
     const body = await req.json().catch(() => ({}));
 
     const leadId = String(
@@ -295,14 +353,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { data: lead, error: leadError } = await supabase
+    let leadQuery = supabase
       .from("leads")
       .select(
-        "id, company_id, branch_id, phone, session_id, status, name"
+        "id, company_id, branch_id, owner_user_id, phone, session_id, status, name"
       )
       .eq("id", leadId)
-      .eq("company_id", access.companyId)
-      .maybeSingle();
+      .eq("company_id", access.companyId);
+
+    if (access.role === "VENDEDOR") {
+      leadQuery = leadQuery.eq("owner_user_id", access.userId);
+    }
+
+    const { data: lead, error: leadError } =
+      await leadQuery.maybeSingle();
 
     if (leadError) {
       throw new Error(leadError.message);
@@ -362,6 +426,13 @@ export async function POST(req: NextRequest) {
 
     const now = new Date().toISOString();
 
+    const queueOwnerUserId =
+      access.role === "VENDEDOR"
+        ? access.userId
+        : isUuid(lead.owner_user_id)
+          ? lead.owner_user_id
+          : access.userId;
+
     const { data: queueItem, error: queueError } =
       await supabase
         .from("automation_queue")
@@ -377,7 +448,7 @@ export async function POST(req: NextRequest) {
            * O worker usa este UUID para montar:
            * company_id + owner_user_id + session_id.
            */
-          owner_user_id: access.userId,
+          owner_user_id: queueOwnerUserId,
 
           lead_id: lead.id,
           phone,
@@ -424,11 +495,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { error: updateLeadError } = await supabase
+    let updateLeadQuery = supabase
       .from("leads")
       .update(leadUpdate)
       .eq("id", lead.id)
       .eq("company_id", access.companyId);
+
+    if (access.role === "VENDEDOR") {
+      updateLeadQuery = updateLeadQuery.eq(
+        "owner_user_id",
+        access.userId
+      );
+    }
+
+    const { error: updateLeadError } = await updateLeadQuery;
 
     if (updateLeadError) {
       console.error(
@@ -440,7 +520,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       item: queueItem,
-      owner_user_id: access.userId,
+      owner_user_id: queueOwnerUserId,
     });
   } catch (error: any) {
     console.error("CRM_QUEUE_POST_ERROR", error);
@@ -468,6 +548,11 @@ export async function PATCH(req: NextRequest) {
   try {
     const supabase = getSupabase();
     const access = await requireQueueAccess(req);
+
+    if (access.role === "SUPERVISOR") {
+      return supervisorForbidden();
+    }
+
     const body = await req.json().catch(() => ({}));
 
     const action = String(
@@ -533,8 +618,34 @@ export async function PATCH(req: NextRequest) {
       .from("automation_queue")
       .update(updateData)
       .eq("company_id", access.companyId)
-      .eq("owner_user_id", access.userId)
       .eq("status", sourceStatus);
+
+    if (access.role === "VENDEDOR") {
+      query = query.eq("owner_user_id", access.userId);
+    } else {
+      const sellerParam = String(
+        body?.seller_id ||
+          body?.owner_user_id ||
+          body?.ownerUserId ||
+          ""
+      ).trim();
+
+      if (sellerParam) {
+        if (!isUuid(sellerParam)) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: "seller_id inválido.",
+            },
+            {
+              status: 400,
+            }
+          );
+        }
+
+        query = query.eq("owner_user_id", sellerParam);
+      }
+    }
 
     const queueId = String(
       body?.id ||
@@ -569,7 +680,10 @@ export async function PATCH(req: NextRequest) {
       success: true,
       action,
       updated: data?.length || 0,
-      owner_user_id: access.userId,
+      owner_user_id:
+        access.role === "VENDEDOR"
+          ? access.userId
+          : null,
     });
   } catch (error: any) {
     console.error("CRM_QUEUE_PATCH_ERROR", error);

@@ -16,6 +16,14 @@ export async function GET(req: NextRequest, context: Context) {
     const sessionId = normalizeWhatsappSessionNumber(params?.session || "1");
 
     const session = await resolveWhatsappSession(req, sessionId);
+    const role = String(session.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        { success: false, error: "Acesso negado." },
+        { status: 403 }
+      );
+    }
     const finalSessionId = session.fullSessionId;
 
     const res = await fetch(

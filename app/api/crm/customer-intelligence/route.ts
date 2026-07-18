@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
 
@@ -43,40 +44,6 @@ function daysBetween(a: Date, b: Date) {
   return Math.round(ms / 86400000);
 }
 
-function getCompanyId(req: NextRequest) {
-  return (
-    req.headers.get("x-company-id") ||
-    req.cookies.get("company_id")?.value ||
-    process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID ||
-    process.env.DEFAULT_COMPANY_ID ||
-    ""
-  );
-}
-
-function getSellerId(req: NextRequest) {
-  return (
-    req.headers.get("x-user-id") ||
-    req.cookies.get("user_id")?.value ||
-    undefined
-  );
-}
-
-function getRole(req: NextRequest) {
-  return (
-    req.headers.get("x-user-role") ||
-    req.cookies.get("user_role")?.value ||
-    req.cookies.get("role")?.value ||
-    ""
-  ).toUpperCase();
-}
-
-async function resolveCompanyId(req: NextRequest) {
-  const fromReq = getCompanyId(req);
-  if (fromReq) return fromReq;
-
-  const company = await prisma.companies.findFirst({ select: { id: true } });
-  return company?.id || "";
-}
 
 function itemName(item: AnyItem) {
   return String(item.product_name || item.name || item.description || "Produto sem nome").trim();
@@ -239,14 +206,31 @@ function scoreAction(action: any) {
 
 export async function GET(req: NextRequest) {
   try {
-    const company_id = await resolveCompanyId(req);
-    if (!company_id) {
-      return NextResponse.json({ error: "Empresa não identificada." }, { status: 401 });
+    const access = await requireCompanyAccess(req);
+    const role = String(access.userRole || "").toUpperCase();
+    const company_id = access.companyId;
+    const seller_id = access.userId;
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        { error: "Supervisor deve utilizar apenas o Command Center." },
+        { status: 403 }
+      );
     }
 
-    const role = getRole(req);
-    const seller_id = getSellerId(req);
-    const isSupervisor = ["GERAL", "MASTER", "SUPERVISOR", "ADMIN"].includes(role);
+    if (!company_id || !seller_id) {
+      return NextResponse.json(
+        { error: "Usuário ou empresa não identificados." },
+        { status: 401 }
+      );
+    }
+
+    if (!["GERAL", "VENDEDOR"].includes(role)) {
+      return NextResponse.json(
+        { error: "Perfil sem permissão para acessar esta rota." },
+        { status: 403 }
+      );
+    }
 
     const now = new Date();
     const start120 = new Date(now);
@@ -256,7 +240,7 @@ export async function GET(req: NextRequest) {
       where: {
         company_id,
         created_at: { gte: start120 },
-        ...(seller_id && !isSupervisor ? { seller_id } : {}),
+        ...(role === "VENDEDOR" ? { seller_id } : {}),
       },
       include: {
         SalesOrderItem: true,
@@ -439,6 +423,7 @@ export async function GET(req: NextRequest) {
         company_id,
         action: "quote_saved",
         created_at: { gte: start120 },
+        ...(role === "VENDEDOR" ? { user_id: seller_id } : {}),
       },
       orderBy: { created_at: "desc" },
       take: 500,
@@ -584,7 +569,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       generatedAt: new Date().toISOString(),
-      scope: isSupervisor ? "supervisor" : "seller",
+      scope: role === "VENDEDOR" ? "seller" : "company",
       summary: {
         totalActions: prioritizedActions.length,
         boletos: boletoActions.length,

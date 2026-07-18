@@ -116,7 +116,20 @@ export async function requireCompanyAccess(req?: NextRequest) {
     },
   });
 
-  const userRole = String(companyUser?.role || "GERAL").toUpperCase();
+  if (!auth.userId) {
+    throw new Error("Usuário não identificado.");
+  }
+
+  if (!companyUser) {
+    throw new Error("Usuário sem acesso ativo à empresa.");
+  }
+
+  const userRole = String(companyUser.role || "").toUpperCase();
+
+  if (!userRole) {
+    throw new Error("Perfil do usuário não identificado.");
+  }
+
   const planName = String(company?.plans?.name || "").toUpperCase();
   const planRadarLimit = Number(
     company?.plans?.plan_features?.[0]?.limit_value || 0

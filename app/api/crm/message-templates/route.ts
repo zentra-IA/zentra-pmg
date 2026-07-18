@@ -225,7 +225,18 @@ function validateTemplate(payload: any) {
 export async function GET(req: NextRequest) {
   try {
     const supabase = getSupabase();
-    const { companyId, userId } = await requireCompanyAccess(req);
+    const access = await requireCompanyAccess(req);
+    const companyId = access.companyId;
+    const userId = access.userId;
+    const role = String(access.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        { error: "Acesso negado." },
+        { status: 403 }
+      );
+    }
+
     const { searchParams } = new URL(req.url);
 
     const intent = clean(searchParams.get("intent"));
@@ -235,8 +246,11 @@ export async function GET(req: NextRequest) {
       .from("message_templates")
       .select("*")
       .eq("company_id", companyId)
-      .eq("owner_user_id", userId)
       .order("created_at", { ascending: false });
+
+    if (role === "VENDEDOR") {
+      query = query.eq("owner_user_id", userId);
+    }
 
     if (intent) query = query.eq("intent", intent);
     if (active === "true") query = query.eq("active", true);
@@ -259,7 +273,19 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const supabase = getSupabase();
-    const { companyId, branchId, userId } = await requireCompanyAccess(req);
+    const access = await requireCompanyAccess(req);
+    const companyId = access.companyId;
+    const branchId = access.branchId;
+    const userId = access.userId;
+    const role = String(access.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        { error: "Acesso negado." },
+        { status: 403 }
+      );
+    }
+
     const body = await req.json();
 
     const payload = templatePayload(body, companyId, branchId || null, userId);
@@ -296,7 +322,19 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const supabase = getSupabase();
-    const { companyId, branchId, userId } = await requireCompanyAccess(req);
+    const access = await requireCompanyAccess(req);
+    const companyId = access.companyId;
+    const branchId = access.branchId;
+    const userId = access.userId;
+    const role = String(access.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        { error: "Acesso negado." },
+        { status: 403 }
+      );
+    }
+
     const body = await req.json();
 
     const id = clean(body.id);
@@ -305,13 +343,18 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "ID obrigatório." }, { status: 400 });
     }
 
-    const { data: existing, error: existingError } = await supabase
+    let existingQuery = supabase
       .from("message_templates")
       .select("*")
       .eq("id", id)
-      .eq("company_id", companyId)
-      .eq("owner_user_id", userId)
-      .maybeSingle();
+      .eq("company_id", companyId);
+
+    if (role === "VENDEDOR") {
+      existingQuery = existingQuery.eq("owner_user_id", userId);
+    }
+
+    const { data: existing, error: existingError } =
+      await existingQuery.maybeSingle();
 
     if (existingError) throw new Error(existingError.message);
 
@@ -345,7 +388,7 @@ export async function PATCH(req: NextRequest) {
       mergedBody,
       companyId,
       branchId || existing.branch_id || null,
-      userId
+      role === "VENDEDOR" ? userId : existing.owner_user_id || userId
     );
 
     delete payload.company_id;
@@ -362,12 +405,17 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: validationError }, { status: 400 });
     }
 
-    const { data, error } = await supabase
+    let updateQuery = supabase
       .from("message_templates")
       .update(payload)
       .eq("id", id)
-      .eq("company_id", companyId)
-      .eq("owner_user_id", userId)
+      .eq("company_id", companyId);
+
+    if (role === "VENDEDOR") {
+      updateQuery = updateQuery.eq("owner_user_id", userId);
+    }
+
+    const { data, error } = await updateQuery
       .select("*")
       .single();
 
@@ -389,7 +437,18 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const supabase = getSupabase();
-    const { companyId, userId } = await requireCompanyAccess(req);
+    const access = await requireCompanyAccess(req);
+    const companyId = access.companyId;
+    const userId = access.userId;
+    const role = String(access.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        { error: "Acesso negado." },
+        { status: 403 }
+      );
+    }
+
     const { searchParams } = new URL(req.url);
     const id = clean(searchParams.get("id"));
 
@@ -397,12 +456,17 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: "ID obrigatório." }, { status: 400 });
     }
 
-    const { error } = await supabase
+    let deleteQuery = supabase
       .from("message_templates")
       .delete()
       .eq("id", id)
-      .eq("company_id", companyId)
-      .eq("owner_user_id", userId);
+      .eq("company_id", companyId);
+
+    if (role === "VENDEDOR") {
+      deleteQuery = deleteQuery.eq("owner_user_id", userId);
+    }
+
+    const { error } = await deleteQuery;
 
     if (error) throw new Error(error.message);
 

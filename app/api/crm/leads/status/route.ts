@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { requireCompany } from "@/lib/server-company";
+import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
 
@@ -139,7 +139,25 @@ async function syncInterviewStatus({
 export async function PATCH(req: NextRequest) {
   try {
     const supabase = getSupabase();
-    const { companyId } = await await requireCompany(req);
+    const access = await requireCompanyAccess(req);
+    const companyId = access.companyId;
+    const userId = access.userId;
+    const role = String(access.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        { error: "Acesso negado." },
+        { status: 403 }
+      );
+    }
+
+    if (!companyId || !userId) {
+      return NextResponse.json(
+        { error: "Empresa ou usuário não identificado." },
+        { status: 401 }
+      );
+    }
+
     const body = await req.json();
 
     const id = clean(body?.id || body?.leadId || body?.lead_id);
@@ -207,11 +225,17 @@ export async function PATCH(req: NextRequest) {
       update.reactivation_at = safeDate(body?.reactivationAt || body?.reactivation_at);
     }
 
-    const { data: lead, error } = await supabase
+    let updateQuery = supabase
       .from("leads")
       .update(update)
       .eq("id", id)
-      .eq("company_id", companyId)
+      .eq("company_id", companyId);
+
+    if (role === "VENDEDOR") {
+      updateQuery = updateQuery.eq("owner_user_id", userId);
+    }
+
+    const { data: lead, error } = await updateQuery
       .select("*")
       .maybeSingle();
 
@@ -219,7 +243,7 @@ export async function PATCH(req: NextRequest) {
 
     if (!lead) {
       return NextResponse.json(
-        { error: "Contato não encontrado para esta empresa." },
+        { error: "Contato não encontrado ou sem permissão." },
         { status: 404 }
       );
     }

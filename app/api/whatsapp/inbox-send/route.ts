@@ -625,6 +625,19 @@ export async function POST(req: NextRequest) {
     );
 
     const userId = clean(access?.userId);
+    const role = clean(access?.userRole).toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Acesso negado.",
+        },
+        {
+          status: 403,
+        }
+      );
+    }
 
     if (!companyId || !userId) {
       return NextResponse.json(
@@ -688,15 +701,23 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const {
-      data: lead,
-      error: leadError,
-    } = await supabase
+    let leadQuery = supabase
       .from("leads")
       .select("*")
       .eq("company_id", companyId)
-      .eq("id", leadId)
-      .maybeSingle();
+      .eq("id", leadId);
+
+    if (role === "VENDEDOR") {
+      leadQuery = leadQuery.eq(
+        "owner_user_id",
+        userId
+      );
+    }
+
+    const {
+      data: lead,
+      error: leadError,
+    } = await leadQuery.maybeSingle();
 
     if (leadError) {
       throw new Error(leadError.message);
@@ -707,31 +728,10 @@ export async function POST(req: NextRequest) {
         {
           success: false,
           error:
-            "Lead não encontrado nesta empresa.",
+            "Lead não encontrado ou sem permissão.",
         },
         {
           status: 404,
-        }
-      );
-    }
-
-    /*
-     * Compatibilidade:
-     * se a tabela de leads já tiver owner_user_id,
-     * impede um vendedor de responder o lead de outro.
-     */
-    if (
-      lead?.owner_user_id &&
-      clean(lead.owner_user_id) !== userId
-    ) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Este contato pertence a outro vendedor.",
-        },
-        {
-          status: 403,
         }
       );
     }
@@ -771,7 +771,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (!lead.phone && destination.phone) {
-      await supabase
+      let phoneUpdateQuery = supabase
         .from("leads")
         .update({
           phone: destination.phone,
@@ -780,6 +780,24 @@ export async function POST(req: NextRequest) {
         })
         .eq("id", lead.id)
         .eq("company_id", companyId);
+
+      if (role === "VENDEDOR") {
+        phoneUpdateQuery =
+          phoneUpdateQuery.eq(
+            "owner_user_id",
+            userId
+          );
+      }
+
+      const { error: phoneUpdateError } =
+        await phoneUpdateQuery;
+
+      if (phoneUpdateError) {
+        console.error(
+          "ERRO AO ATUALIZAR TELEFONE DO LEAD:",
+          phoneUpdateError
+        );
+      }
     }
 
     const session = buildSession(
@@ -826,19 +844,29 @@ export async function POST(req: NextRequest) {
 
     const now = new Date().toISOString();
 
+    let updateLeadQuery = supabase
+      .from("leads")
+      .update({
+        last_message: historyContent,
+        last_message_at: now,
+        ai_paused: true,
+        session_id:
+          session.sessionId,
+        updated_at: now,
+      })
+      .eq("id", lead.id)
+      .eq("company_id", companyId);
+
+    if (role === "VENDEDOR") {
+      updateLeadQuery =
+        updateLeadQuery.eq(
+          "owner_user_id",
+          userId
+        );
+    }
+
     const { error: updateLeadError } =
-      await supabase
-        .from("leads")
-        .update({
-          last_message: historyContent,
-          last_message_at: now,
-          ai_paused: true,
-          session_id:
-            session.sessionId,
-          updated_at: now,
-        })
-        .eq("id", lead.id)
-        .eq("company_id", companyId);
+      await updateLeadQuery;
 
     if (updateLeadError) {
       console.error(

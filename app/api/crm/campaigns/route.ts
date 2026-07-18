@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { requireCompany } from "@/lib/server-company";
+import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +36,7 @@ type CampaignAccess = {
   companyId: string;
   branchId?: string | null;
   userId: string;
+  userRole: string;
 };
 
 type QueueInsertError = {
@@ -164,6 +165,7 @@ function normalizeSelectedSessions(value: unknown): number[] {
 function assertAccess(access: Partial<CampaignAccess>): CampaignAccess {
   const companyId = String(access.companyId || "").trim();
   const userId = String(access.userId || "").trim();
+  const userRole = String(access.userRole || "").trim().toUpperCase();
   const branchId = access.branchId
     ? String(access.branchId).trim()
     : null;
@@ -176,25 +178,58 @@ function assertAccess(access: Partial<CampaignAccess>): CampaignAccess {
     throw new Error("Usuário autenticado não identificado.");
   }
 
+  if (!userRole) {
+    throw new Error("Perfil do usuário não identificado.");
+  }
+
   return {
     companyId,
     branchId,
     userId,
+    userRole,
   };
+}
+
+function supervisorForbidden() {
+  return NextResponse.json(
+    {
+      success: false,
+      error:
+        "Supervisor não possui acesso a esta rota operacional.",
+    },
+    {
+      status: 403,
+    }
+  );
 }
 
 async function findReadableCustomerTable(
   supabase: any,
-  companyId: string
+  access: CampaignAccess
 ) {
   const readableTables: string[] = [];
 
   for (const table of CUSTOMER_TABLES) {
-    const { data, error } = await supabase
+    let tableQuery = supabase
       .from(table)
       .select("id")
-      .eq("company_id", companyId)
-      .limit(1);
+      .eq("company_id", access.companyId);
+
+    if (access.userRole === "VENDEDOR") {
+      tableQuery =
+        table === "leads"
+          ? tableQuery.eq(
+              "owner_user_id",
+              access.userId
+            )
+          : tableQuery.eq(
+              "seller_id",
+              access.userId
+            );
+    }
+
+    const { data, error } =
+      await tableQuery.limit(1);
 
     if (error) {
       continue;
@@ -205,7 +240,11 @@ async function findReadableCustomerTable(
     if (Array.isArray(data) && data.length > 0) {
       console.log("[CRM CAMPAIGNS] Tabela de clientes selecionada", {
         table,
-        companyId,
+        companyId: access.companyId,
+        userId:
+          access.userRole === "VENDEDOR"
+            ? access.userId
+            : undefined,
       });
 
       return table;
@@ -214,7 +253,7 @@ async function findReadableCustomerTable(
 
   if (readableTables.length > 0) {
     /*
-     * As tabelas existem, porém não há clientes da empresa em nenhuma.
+     * As tabelas existem, porém não há clientes acessíveis em nenhuma.
      * Retornar a primeira tabela legível mantém a resposta vazia de forma
      * previsível, sem selecionar uma tabela inexistente.
      */
@@ -228,12 +267,13 @@ async function findReadableCustomerTable(
 
 async function fetchCustomers(
   req: NextRequest,
-  companyId: string
+  access: CampaignAccess
 ) {
+  const { companyId, userId, userRole } = access;
   const supabase = getSupabase();
   const table = await findReadableCustomerTable(
     supabase,
-    companyId
+    access
   );
   const url = new URL(req.url);
 
@@ -265,11 +305,26 @@ async function fetchCustomers(
     url.searchParams.get("targetDays") || 0
   );
 
-  const { data, error } = await supabase
+  let customerQuery = supabase
     .from(table)
     .select("*")
-    .eq("company_id", companyId)
-    .limit(500);
+    .eq("company_id", companyId);
+
+  if (userRole === "VENDEDOR") {
+    customerQuery =
+      table === "leads"
+        ? customerQuery.eq(
+            "owner_user_id",
+            userId
+          )
+        : customerQuery.eq(
+            "seller_id",
+            userId
+          );
+  }
+
+  const { data, error } =
+    await customerQuery.limit(500);
 
   if (error) {
     throw new Error(
@@ -466,8 +521,12 @@ export async function GET(req: NextRequest) {
   try {
     const supabase = getSupabase();
     const access = assertAccess(
-      await requireCompany(req)
+      await requireCompanyAccess(req)
     );
+
+    if (access.userRole === "SUPERVISOR") {
+      return supervisorForbidden();
+    }
 
     const url = new URL(req.url);
 
@@ -487,7 +546,7 @@ export async function GET(req: NextRequest) {
     const { table, customers } =
       await fetchCustomers(
         req,
-        access.companyId
+        access
       );
 
     return NextResponse.json({
@@ -525,8 +584,12 @@ export async function POST(req: NextRequest) {
   try {
     const supabase = getSupabase();
     const access = assertAccess(
-      await requireCompany(req)
+      await requireCompanyAccess(req)
     );
+
+    if (access.userRole === "SUPERVISOR") {
+      return supervisorForbidden();
+    }
     const body = await req.json();
 
     const campaignType = String(
@@ -594,7 +657,7 @@ export async function POST(req: NextRequest) {
       customers: eligibleCustomers,
     } = await fetchCustomers(
       fakeReq,
-      access.companyId
+      access
     );
 
     const customers =
@@ -847,8 +910,12 @@ export async function PATCH(req: NextRequest) {
   try {
     const supabase = getSupabase();
     const access = assertAccess(
-      await requireCompany(req)
+      await requireCompanyAccess(req)
     );
+
+    if (access.userRole === "SUPERVISOR") {
+      return supervisorForbidden();
+    }
     const body = await req.json();
 
     const action = String(

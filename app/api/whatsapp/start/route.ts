@@ -12,6 +12,18 @@ export async function POST(req: NextRequest) {
     const sessionId = normalizeWhatsappSessionNumber(body?.sessionId || body?.session || "1");
 
     const session = await resolveWhatsappSession(req, sessionId);
+    const role = String(session.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Acesso negado.",
+        },
+        { status: 403 }
+      );
+    }
+
     const finalSessionId = session.fullSessionId;
 
     const res = await fetch(
@@ -33,7 +45,7 @@ export async function POST(req: NextRequest) {
         userId: session.userId,
         finalSessionId,
       },
-      { status: res.ok ? 200 : 500 }
+      { status: res.status }
     );
   } catch (error: any) {
     return NextResponse.json(

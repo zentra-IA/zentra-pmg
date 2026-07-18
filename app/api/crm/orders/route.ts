@@ -1,33 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
-
-function getCompanyId(req: NextRequest) {
-  return (
-    req.headers.get("x-company-id") ||
-    req.cookies.get("company_id")?.value ||
-    process.env.DEFAULT_COMPANY_ID ||
-    ""
-  );
-}
-
-function getSellerId(req: NextRequest) {
-  return (
-    req.headers.get("x-user-id") ||
-    req.cookies.get("user_id")?.value ||
-    undefined
-  );
-}
-
-function getRole(req: NextRequest) {
-  return (
-    req.headers.get("x-user-role") ||
-    req.cookies.get("user_role")?.value ||
-    req.cookies.get("role")?.value ||
-    ""
-  ).toUpperCase();
-}
 
 function toDecimal(value: any) {
   if (value === null || value === undefined || value === "") return undefined;
@@ -93,26 +68,23 @@ function dateRangeFromParams(url: URL) {
   return {};
 }
 
-async function resolveCompanyId(req: NextRequest) {
-  const fromReq = getCompanyId(req);
-  if (fromReq) return fromReq;
-  const company = await prisma.companies.findFirst({ select: { id: true } });
-  return company?.id || "";
-}
+type CompanyAccess = Awaited<ReturnType<typeof requireCompanyAccess>>;
 
-function buildWhere(req: NextRequest, company_id: string) {
+function buildWhere(req: NextRequest, access: CompanyAccess) {
   const url = new URL(req.url);
   const q = url.searchParams.get("q") || "";
   const status = url.searchParams.get("status") || "";
-  const seller = url.searchParams.get("seller_id") || "";
-  const role = getRole(req);
-  const sellerFromSession = getSellerId(req);
+  const sellerParam = url.searchParams.get("seller_id") || "";
+  const role = String(access.userRole || "").toUpperCase();
   const deliveryRange = dateRangeFromParams(url);
 
-  const where: any = { company_id };
+  const where: any = { company_id: access.companyId };
 
-  if (role === "VENDEDOR" && sellerFromSession) where.seller_id = sellerFromSession;
-  else if (seller) where.seller_id = seller;
+  if (role === "VENDEDOR") {
+    where.seller_id = access.userId;
+  } else if (role === "GERAL" && sellerParam) {
+    where.seller_id = sellerParam;
+  }
 
   if (status) where.status = status;
   if (deliveryRange.gte || deliveryRange.lte) where.delivery_date = deliveryRange;
@@ -133,16 +105,25 @@ function buildWhere(req: NextRequest, company_id: string) {
   return where;
 }
 
+function supervisorForbidden() {
+  return NextResponse.json(
+    { error: "Supervisor não possui acesso a esta rota operacional." },
+    { status: 403 }
+  );
+}
+
 export async function GET(req: NextRequest) {
   try {
-    const company_id = await resolveCompanyId(req);
-    if (!company_id) return NextResponse.json({ orders: [], summary: null });
+    const access = await requireCompanyAccess(req);
+    const role = String(access.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") return supervisorForbidden();
 
     const url = new URL(req.url);
     const limit = Math.min(Number(url.searchParams.get("limit") || 80), 200);
     const page = Math.max(Number(url.searchParams.get("page") || 1), 1);
     const orderByParam = url.searchParams.get("orderBy") || "created_desc";
-    const where = buildWhere(req, company_id);
+    const where = buildWhere(req, access);
 
     const orderBy =
       orderByParam === "value_desc"
@@ -201,15 +182,18 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const company_id = await resolveCompanyId(req);
-    const seller_id = getSellerId(req);
+    const access = await requireCompanyAccess(req);
+    const role = String(access.userRole || "").toUpperCase();
 
-    if (!company_id) {
-      return NextResponse.json({ error: "Empresa não encontrada." }, { status: 400 });
-    }
+    if (role === "SUPERVISOR") return supervisorForbidden();
 
+    const company_id = access.companyId;
     const body = await req.json();
     const extracted = body.extracted || body;
+    const seller_id =
+      role === "VENDEDOR"
+        ? access.userId
+        : extracted.seller_id || body.seller_id || access.userId;
 
     const customerCode = extracted.customer_id || extracted.customerInternalCode || extracted.codigo_cliente || extracted.cliente_id;
     const document = extracted.document || extracted.cnpj_cpf || extracted.cnpj || extracted.cpf;
@@ -221,6 +205,7 @@ export async function POST(req: NextRequest) {
       customer = await prisma.salesCustomer.findFirst({
         where: {
           company_id,
+          ...(role === "VENDEDOR" ? { seller_id: access.userId } : {}),
           OR: [
             ...(customerCode ? [{ internal_code: String(customerCode) }] : []),
             ...(document ? [{ document: String(document) }] : []),
@@ -324,15 +309,35 @@ export async function POST(req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
   try {
-    const company_id = await resolveCompanyId(req);
+    const access = await requireCompanyAccess(req);
+    const role = String(access.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") return supervisorForbidden();
+
     const body = await req.json();
 
-    if (!company_id || !body.id) {
+    if (!body.id) {
       return NextResponse.json({ error: "Pedido inválido." }, { status: 400 });
     }
 
+    const existing = await prisma.salesOrder.findFirst({
+      where: {
+        id: body.id,
+        company_id: access.companyId,
+        ...(role === "VENDEDOR" ? { seller_id: access.userId } : {}),
+      },
+      select: { id: true },
+    });
+
+    if (!existing) {
+      return NextResponse.json(
+        { error: "Pedido não encontrado ou sem permissão." },
+        { status: 404 }
+      );
+    }
+
     const order = await prisma.salesOrder.update({
-      where: { id: body.id },
+      where: { id: existing.id },
       data: {
         order_number: body.order_number ?? undefined,
         customer_name: body.customer_name ?? undefined,
@@ -364,16 +369,38 @@ export async function PATCH(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   try {
-    const company_id = await resolveCompanyId(req);
+    const access = await requireCompanyAccess(req);
+    const role = String(access.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") return supervisorForbidden();
+
     const id = new URL(req.url).searchParams.get("id");
 
-    if (!company_id || !id) {
+    if (!id) {
       return NextResponse.json({ error: "Pedido inválido." }, { status: 400 });
     }
 
-    await prisma.salesOrderItem.deleteMany({ where: { order_id: id } });
-    await prisma.salesOrderOcr.deleteMany({ where: { order_id: id } });
-    await prisma.salesOrder.delete({ where: { id } });
+    const existing = await prisma.salesOrder.findFirst({
+      where: {
+        id,
+        company_id: access.companyId,
+        ...(role === "VENDEDOR" ? { seller_id: access.userId } : {}),
+      },
+      select: { id: true },
+    });
+
+    if (!existing) {
+      return NextResponse.json(
+        { error: "Pedido não encontrado ou sem permissão." },
+        { status: 404 }
+      );
+    }
+
+    await prisma.$transaction([
+      prisma.salesOrderItem.deleteMany({ where: { order_id: existing.id } }),
+      prisma.salesOrderOcr.deleteMany({ where: { order_id: existing.id } }),
+      prisma.salesOrder.delete({ where: { id: existing.id } }),
+    ]);
 
     return NextResponse.json({ ok: true });
   } catch (error) {

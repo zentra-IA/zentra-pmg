@@ -1136,22 +1136,7 @@ const finalUnitPrice = roundMoney(
   Number(item.discountedUnitPrice ?? item.unitPrice ?? 0)
 );
 
-if (Number(item.discountPercent || 0) > 0) {
-  lines.push(
-    `🏷️ Desconto aplicado: ${String(item.discountPercent).replace(".", ",")}%`
-  );
-  lines.push(
-    `💰 Preço original por ${item.unit}: ${moneyBR(item.originalUnitPrice)}`
-  );
-  lines.push(
-    `✅ Preço com desconto por ${item.unit}: ${moneyBR(finalUnitPrice)}`
-  );
-  lines.push(
-    `💸 Economia neste item: ${moneyBR(item.totalDiscountAmount)}`
-  );
-} else {
-  lines.push(`💰 Preço unitário final: ${moneyBR(finalUnitPrice)}`);
-}
+lines.push(`💰 Preço unitário final: ${moneyBR(finalUnitPrice)}`);
 
 lines.push(`💲Valor total deste item: ${moneyBR(item.subtotal)}`);
 
@@ -1222,18 +1207,9 @@ function formatCheapestOptionsQuote(params: {
 
       lines.push(`${index + 1}º ${option.official_name}`);
 
-      if (discountPercent > 0) {
-        lines.push(
-          `   Vend. por: ${unit} • Original: ${moneyBR(originalPrice)}`
-        );
-        lines.push(
-          `   Desconto: ${String(discountPercent).replace(".", ",")}% • Final: ${moneyBR(finalPrice)}`
-        );
-      } else {
-        lines.push(
-          `   Vend. por: ${unit} • Preço: ${moneyBR(originalPrice)}`
-        );
-      }
+      lines.push(
+        `   Vend. por: ${unit} • Preço: ${moneyBR(finalPrice)}`
+      );
 
       lines.push("");
     });

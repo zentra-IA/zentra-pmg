@@ -1,31 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
-
-function isValidUuid(value: unknown): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    String(value || "")
-  );
-}
-
-async function resolveCompanyId(incomingCompanyId: unknown) {
-  if (isValidUuid(incomingCompanyId)) return String(incomingCompanyId);
-
-  const envCompany =
-    process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID ||
-    process.env.DEFAULT_COMPANY_ID;
-
-  if (isValidUuid(envCompany)) return String(envCompany);
-
-  const company = await prisma.companies.findFirst({
-    select: { id: true },
-    orderBy: { created_at: "asc" },
-  });
-
-  return company?.id || null;
-}
 
 function asNumber(value: unknown, fallback = 0) {
   if (value === null || value === undefined || value === "") return fallback;
@@ -114,19 +92,26 @@ function formatCurrency(value: number) {
 
 export async function GET(req: NextRequest) {
   try {
-    const { searchParams } = new URL(req.url);
+    const access = await requireCompanyAccess(req);
+    const companyId = access.companyId;
+    const userId = access.userId;
+    const role = String(access.userRole || "").toUpperCase();
 
-    const companyId = await resolveCompanyId(
-      searchParams.get("companyId") ||
-        searchParams.get("company_id")
-    );
-
-    if (!companyId) {
+    if (role === "SUPERVISOR") {
       return NextResponse.json(
-        { error: "companyId obrigatório" },
-        { status: 400 }
+        { error: "Acesso negado." },
+        { status: 403 }
       );
     }
+
+    if (!companyId || !userId) {
+      return NextResponse.json(
+        { error: "Empresa ou usuário não identificado." },
+        { status: 401 }
+      );
+    }
+
+    const { searchParams } = new URL(req.url);
 
     const customerId =
       searchParams.get("customerId") ||
@@ -141,6 +126,7 @@ export async function GET(req: NextRequest) {
       where: {
         company_id: companyId,
         action: "quote_saved",
+        ...(role === "VENDEDOR" ? { user_id: userId } : {}),
         ...(customerId
           ? {
               metadata: {
@@ -182,21 +168,29 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const access = await requireCompanyAccess(req);
+    const companyId = access.companyId;
+    const userId = access.userId;
+    const role = String(access.userRole || "").toUpperCase();
 
-    const companyId = await resolveCompanyId(
-      body.companyId || body.company_id
-    );
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        { error: "Acesso negado." },
+        { status: 403 }
+      );
+    }
 
-    if (!companyId) {
+    if (!companyId || !userId) {
       return NextResponse.json(
         {
           success: false,
-          error: "companyId obrigatório ou inválido.",
+          error: "Empresa ou usuário não identificado.",
         },
-        { status: 400 }
+        { status: 401 }
       );
     }
+
+    const body = await req.json();
 
     const incomingCustomerId = cleanString(
       body.customerId || body.customer_id
@@ -263,6 +257,7 @@ export async function POST(req: NextRequest) {
         where: {
           company_id: companyId,
           id: incomingCustomerId,
+          ...(role === "VENDEDOR" ? { seller_id: userId } : {}),
         },
         select: {
           id: true,
@@ -275,6 +270,7 @@ export async function POST(req: NextRequest) {
       resolvedCustomer = await prisma.salesCustomer.findFirst({
         where: {
           company_id: companyId,
+          ...(role === "VENDEDOR" ? { seller_id: userId } : {}),
           OR: [
             { internal_code: customerInternalCode },
             { erp_code: customerInternalCode },
@@ -291,6 +287,7 @@ export async function POST(req: NextRequest) {
       resolvedCustomer = await prisma.salesCustomer.findFirst({
         where: {
           company_id: companyId,
+          ...(role === "VENDEDOR" ? { seller_id: userId } : {}),
           OR: [
             {
               legal_name: {
@@ -316,19 +313,19 @@ export async function POST(req: NextRequest) {
     const customerId =
       resolvedCustomer?.id || incomingCustomerId || null;
 
-    const requestedUserId = body.userId || body.user_id;
-    const authenticatedUserId = isValidUuid(requestedUserId)
-      ? String(requestedUserId)
-      : null;
+    const authenticatedUserId = userId;
 
     const sellerId =
-      authenticatedUserId || resolvedCustomer?.seller_id || null;
+      role === "VENDEDOR"
+        ? userId
+        : resolvedCustomer?.seller_id || userId;
 
     const metadata = {
       source: "quotes_ai",
       type: "quote_history",
       status: "quoted",
       companyId,
+      userId: authenticatedUserId,
       customerId,
       customerInternalCode,
       customerName,
@@ -380,9 +377,13 @@ export async function POST(req: NextRequest) {
         const quotedAt = new Date();
 
         await prisma.$transaction([
-          prisma.salesCustomer.update({
+          prisma.salesCustomer.updateMany({
             where: {
               id: resolvedCustomer.id,
+              company_id: companyId,
+              ...(role === "VENDEDOR"
+                ? { seller_id: userId }
+                : {}),
             },
             data: {
               last_quote_at: quotedAt,

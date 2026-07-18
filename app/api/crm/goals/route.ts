@@ -1,33 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
-
-function getCompanyId(req: NextRequest) {
-  return (
-    req.headers.get("x-company-id") ||
-    req.cookies.get("company_id")?.value ||
-    process.env.DEFAULT_COMPANY_ID ||
-    ""
-  );
-}
-
-function getUserId(req: NextRequest) {
-  return (
-    req.headers.get("x-user-id") ||
-    req.cookies.get("user_id")?.value ||
-    undefined
-  );
-}
-
-function getRole(req: NextRequest) {
-  return (
-    req.headers.get("x-user-role") ||
-    req.cookies.get("user_role")?.value ||
-    req.cookies.get("role")?.value ||
-    ""
-  ).toUpperCase();
-}
 
 function toDecimal(value: any) {
   if (value === null || value === undefined || value === "") return 0;
@@ -45,29 +20,29 @@ function toDecimal(value: any) {
   return Number.isFinite(n) ? n : 0;
 }
 
-async function resolveCompanyId(req: NextRequest) {
-  const fromReq = getCompanyId(req);
-  if (fromReq) return fromReq;
-
-  const company = await prisma.companies.findFirst({
-    select: { id: true },
-  });
-
-  return company?.id || "";
-}
-
 function serializeGoal(goal: any) {
   return {
     ...goal,
-    goal_amount: goal.goal_amount === null || goal.goal_amount === undefined
-      ? 0
-      : Number(goal.goal_amount),
+    goal_amount:
+      goal.goal_amount === null || goal.goal_amount === undefined
+        ? 0
+        : Number(goal.goal_amount),
   };
 }
 
 export async function GET(req: NextRequest) {
   try {
-    const company_id = await resolveCompanyId(req);
+    const access = await requireCompanyAccess(req);
+    const role = String(access.userRole || "").toUpperCase();
+    const company_id = access.companyId;
+    const user_id = access.userId;
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        { error: "Acesso negado." },
+        { status: 403 }
+      );
+    }
 
     if (!company_id) {
       return NextResponse.json({ goals: [] });
@@ -78,12 +53,18 @@ export async function GET(req: NextRequest) {
 
     const year = Number(url.searchParams.get("year") || now.getFullYear());
     const month = Number(url.searchParams.get("month") || now.getMonth() + 1);
+    const sellerParam = url.searchParams.get("seller_id");
 
     const goals = await prisma.sales_goals.findMany({
       where: {
         company_id,
         year,
         month,
+        ...(role === "VENDEDOR"
+          ? { seller_id: user_id }
+          : role === "GERAL" && sellerParam
+            ? { seller_id: sellerParam }
+            : {}),
       },
       orderBy: {
         updated_at: "desc",
@@ -104,8 +85,16 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const company_id = await resolveCompanyId(req);
-    const role = getRole(req);
+    const access = await requireCompanyAccess(req);
+    const role = String(access.userRole || "").toUpperCase();
+    const company_id = access.companyId;
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        { error: "Acesso negado." },
+        { status: 403 }
+      );
+    }
 
     if (!company_id) {
       return NextResponse.json(

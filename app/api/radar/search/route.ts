@@ -49,7 +49,7 @@ function getSort(sortBy: string, sortDir: string) {
 }
 
 async function getUsage(access: Awaited<ReturnType<typeof requireCompanyAccess>>) {
-  const clientId = access.userId || access.companyId;
+  const clientId = access.userId;
   const month = currentMonthKey();
 
   const defaultLimit =
@@ -88,7 +88,29 @@ async function getUsage(access: Awaited<ReturnType<typeof requireCompanyAccess>>
 export async function GET(req: NextRequest) {
   try {
     const access = await requireCompanyAccess(req);
-    const { companyId } = access;
+    const { companyId, userId } = access;
+    const role = String(access.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Acesso negado.",
+        },
+        { status: 403 }
+      );
+    }
+
+    if (!companyId || !userId) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Empresa ou usuário não identificado.",
+        },
+        { status: 401 }
+      );
+    }
+
     const { searchParams } = new URL(req.url);
 
     const city = searchParams.get("city") || "";
@@ -115,7 +137,7 @@ export async function GET(req: NextRequest) {
     const exports = await prisma.prospectExport.findMany({
       where: {
         company_id: companyId,
-        clientId,
+        ...(role === "VENDEDOR" ? { clientId } : {}),
       },
       select: { prospectId: true },
     });
@@ -124,37 +146,39 @@ export async function GET(req: NextRequest) {
 
     const take = Math.max(1, Math.min(requestedLimit, 500));
 
-    const prospectsRaw = await prisma.prospect.findMany({
-      where: {
-        company_id: companyId,
-        active: true,
-        externalId: externalId
-          ? { contains: externalId, mode: "insensitive" }
-          : undefined,
-        city: city ? { contains: city, mode: "insensitive" } : undefined,
-        state: state ? { contains: state, mode: "insensitive" } : undefined,
-        name: name ? { contains: name, mode: "insensitive" } : undefined,
-        segment: segment
-          ? { contains: segment, mode: "insensitive" }
-          : undefined,
-        category: category
-          ? { contains: category, mode: "insensitive" }
-          : undefined,
-        productInterest: product
-          ? { contains: product, mode: "insensitive" }
-          : undefined,
-        paymentMethod: paymentMethod
-          ? { contains: paymentMethod, mode: "insensitive" }
-          : undefined,
-        id:
-          view === "NEW"
-            ? exportedIds.length
-              ? { notIn: exportedIds }
-              : undefined
-            : view === "REVEALED"
+    const prospectWhere = {
+      company_id: companyId,
+      active: true,
+      externalId: externalId
+        ? { contains: externalId, mode: "insensitive" }
+        : undefined,
+      city: city ? { contains: city, mode: "insensitive" } : undefined,
+      state: state ? { contains: state, mode: "insensitive" } : undefined,
+      name: name ? { contains: name, mode: "insensitive" } : undefined,
+      segment: segment
+        ? { contains: segment, mode: "insensitive" }
+        : undefined,
+      category: category
+        ? { contains: category, mode: "insensitive" }
+        : undefined,
+      productInterest: product
+        ? { contains: product, mode: "insensitive" }
+        : undefined,
+      paymentMethod: paymentMethod
+        ? { contains: paymentMethod, mode: "insensitive" }
+        : undefined,
+      id:
+        view === "NEW"
+          ? exportedIds.length
+            ? { notIn: exportedIds }
+            : undefined
+          : view === "REVEALED"
             ? { in: exportedIds.length ? exportedIds : ["__none__"] }
             : undefined,
-      } as any,
+    } as any;
+
+    const prospectsRaw = await prisma.prospect.findMany({
+      where: prospectWhere,
       orderBy: getSort(sortBy, sortDir),
       take,
     });
@@ -189,12 +213,7 @@ export async function GET(req: NextRequest) {
     });
 
     const totalFound = await prisma.prospect.count({
-      where: {
-        company_id: companyId,
-        active: true,
-        city: city ? { contains: city, mode: "insensitive" } : undefined,
-        name: name ? { contains: name, mode: "insensitive" } : undefined,
-      },
+      where: prospectWhere,
     });
 
     return NextResponse.json({

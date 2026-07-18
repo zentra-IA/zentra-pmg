@@ -15,6 +15,18 @@ export async function POST(
     const sessionId = normalizeWhatsappSessionNumber(params?.session || "1");
 
     const session = await resolveWhatsappSession(req, sessionId);
+    const role = String(session.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Acesso negado.",
+        },
+        { status: 403 }
+      );
+    }
+
     const finalSessionId = session.fullSessionId;
 
     const res = await fetch(
@@ -24,14 +36,17 @@ export async function POST(
 
     const data = await res.json().catch(() => ({}));
 
-    return NextResponse.json({
-      success: data?.success ?? res.ok,
-      sessionId,
-      companyId: session.companyId,
-      userId: session.userId,
-      finalSessionId,
-      ...data,
-    });
+    return NextResponse.json(
+      {
+        success: data?.success ?? res.ok,
+        sessionId,
+        companyId: session.companyId,
+        userId: session.userId,
+        finalSessionId,
+        ...data,
+      },
+      { status: res.status }
+    );
   } catch (error: any) {
     return NextResponse.json(
       { success: false, error: error?.message || "Erro ao reiniciar WhatsApp" },

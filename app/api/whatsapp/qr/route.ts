@@ -12,6 +12,15 @@ export async function GET(req: NextRequest) {
     const sessionId = normalizeWhatsappSessionNumber(searchParams.get("sessionId") || "1");
 
     const session = await resolveWhatsappSession(req, sessionId);
+    const role = String(session.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        { error: "Acesso negado." },
+        { status: 403 }
+      );
+    }
+
     const finalSessionId = session.fullSessionId;
 
     const res = await fetch(
@@ -40,7 +49,7 @@ export async function GET(req: NextRequest) {
         me: null,
         error: error?.message || "Erro ao buscar QR",
       },
-      { status: 500 }
+      { status: error?.status || 500 }
     );
   }
 }

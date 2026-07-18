@@ -1,25 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runCommercialQuoteEngine } from "@/lib/quotes/engine";
 import { prisma } from "@/lib/prisma";
+import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
-
-function isValidUuid(value: unknown): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    String(value || "")
-  );
-}
-
-async function resolveCompanyId(incomingCompanyId: unknown) {
-  if (isValidUuid(incomingCompanyId)) return String(incomingCompanyId);
-
-  const company = await prisma.companies.findFirst({
-    select: { id: true },
-    orderBy: { created_at: "asc" },
-  });
-
-  return company?.id || null;
-}
 
 function asNumber(value: any): number | undefined {
   if (value === null || value === undefined) return undefined;
@@ -32,11 +16,25 @@ function asNumber(value: any): number | undefined {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const access = await requireCompanyAccess(req);
+    const companyId = access.companyId;
+    const role = String(access.userRole || "").toUpperCase();
 
-    const companyId = await resolveCompanyId(
-      body.companyId || body.company_id || body.company?.id || body.company
-    );
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        { error: "Acesso negado." },
+        { status: 403 }
+      );
+    }
+
+    if (!companyId) {
+      return NextResponse.json(
+        { error: "Empresa não identificada." },
+        { status: 401 }
+      );
+    }
+
+    const body = await req.json();
 
     const rawText = String(
       body.rawText ||
@@ -51,9 +49,9 @@ export async function POST(req: NextRequest) {
         ""
     ).trim();
 
-    if (!companyId || !rawText) {
+    if (!rawText) {
       return NextResponse.json(
-        { error: "companyId e rawText são obrigatórios." },
+        { error: "rawText é obrigatório." },
         { status: 400 }
       );
     }
