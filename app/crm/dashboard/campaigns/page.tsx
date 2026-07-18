@@ -4,52 +4,18 @@ import { useEffect, useMemo, useState } from "react";
 
 const SESSIONS = [1, 2, 3, 4, 5];
 
-const CAMPAIGN_TYPES = [
-  {
-    value: "PROMOCAO_DIARIA",
-    label: "Promoção diária",
-    desc: "Oferta do dia para clientes selecionados.",
-    message:
-      "Olá {cliente}, tudo bem? Aqui é da PMG Atacadista. Hoje temos uma condição especial para {segmento}. Quer que eu te envie a oferta do dia?",
-  },
-  {
-    value: "REATIVACAO",
-    label: "Reativação",
-    desc: "Clientes parados ou sem compra recente.",
-    message:
-      "Olá {cliente}, tudo bem? Sentimos sua falta aqui na PMG. Posso te mandar as melhores condições de hoje para repor seu estoque?",
-  },
-  {
-    value: "FOLLOW_UP_COTACAO",
-    label: "Follow-up de cotação",
-    desc: "Clientes que cotaram e ainda não fecharam.",
-    message:
-      "Olá {cliente}, tudo bem? Passando para acompanhar sua cotação. Consigo verificar uma condição melhor para você fechar hoje?",
-  },
-  {
-    value: "AUMENTAR_MIX",
-    label: "Aumentar mix",
-    desc: "Oferecer produtos complementares ao perfil do cliente.",
-    message:
-      "Olá {cliente}, vi aqui que seu perfil combina com alguns itens de giro alto. Quer que eu te mande sugestões para aumentar o mix da sua loja?",
-  },
-  {
-    value: "PEDIDO_SEMANAL",
-    label: "Pedido semanal",
-    desc: "Clientes que costumam comprar em dias específicos.",
-    message:
-      "Olá {cliente}, tudo bem? Hoje é um bom dia para organizar seu pedido da semana. Quer que eu te ajude com a reposição?",
-  },
-  {
-    value: "COBRANCA_LEMBRETE",
-    label: "Lembrete comercial",
-    desc: "Aviso para combinar pagamento, boleto ou fechamento.",
-    message:
-      "Olá {cliente}, tudo bem? Estou passando para alinhar seu pedido/pagamento e deixar tudo certo com a PMG.",
-  },
-];
-
 const DAYS = [0, 7, 15, 30, 45, 60, 90];
+
+type MessageTemplate = {
+  id: string;
+  name?: string | null;
+  title?: string | null;
+  type?: string | null;
+  intent?: string | null;
+  base_message?: string | null;
+  kanban_status?: string | null;
+  active?: boolean | null;
+};
 
 type Customer = {
   id: string;
@@ -104,6 +70,18 @@ function formatDate(value?: string) {
   }
 }
 
+
+function formatIntentLabel(value?: string | null) {
+  const raw = String(value || "").trim();
+
+  if (!raw) return "Sem tipo";
+
+  return raw
+    .toLowerCase()
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
 
 function isWhatsappOnline(data: any) {
   const status = String(
@@ -163,7 +141,10 @@ async function fetchWhatsappSession(sessionId: number) {
 }
 
 export default function CampaignsPage() {
-  const [campaignType, setCampaignType] = useState("PROMOCAO_DIARIA");
+  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [selectedIntent, setSelectedIntent] = useState("");
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [targetDays, setTargetDays] = useState(0);
   const [selectedWpp, setSelectedWpp] = useState<number[]>([1]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -176,11 +157,30 @@ export default function CampaignsPage() {
   const [segment, setSegment] = useState("");
   const [city, setCity] = useState("");
   const [status, setStatus] = useState("TODOS");
-  const [message, setMessage] = useState(CAMPAIGN_TYPES[0].message);
 
-  const currentType = useMemo(
-    () => CAMPAIGN_TYPES.find((x) => x.value === campaignType) || CAMPAIGN_TYPES[0],
-    [campaignType]
+  const availableIntents = useMemo(() => {
+    const values = templates
+      .map((template) => String(template.intent || "").trim())
+      .filter(Boolean);
+
+    return Array.from(new Set(values));
+  }, [templates]);
+
+  const templatesForIntent = useMemo(
+    () =>
+      templates.filter(
+        (template) =>
+          String(template.intent || "").trim() === selectedIntent
+      ),
+    [templates, selectedIntent]
+  );
+
+  const selectedTemplate = useMemo(
+    () =>
+      templates.find(
+        (template) => template.id === selectedTemplateId
+      ) || null,
+    [templates, selectedTemplateId]
   );
 
   const onlineCount = Object.values(sessionStats).filter((s: any) => s?.online).length;
@@ -192,10 +192,81 @@ export default function CampaignsPage() {
   const selectedCount = selectedCustomers.length;
   const targetCount = selectedCount || customers.length;
 
-  function selectCampaignType(value: string) {
-    const next = CAMPAIGN_TYPES.find((x) => x.value === value) || CAMPAIGN_TYPES[0];
-    setCampaignType(value);
-    setMessage(next.message);
+  async function loadTemplates() {
+    try {
+      setTemplatesLoading(true);
+
+      const response = await fetch(
+        "/api/crm/message-templates?active=true",
+        {
+          cache: "no-store",
+          credentials: "include",
+        }
+      );
+
+      const data = await response.json().catch(() => []);
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error || "Erro ao carregar mensagens cadastradas."
+        );
+      }
+
+      const rawList = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.templates)
+          ? data.templates
+          : [];
+
+      const list = rawList.filter((template: MessageTemplate) => {
+        const type = String(template?.type || "campaign").toLowerCase();
+
+        return (
+          template?.active !== false &&
+          Boolean(String(template?.base_message || "").trim()) &&
+          Boolean(String(template?.intent || "").trim()) &&
+          ["campaign", "campanha", "disparo", "campaigns"].includes(type)
+        );
+      });
+
+      setTemplates(list);
+
+      const firstIntent = String(list[0]?.intent || "").trim();
+      setSelectedIntent((current) =>
+        current && list.some(
+          (template: MessageTemplate) =>
+            String(template.intent || "").trim() === current
+        )
+          ? current
+          : firstIntent
+      );
+
+      setSelectedTemplateId((current) =>
+        current && list.some(
+          (template: MessageTemplate) => template.id === current
+        )
+          ? current
+          : list[0]?.id || ""
+      );
+    } catch (error: any) {
+      console.error("[CAMPAIGNS] Erro ao carregar mensagens:", error);
+      setTemplates([]);
+      setSelectedIntent("");
+      setSelectedTemplateId("");
+    } finally {
+      setTemplatesLoading(false);
+    }
+  }
+
+  function selectCampaignType(intent: string) {
+    setSelectedIntent(intent);
+
+    const firstTemplate = templates.find(
+      (template) =>
+        String(template.intent || "").trim() === intent
+    );
+
+    setSelectedTemplateId(firstTemplate?.id || "");
   }
 
   async function getAvailableSessions(ids: number[]) {
@@ -262,7 +333,7 @@ export default function CampaignsPage() {
 
     try {
       const params = new URLSearchParams({
-        type: campaignType,
+        type: selectedIntent,
         targetDays: String(targetDays),
         q,
         segment,
@@ -322,13 +393,24 @@ export default function CampaignsPage() {
       return;
     }
 
-    if (!message.trim()) {
-      alert("Escreva a mensagem centralizada da campanha.");
+    if (!selectedTemplate) {
+      alert(
+        "Selecione uma mensagem ativa criada em Mensagens IA."
+      );
+      return;
+    }
+
+    if (!String(selectedTemplate.base_message || "").trim()) {
+      alert("A mensagem selecionada não possui texto configurado.");
       return;
     }
 
     const confirmed = confirm(
-      `Colocar ${targetCount} cliente(s) na fila da campanha "${currentType.label}"?`
+      `Colocar ${targetCount} cliente(s) na fila usando a mensagem "${
+        selectedTemplate.name ||
+        selectedTemplate.title ||
+        formatIntentLabel(selectedTemplate.intent)
+      }"?`
     );
 
     if (!confirmed) return;
@@ -351,12 +433,12 @@ export default function CampaignsPage() {
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          campaignType,
+          templateId: selectedTemplate.id,
+          campaignType: selectedTemplate.intent || selectedIntent,
           targetDays,
           selectedWpp: onlineSessions,
           selectedCustomerIds: selectedCustomers,
           filters: { q, segment, city, status },
-          message,
         }),
       });
 
@@ -391,6 +473,7 @@ export default function CampaignsPage() {
   }
 
   useEffect(() => {
+    loadTemplates();
     loadSessionStats();
 
     const interval = window.setInterval(() => {
@@ -408,7 +491,7 @@ export default function CampaignsPage() {
 
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [campaignType, targetDays, q, segment, city, status]);
+  }, [selectedIntent, targetDays, q, segment, city, status]);
 
   return (
     <main className="campaign-page">
@@ -417,12 +500,16 @@ export default function CampaignsPage() {
           <p className="campaign-kicker">Zentra Sales AI · PMG Atacadista</p>
           <h1>Campanhas Comerciais</h1>
           <p>
-            Selecione clientes da carteira, escreva uma mensagem centralizada e dispare em lote
+            Selecione uma mensagem criada em Mensagens IA, escolha os clientes e dispare em lote
             usando os WhatsApps conectados com controle antibanimento.
           </p>
         </div>
 
-        <button className="primary-button" onClick={startCampaign} disabled={loading || !targetCount}>
+        <button
+          className="primary-button"
+          onClick={startCampaign}
+          disabled={loading || !targetCount || !selectedTemplate}
+        >
           {loading ? "Colocando na fila..." : `Iniciar campanha (${targetCount})`}
         </button>
       </section>
@@ -462,44 +549,78 @@ export default function CampaignsPage() {
             </div>
           </div>
 
-          <div className="type-grid">
-            {CAMPAIGN_TYPES.map((item) => (
-              <button
-                key={item.value}
-                className={`type-card ${item.value === campaignType ? "active" : ""}`}
-                onClick={() => selectCampaignType(item.value)}
-              >
-                <strong>{item.label}</strong>
-                <span>{item.desc}</span>
-              </button>
-            ))}
-          </div>
-
-          <div className="message-box">
-            <label>Mensagem centralizada</label>
-            <textarea
-              value={message}
-              onChange={(event) => setMessage(event.target.value)}
-              rows={7}
-              placeholder="Digite a mensagem que será enviada para o lote..."
-            />
-
-            <div className="tokens">
-              <span>Variáveis:</span>
-              <button type="button" onClick={() => setMessage((old) => `${old} {cliente}`)}>
-                + cliente
-              </button>
-              <button type="button" onClick={() => setMessage((old) => `${old} {segmento}`)}>
-                + segmento
-              </button>
-              <button type="button" onClick={() => setMessage((old) => `${old} {cidade}`)}>
-                + cidade
-              </button>
-              <button type="button" onClick={() => setMessage((old) => `${old} {vendedor}`)}>
-                + vendedor
-              </button>
+          {templatesLoading ? (
+            <div className="empty-template-state">
+              Carregando mensagens cadastradas...
             </div>
-          </div>
+          ) : !availableIntents.length ? (
+            <div className="empty-template-state">
+              Nenhuma mensagem ativa de campanha foi cadastrada em Mensagens IA.
+            </div>
+          ) : (
+            <>
+              <div className="type-grid">
+                {availableIntents.map((intent) => {
+                  const count = templates.filter(
+                    (template) =>
+                      String(template.intent || "").trim() === intent
+                  ).length;
+
+                  return (
+                    <button
+                      key={intent}
+                      className={`type-card ${
+                        intent === selectedIntent ? "active" : ""
+                      }`}
+                      onClick={() => selectCampaignType(intent)}
+                    >
+                      <strong>{formatIntentLabel(intent)}</strong>
+                      <span>
+                        {count} mensagem(ns) cadastrada(s) neste tipo.
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="message-box">
+                <label>Mensagem criada em Mensagens IA</label>
+                <select
+                  value={selectedTemplateId}
+                  onChange={(event) =>
+                    setSelectedTemplateId(event.target.value)
+                  }
+                >
+                  {templatesForIntent.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.name ||
+                        template.title ||
+                        formatIntentLabel(template.intent)}
+                    </option>
+                  ))}
+                </select>
+
+                <label>Prévia da mensagem</label>
+                <textarea
+                  value={selectedTemplate?.base_message || ""}
+                  rows={7}
+                  readOnly
+                  placeholder="Selecione uma mensagem cadastrada."
+                />
+
+                <div className="template-destination">
+                  <strong>Destino no Kanban</strong>
+                  <span>
+                    {selectedTemplate?.kanban_status
+                      ? formatIntentLabel(
+                          selectedTemplate.kanban_status
+                        )
+                      : "Manter status atual do contato"}
+                  </span>
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
         <aside className="panel side-panel">
@@ -803,8 +924,39 @@ export default function CampaignsPage() {
           box-shadow: inset 4px 0 0 #16a34a;
         }
 
+        .empty-template-state {
+          margin-top: 16px;
+          padding: 18px;
+          border: 1px dashed #bbf7d0;
+          border-radius: 16px;
+          background: #f0fdf4;
+          color: #166534;
+          font-weight: 800;
+        }
+
         .message-box {
           margin-top: 18px;
+        }
+
+        .template-destination {
+          display: flex;
+          justify-content: space-between;
+          gap: 12px;
+          margin-top: 12px;
+          padding: 12px 14px;
+          border-radius: 14px;
+          background: #f0fdf4;
+          border: 1px solid #bbf7d0;
+        }
+
+        .template-destination strong {
+          color: #166534;
+        }
+
+        .template-destination span {
+          color: #15803d;
+          font-weight: 800;
+          text-align: right;
         }
 
         label {
