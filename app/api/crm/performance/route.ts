@@ -1,44 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
-
-function getCompanyId(req: NextRequest) {
-  return (
-    req.headers.get("x-company-id") ||
-    req.cookies.get("company_id")?.value ||
-    process.env.DEFAULT_COMPANY_ID ||
-    ""
-  );
-}
-
-function getUserId(req: NextRequest) {
-  return (
-    req.headers.get("x-user-id") ||
-    req.cookies.get("user_id")?.value ||
-    undefined
-  );
-}
-
-function getRole(req: NextRequest) {
-  return (
-    req.headers.get("x-user-role") ||
-    req.cookies.get("user_role")?.value ||
-    req.cookies.get("role")?.value ||
-    ""
-  ).toUpperCase();
-}
-
-async function resolveCompanyId(req: NextRequest) {
-  const fromReq = getCompanyId(req);
-  if (fromReq) return fromReq;
-
-  const company = await prisma.companies.findFirst({
-    select: { id: true },
-  });
-
-  return company?.id || "";
-}
 
 async function ensureSalesGoalsTable() {
   await prisma.$executeRawUnsafe(`
@@ -98,19 +62,25 @@ function businessDaysLeft(year: number, month: number) {
   return Math.max(days, 1);
 }
 
-function isManagerRole(role: string) {
-  return ["SUPERVISOR", "ADMIN", "MASTER", "OWNER"].includes(role);
-}
-
 export async function GET(req: NextRequest) {
   try {
     await ensureSalesGoalsTable();
 
-    const company_id = await resolveCompanyId(req);
+    const access = await requireCompanyAccess(req);
+    const company_id = access.companyId;
+    const userId = access.userId;
+    const role = String(access.userRole || "").toUpperCase();
 
-    if (!company_id) {
+    if (role === "SUPERVISOR") {
       return NextResponse.json(
-        { error: "Empresa não encontrada." },
+        { error: "Supervisor não possui acesso a esta rota operacional." },
+        { status: 403 }
+      );
+    }
+
+    if (!company_id || !userId) {
+      return NextResponse.json(
+        { error: "Empresa ou usuário não identificado." },
         { status: 401 }
       );
     }
@@ -120,24 +90,14 @@ export async function GET(req: NextRequest) {
 
     const year = Number(url.searchParams.get("year") || now.getFullYear());
     const month = Number(url.searchParams.get("month") || now.getMonth() + 1);
-
-    const role = getRole(req);
-    const sessionUserId = getUserId(req);
     const requestedSellerId = url.searchParams.get("seller_id") || undefined;
 
-    /**
-     * Regra correta:
-     *
-     * - Se vier seller_id na URL, usa esse vendedor.
-     * - Se for supervisor/admin/master sem seller_id, mostra visão da equipe.
-     * - Qualquer outro usuário logado vê a própria meta.
-     *
-     * Isso evita o bug onde o painel do vendedor somava todas as metas
-     * e mostrava a meta da equipe para cada vendedor.
-     */
     const sellerScope =
-      requestedSellerId ||
-      (!isManagerRole(role) && sessionUserId ? sessionUserId : undefined);
+      role === "VENDEDOR"
+        ? userId
+        : role === "GERAL"
+          ? requestedSellerId
+          : userId;
 
     const { start, end } = monthRange(year, month);
     const today = todayRange();
@@ -188,9 +148,15 @@ export async function GET(req: NextRequest) {
         where: {
           company_id,
           active: true,
-          role: {
-            in: ["VENDEDOR", "SUPERVISOR", "GERAL", "MASTER", "ADMIN"],
-          },
+          ...(role === "GERAL"
+            ? {
+                role: {
+                  in: ["VENDEDOR", "SUPERVISOR", "GERAL", "MASTER", "ADMIN"],
+                },
+              }
+            : {
+                user_id: userId,
+              }),
         },
         select: {
           user_id: true,
@@ -201,18 +167,33 @@ export async function GET(req: NextRequest) {
         },
       }),
 
-      prisma.$queryRawUnsafe<any[]>(
-        `
-          SELECT seller_id::text AS seller_id, goal_amount
-          FROM sales_goals
-          WHERE company_id = $1::uuid
-            AND year = $2
-            AND month = $3
-        `,
-        company_id,
-        year,
-        month
-      ),
+      sellerScope
+        ? prisma.$queryRawUnsafe<any[]>(
+            `
+              SELECT seller_id::text AS seller_id, goal_amount
+              FROM sales_goals
+              WHERE company_id = $1::uuid
+                AND year = $2
+                AND month = $3
+                AND seller_id = $4::uuid
+            `,
+            company_id,
+            year,
+            month,
+            sellerScope
+          )
+        : prisma.$queryRawUnsafe<any[]>(
+            `
+              SELECT seller_id::text AS seller_id, goal_amount
+              FROM sales_goals
+              WHERE company_id = $1::uuid
+                AND year = $2
+                AND month = $3
+            `,
+            company_id,
+            year,
+            month
+          ),
     ]);
 
     const selectedGoalRow = sellerScope
@@ -342,7 +323,10 @@ export async function GET(req: NextRequest) {
           (sum, item) => sum + item.order_count,
           0
         ),
-        team_goal_amount: teamGoalAmount,
+        team_goal_amount:
+          role === "GERAL" && !sellerScope
+            ? teamGoalAmount
+            : goalAmount,
       },
     });
   } catch (error) {
