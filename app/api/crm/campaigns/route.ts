@@ -17,21 +17,6 @@ const MAX_PER_SESSION_DAY = Number(
   process.env.CRM_MAX_PER_SESSION_DAY || 80
 );
 
-const CAMPAIGN_MESSAGES: Record<string, string> = {
-  PROMOCAO_DIARIA:
-    "Olá {cliente}, tudo bem? Aqui é da PMG Atacadista. Hoje temos uma condição especial para {segmento}. Quer que eu te envie a oferta do dia?",
-  REATIVACAO:
-    "Olá {cliente}, tudo bem? Sentimos sua falta aqui na PMG. Posso te mandar as melhores condições de hoje para repor seu estoque?",
-  FOLLOW_UP_COTACAO:
-    "Olá {cliente}, tudo bem? Passando para acompanhar sua cotação. Consigo verificar uma condição melhor para você fechar hoje?",
-  AUMENTAR_MIX:
-    "Olá {cliente}, vi aqui que seu perfil combina com alguns itens de giro alto. Quer que eu te mande sugestões para aumentar o mix da sua loja?",
-  PEDIDO_SEMANAL:
-    "Olá {cliente}, tudo bem? Hoje é um bom dia para organizar seu pedido da semana. Quer que eu te ajude com a reposição?",
-  COBRANCA_LEMBRETE:
-    "Olá {cliente}, tudo bem? Estou passando para alinhar seu pedido/pagamento e deixar tudo certo com a PMG.",
-};
-
 type CampaignAccess = {
   companyId: string;
   branchId?: string | null;
@@ -201,6 +186,46 @@ function supervisorForbidden() {
       status: 403,
     }
   );
+}
+
+async function findConfiguredTemplate(
+  supabase: any,
+  access: CampaignAccess,
+  templateId: string,
+  intent: string
+) {
+  let query = supabase
+    .from("message_templates")
+    .select(
+      "id, name, title, intent, base_message, kanban_status, active, owner_user_id"
+    )
+    .eq("company_id", access.companyId)
+    .eq("active", true);
+
+  if (templateId) {
+    query = query.eq("id", templateId);
+  } else if (intent) {
+    query = query.eq("intent", intent);
+  } else {
+    return null;
+  }
+
+  if (access.userRole === "VENDEDOR") {
+    query = query.eq("owner_user_id", access.userId);
+  }
+
+  const { data, error } = await query
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Erro ao carregar mensagem cadastrada: ${error.message}`
+    );
+  }
+
+  return data || null;
 }
 
 async function findReadableCustomerTable(
@@ -592,10 +617,17 @@ export async function POST(req: NextRequest) {
     }
     const body = await req.json();
 
+    const templateId = String(
+      body?.templateId ||
+        body?.template_id ||
+        ""
+    ).trim();
+
     const campaignType = String(
       body?.campaignType ||
-        "PROMOCAO_DIARIA"
-    );
+        body?.intent ||
+        ""
+    ).trim();
 
     const selectedWpp =
       normalizeSelectedSessions(
@@ -611,26 +643,47 @@ export async function POST(req: NextRequest) {
           )
         : [];
 
-    const messageTemplate = String(
-      body?.message ||
-        CAMPAIGN_MESSAGES[
-          campaignType
-        ] ||
-        CAMPAIGN_MESSAGES
-          .PROMOCAO_DIARIA
-    ).trim();
+    const configuredTemplate =
+      await findConfiguredTemplate(
+        supabase,
+        access,
+        templateId,
+        campaignType
+      );
 
-    if (!messageTemplate) {
+    if (!configuredTemplate) {
       return NextResponse.json(
         {
           success: false,
-          error: "Mensagem da campanha vazia.",
+          error:
+            "Selecione uma mensagem ativa criada em Mensagens IA antes de iniciar o disparo.",
         },
         {
           status: 400,
         }
       );
     }
+
+    const messageTemplate = String(
+      configuredTemplate.base_message || ""
+    ).trim();
+
+    if (!messageTemplate) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "A mensagem selecionada não possui texto configurado.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const targetKanbanStatus = String(
+      configuredTemplate.kanban_status || ""
+    ).trim();
 
     if (!selectedWpp.length) {
       return NextResponse.json(
@@ -694,7 +747,10 @@ export async function POST(req: NextRequest) {
           access.companyId,
         branch_id:
           access.branchId || null,
-        name: `Campanha ${campaignType}`,
+        name:
+          configuredTemplate.name ||
+          configuredTemplate.title ||
+          `Disparo ${configuredTemplate.intent || "comercial"}`,
         message: messageTemplate,
         whatsapp_accounts:
           selectedWpp,
@@ -826,6 +882,43 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
+      if (
+        table === "leads" &&
+        customer?.id &&
+        targetKanbanStatus
+      ) {
+        let leadStatusQuery = supabase
+          .from("leads")
+          .update({
+            status: targetKanbanStatus,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", customer.id)
+          .eq("company_id", access.companyId);
+
+        if (access.userRole === "VENDEDOR") {
+          leadStatusQuery = leadStatusQuery.eq(
+            "owner_user_id",
+            access.userId
+          );
+        }
+
+        const { error: leadStatusError } =
+          await leadStatusQuery;
+
+        if (leadStatusError) {
+          console.error(
+            "[CRM CAMPAIGNS] Falha ao aplicar status do Kanban configurado",
+            {
+              leadId: customer.id,
+              templateId: configuredTemplate.id,
+              kanbanStatus: targetKanbanStatus,
+              error: leadStatusError.message,
+            }
+          );
+        }
+      }
+
       queued++;
 
       scheduledAt = new Date(
@@ -865,6 +958,15 @@ export async function POST(req: NextRequest) {
           success: false,
           queued: 0,
           campaign,
+          template: {
+            id: configuredTemplate.id,
+            name:
+              configuredTemplate.name ||
+              configuredTemplate.title ||
+              null,
+            intent: configuredTemplate.intent || null,
+            kanban_status: targetKanbanStatus || null,
+          },
           table,
           errors: queueErrors,
           error:
@@ -884,6 +986,15 @@ export async function POST(req: NextRequest) {
       failed: queueErrors.length,
       errors: queueErrors,
       campaign,
+      template: {
+        id: configuredTemplate.id,
+        name:
+          configuredTemplate.name ||
+          configuredTemplate.title ||
+          null,
+        intent: configuredTemplate.intent || null,
+        kanban_status: targetKanbanStatus || null,
+      },
       table,
     });
   } catch (error: any) {

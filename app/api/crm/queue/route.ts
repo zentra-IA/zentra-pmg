@@ -69,18 +69,6 @@ function normalizeSessionNumber(value: unknown, fallback = 1) {
   return Math.max(1, Math.min(5, Math.trunc(number)));
 }
 
-function normalizeIntent(value: unknown) {
-  const intent = String(value || "").trim();
-
-  return intent || "PROMOCAO_DIARIA";
-}
-
-function normalizeMessage(value: unknown) {
-  const message = String(value || "").trim();
-
-  return message || null;
-}
-
 async function requireQueueAccess(
   req: NextRequest
 ): Promise<AccessContext> {
@@ -203,6 +191,35 @@ function supervisorForbidden() {
       status: 403,
     }
   );
+}
+
+async function getConfiguredTemplate(
+  supabase: ReturnType<typeof getSupabase>,
+  access: AccessContext,
+  templateId: string
+) {
+  let query = supabase
+    .from("message_templates")
+    .select(
+      "id, company_id, owner_user_id, name, title, type, intent, base_message, kanban_status, active"
+    )
+    .eq("id", templateId)
+    .eq("company_id", access.companyId)
+    .eq("active", true);
+
+  if (access.role === "VENDEDOR") {
+    query = query.eq("owner_user_id", access.userId);
+  }
+
+  const { data, error } = await query.maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Erro ao carregar mensagem cadastrada: ${error.message}`
+    );
+  }
+
+  return data || null;
 }
 
 export async function GET(req: NextRequest) {
@@ -337,6 +354,69 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json().catch(() => ({}));
 
+    const templateId = String(
+      body?.template_id || body?.templateId || ""
+    ).trim();
+
+    if (!isUuid(templateId)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Selecione uma mensagem ativa criada em Mensagens IA.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const configuredTemplate = await getConfiguredTemplate(
+      supabase,
+      access,
+      templateId
+    );
+
+    if (!configuredTemplate) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Mensagem não encontrada, inativa ou sem permissão para este usuário.",
+        },
+        {
+          status: 404,
+        }
+      );
+    }
+
+    const configuredMessage = String(
+      configuredTemplate.base_message || ""
+    ).trim();
+
+    if (!configuredMessage) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "A mensagem selecionada não possui texto configurado.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const configuredIntent = String(
+      configuredTemplate.intent ||
+        configuredTemplate.type ||
+        "campaign"
+    ).trim();
+
+    const targetKanbanStatus = String(
+      configuredTemplate.kanban_status || ""
+    ).trim();
+
     const leadId = String(
       body?.lead_id || body?.leadId || ""
     ).trim();
@@ -418,12 +498,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const intent = normalizeIntent(
-      body?.intent || body?.type
-    );
-
-    const message = normalizeMessage(body?.message);
-
     const now = new Date().toISOString();
 
     const queueOwnerUserId =
@@ -453,12 +527,12 @@ export async function POST(req: NextRequest) {
           lead_id: lead.id,
           phone,
           session_id: sessionId,
-          type: intent,
+          type: configuredIntent,
           status: "pending",
           scheduled_at: now,
           created_at: now,
           attempts: 0,
-          message,
+          message: configuredMessage,
           error: null,
           last_error: null,
           next_attempt_at: null,
@@ -475,9 +549,12 @@ export async function POST(req: NextRequest) {
      * Não deve desfazer a fila se algum campo legado não existir.
      */
     const leadUpdate: Record<string, unknown> = {
-      status: "campanha",
       updated_at: now,
     };
+
+    if (targetKanbanStatus) {
+      leadUpdate.status = targetKanbanStatus;
+    }
 
     if (
       isUuid(body?.job_id || body?.jobId)
@@ -520,6 +597,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       item: queueItem,
+      template: {
+        id: configuredTemplate.id,
+        name:
+          configuredTemplate.name ||
+          configuredTemplate.title ||
+          null,
+        intent: configuredTemplate.intent || null,
+        kanban_status: targetKanbanStatus || null,
+      },
       owner_user_id: queueOwnerUserId,
     });
   } catch (error: any) {

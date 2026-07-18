@@ -17,20 +17,22 @@ const STATUS_OPTIONS = [
   { value: "sem_interesse", label: "Sem interesse" },
 ];
 
-const INTENTS = [
-  { value: "PROMOCAO_DIARIA", label: "Promoção diária" },
-  { value: "REATIVACAO", label: "Reativação de cliente" },
-  { value: "FOLLOW_UP_COTACAO", label: "Follow-up de cotação" },
-  { value: "AUMENTAR_MIX", label: "Aumentar mix" },
-  { value: "PEDIDO_SEMANAL", label: "Pedido semanal" },
-  { value: "COBRANCA_LEMBRETE", label: "Lembrete comercial" },
-];
-
 type SessionStatus = {
   online: boolean;
   loading: boolean;
   finalSessionId?: string | null;
   error?: string | null;
+};
+
+type MessageTemplate = {
+  id: string;
+  name?: string | null;
+  title?: string | null;
+  type?: string | null;
+  intent?: string | null;
+  base_message?: string | null;
+  kanban_status?: string | null;
+  active?: boolean | null;
 };
 
 function normalizeStatus(value?: string | null) {
@@ -199,8 +201,66 @@ export default function ContactsDispatchPage() {
   });
 
   const [bulkText, setBulkText] = useState("");
-  const [intent, setIntent] = useState("PROMOCAO_DIARIA");
+  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [sessionId, setSessionId] = useState("1");
+
+  async function loadTemplates() {
+    try {
+      setTemplatesLoading(true);
+
+      const response = await fetch(
+        "/api/crm/message-templates?active=true",
+        {
+          cache: "no-store",
+          credentials: "include",
+        }
+      );
+
+      const data = await response.json().catch(() => []);
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error || "Erro ao carregar mensagens cadastradas."
+        );
+      }
+
+      const rawList = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.templates)
+          ? data.templates
+          : [];
+
+      const list = rawList.filter((template: MessageTemplate) => {
+        const type = String(template?.type || "campaign").toLowerCase();
+
+        return (
+          template?.active !== false &&
+          Boolean(String(template?.base_message || "").trim()) &&
+          ["campaign", "campanha", "disparo", "campaigns"].includes(type)
+        );
+      });
+
+      setTemplates(list);
+      setSelectedTemplateId((current) => {
+        if (
+          current &&
+          list.some((item: MessageTemplate) => item.id === current)
+        ) {
+          return current;
+        }
+
+        return list[0]?.id || "";
+      });
+    } catch (error) {
+      console.error("[CONTACTS] Erro ao carregar mensagens:", error);
+      setTemplates([]);
+      setSelectedTemplateId("");
+    } finally {
+      setTemplatesLoading(false);
+    }
+  }
 
   async function loadContacts() {
     try {
@@ -300,6 +360,7 @@ export default function ContactsDispatchPage() {
   async function refreshAll() {
     await Promise.all([
       loadContacts(),
+      loadTemplates(),
       loadQueueStats(),
       loadSessionStats(),
     ]);
@@ -320,6 +381,14 @@ export default function ContactsDispatchPage() {
   }, []);
 
   const filteredContacts = useMemo(() => contacts, [contacts]);
+
+  const selectedTemplate = useMemo(
+    () =>
+      templates.find(
+        (template) => template.id === selectedTemplateId
+      ) || null,
+    [templates, selectedTemplateId]
+  );
 
   const onlineSessions = useMemo(
     () =>
@@ -543,6 +612,18 @@ export default function ContactsDispatchPage() {
       return;
     }
 
+    if (!selectedTemplate) {
+      alert(
+        "Selecione uma mensagem ativa criada em Mensagens IA antes do disparo."
+      );
+      return;
+    }
+
+    if (!String(selectedTemplate.base_message || "").trim()) {
+      alert("A mensagem selecionada não possui texto configurado.");
+      return;
+    }
+
     if (!onlineSessions.length) {
       alert(
         "Nenhum WhatsApp está online. Conecte uma sessão antes do disparo."
@@ -597,7 +678,8 @@ export default function ContactsDispatchPage() {
             credentials: "include",
             body: JSON.stringify({
               lead_id: item.id,
-              intent,
+              template_id: selectedTemplate.id,
+              intent: selectedTemplate.intent || "",
               session_id: selectedSession,
             }),
           }
@@ -1017,6 +1099,25 @@ export default function ContactsDispatchPage() {
             Adicionar
           </button>
         </div>
+
+        {selectedTemplate ? (
+          <div className="template-summary">
+            <strong>
+              Mensagem selecionada:{" "}
+              {selectedTemplate.name ||
+                selectedTemplate.title ||
+                selectedTemplate.intent ||
+                "Mensagem"}
+            </strong>
+            <span>
+              {selectedTemplate.kanban_status
+                ? `Destino no Kanban: ${statusLabel(
+                    selectedTemplate.kanban_status
+                  )}`
+                : "O status atual do contato será mantido."}
+            </span>
+          </div>
+        ) : null}
       </section>
 
       <section className="panel">
@@ -1059,19 +1160,28 @@ export default function ContactsDispatchPage() {
 
         <div className="dispatch-grid">
           <select
-            value={intent}
+            value={selectedTemplateId}
             onChange={(event) =>
-              setIntent(event.target.value)
+              setSelectedTemplateId(event.target.value)
             }
+            disabled={templatesLoading || !templates.length}
           >
-            {INTENTS.map((item) => (
-              <option
-                key={item.value}
-                value={item.value}
-              >
-                {item.label}
+            {templatesLoading ? (
+              <option value="">Carregando mensagens...</option>
+            ) : !templates.length ? (
+              <option value="">
+                Nenhuma mensagem ativa cadastrada
               </option>
-            ))}
+            ) : (
+              templates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name ||
+                    template.title ||
+                    template.intent ||
+                    "Mensagem sem nome"}
+                </option>
+              ))
+            )}
           </select>
 
           <select
@@ -1098,7 +1208,8 @@ export default function ContactsDispatchPage() {
             className="button primary"
             disabled={
               queueLoading ||
-              !onlineSessions.length
+              !onlineSessions.length ||
+              !selectedTemplate
             }
             onClick={() =>
               enqueueSelected(true)
@@ -1113,7 +1224,8 @@ export default function ContactsDispatchPage() {
             className="button secondary"
             disabled={
               queueLoading ||
-              !onlineSessions.length
+              !onlineSessions.length ||
+              !selectedTemplate
             }
             onClick={() =>
               enqueueSelected(false)
