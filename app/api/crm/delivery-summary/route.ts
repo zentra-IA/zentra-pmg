@@ -1,33 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
-
-function getCompanyId(req: NextRequest) {
-  return (
-    req.headers.get("x-company-id") ||
-    req.cookies.get("company_id")?.value ||
-    process.env.DEFAULT_COMPANY_ID ||
-    ""
-  );
-}
-
-function getRole(req: NextRequest) {
-  return (
-    req.headers.get("x-user-role") ||
-    req.cookies.get("user_role")?.value ||
-    req.cookies.get("role")?.value ||
-    ""
-  ).toUpperCase();
-}
-
-function getUserId(req: NextRequest) {
-  return (
-    req.headers.get("x-user-id") ||
-    req.cookies.get("user_id")?.value ||
-    undefined
-  );
-}
 
 function money(value: number) {
   return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -39,14 +14,6 @@ function dateRange(date: Date) {
     end: new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999),
   };
 }
-
-async function resolveCompanyId(req: NextRequest) {
-  const fromReq = getCompanyId(req);
-  if (fromReq) return fromReq;
-  const company = await prisma.companies.findFirst({ select: { id: true } });
-  return company?.id || "";
-}
-
 
 async function createDeliveryNotificationLog(args: any) {
   const client = prisma as any;
@@ -81,21 +48,35 @@ function buildSellerMessage(sellerName: string, targetDateLabel: string, orders:
 
 export async function GET(req: NextRequest) {
   try {
-    const company_id = await resolveCompanyId(req);
-    if (!company_id) return NextResponse.json({ sellers: [], total: 0 });
+    const access = await requireCompanyAccess(req);
+    const company_id = access.companyId;
+    const userId = access.userId;
+    const role = String(access.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        { error: "Supervisor não possui acesso a esta rota operacional." },
+        { status: 403 }
+      );
+    }
+
+    if (!company_id || !userId) {
+      return NextResponse.json(
+        { error: "Empresa ou usuário não identificado." },
+        { status: 401 }
+      );
+    }
 
     const url = new URL(req.url);
     const dateParam = url.searchParams.get("date");
     const targetDate = dateParam ? new Date(`${dateParam}T12:00:00`) : new Date();
     const { start, end } = dateRange(targetDate);
-    const role = getRole(req);
-    const userId = getUserId(req);
 
     const orders = await prisma.salesOrder.findMany({
       where: {
         company_id,
         delivery_date: { gte: start, lte: end },
-        ...(role === "VENDEDOR" && userId ? { seller_id: userId } : {}),
+        ...(role === "VENDEDOR" ? { seller_id: userId } : {}),
       },
       include: { SalesOrderItem: true, SalesCustomer: true },
       orderBy: [{ seller_name: "asc" }, { customer_name: "asc" }],
@@ -140,8 +121,24 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const company_id = await resolveCompanyId(req);
-    if (!company_id) return NextResponse.json({ error: "Empresa não encontrada." }, { status: 401 });
+    const access = await requireCompanyAccess(req);
+    const company_id = access.companyId;
+    const userId = access.userId;
+    const role = String(access.userRole || "").toUpperCase();
+
+    if (role === "SUPERVISOR") {
+      return NextResponse.json(
+        { error: "Supervisor não possui acesso a esta rota operacional." },
+        { status: 403 }
+      );
+    }
+
+    if (!company_id || !userId) {
+      return NextResponse.json(
+        { error: "Empresa ou usuário não identificado." },
+        { status: 401 }
+      );
+    }
 
     const body = await req.json().catch(() => ({}));
     const dateParam = body.date;
@@ -150,12 +147,20 @@ export async function POST(req: NextRequest) {
     const label = targetDate.toLocaleDateString("pt-BR");
 
     const orders = await prisma.salesOrder.findMany({
-      where: { company_id, delivery_date: { gte: start, lte: end } },
+      where: {
+        company_id,
+        delivery_date: { gte: start, lte: end },
+        ...(role === "VENDEDOR" ? { seller_id: userId } : {}),
+      },
       orderBy: [{ seller_name: "asc" }, { customer_name: "asc" }],
     });
 
     const users = await prisma.company_users.findMany({
-      where: { company_id, active: true },
+      where: {
+        company_id,
+        active: true,
+        ...(role === "VENDEDOR" ? { user_id: userId } : {}),
+      },
       select: { user_id: true, name: true, phone: true, role: true },
     });
 
@@ -191,21 +196,27 @@ export async function POST(req: NextRequest) {
       return `• ${sellerOrders[0]?.seller_name || "Sem vendedor"}: ${sellerOrders.length} pedidos | ${money(total)}`;
     }).join("\n")}`;
 
-    const supervisors = users.filter((u) => ["SUPERVISOR", "GERAL", "MASTER"].includes(String(u.role).toUpperCase()));
+    if (role === "GERAL") {
+      const supervisors = users.filter((u) =>
+        ["SUPERVISOR", "GERAL", "MASTER"].includes(
+          String(u.role).toUpperCase()
+        )
+      );
 
-    for (const supervisor of supervisors) {
-      const log = await createDeliveryNotificationLog({
-        data: {
-          company_id,
-          seller_id: supervisor.user_id,
-          target_date: targetDate,
-          whatsapp: supervisor.phone || null,
-          message: supervisorMessage,
-          status: "pending",
-        },
-      });
+      for (const supervisor of supervisors) {
+        const log = await createDeliveryNotificationLog({
+          data: {
+            company_id,
+            seller_id: supervisor.user_id,
+            target_date: targetDate,
+            whatsapp: supervisor.phone || null,
+            message: supervisorMessage,
+            status: "pending",
+          },
+        });
 
-      logs.push(log);
+        logs.push(log);
+      }
     }
 
     return NextResponse.json({
