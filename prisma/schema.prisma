@@ -358,12 +358,14 @@ model WhatsappSession {
   status     String    @default("offline")
   qr         String?
   createdAt  DateTime  @default(now())
+  user_id    String?   @db.Uuid
   branch     branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
   companies  companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "whatsappsession_company_fk")
 
   @@unique([company_id, sessionId])
   @@index([company_id], map: "idx_whatsappsession_company")
   @@index([branch_id], map: "idx_whatsappsession_branch")
+  @@index([company_id, user_id], map: "whatsapp_session_company_user_idx")
 }
 
 model Campaign {
@@ -398,39 +400,39 @@ model Automation {
 }
 
 model leads {
-  id                 String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  company_id         String                  @db.Uuid
-  owner_user_id      String?                 @db.Uuid
-  branch_id          String?                 @db.Uuid
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id         String             @db.Uuid
+  branch_id          String?            @db.Uuid
   name               String?
   phone              String?
   email              String?
-  status             String?                 @default("novo")
-  session_id         Int?                    @default(1)
-  ai_paused          Boolean?                @default(false)
-  conversation_stage String?                 @default("new")
-  current_flow_step  String?
-  unread_count       Int?                    @default(0)
+  status             String?            @default("novo")
+  session_id         Int?               @default(1)
+  ai_paused          Boolean?           @default(false)
+  conversation_stage String?            @default("new")
   last_message       String?
-  last_message_at    DateTime?               @db.Timestamptz(6)
-  created_at         DateTime?               @default(now()) @db.Timestamptz(6)
+  last_message_at    DateTime?          @db.Timestamptz(6)
+  created_at         DateTime?          @default(now()) @db.Timestamptz(6)
   whatsapp_lid       String?
   remote_jid         String?
-  opening_sent       Boolean?                @default(false)
-  updated_at         DateTime?               @default(now()) @db.Timestamptz(6)
-  campaign_step      Int?                    @default(0)
-  last_campaign_at   DateTime?               @db.Timestamptz(6)
-  reactivation_at    DateTime?               @db.Timestamptz(6)
-  opt_out            Boolean?                @default(false)
-  batch_id           String?                 @db.Uuid
-  job_id             String?                 @db.Uuid
-  current_job_id     String?                 @db.Uuid
-  paused             Boolean?                @default(false)
+  opening_sent       Boolean?           @default(false)
+  updated_at         DateTime?          @default(now()) @db.Timestamptz(6)
+  campaign_step      Int?               @default(0)
+  last_campaign_at   DateTime?          @db.Timestamptz(6)
+  reactivation_at    DateTime?          @db.Timestamptz(6)
+  opt_out            Boolean?           @default(false)
+  batch_id           String?            @db.Uuid
+  job_id             String?            @db.Uuid
+  current_job_id     String?            @db.Uuid
+  paused             Boolean?           @default(false)
   campaign_status    String?
-  activities         SalesCustomerActivity[]
+  current_flow_step  String?
+  unread_count       Int?               @default(0)
+  lid                String?
+  owner_user_id      String?            @db.Uuid
   automation_queue   automation_queue[]
-  branch             branches?               @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
-  companies          companies               @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  branch             branches?          @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies          companies          @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   messages           messages[]
 
   @@unique([company_id, phone])
@@ -439,24 +441,35 @@ model leads {
   @@index([phone], map: "idx_leads_phone")
   @@index([remote_jid], map: "idx_leads_remote_jid")
   @@index([company_id, owner_user_id], map: "idx_leads_company_owner")
+  @@index([lid])
 }
 
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
 model messages {
-  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  company_id String    @db.Uuid
-  branch_id  String?   @db.Uuid
-  lead_id    String?   @db.Uuid
-  direction  String?
-  content    String?
-  created_at DateTime? @default(now()) @db.Timestamptz(6)
-  branch     branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
-  companies  companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  leads      leads?    @relation(fields: [lead_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id    String    @db.Uuid
+  branch_id     String?   @db.Uuid
+  lead_id       String?   @db.Uuid
+  direction     String?
+  content       String?
+  created_at    DateTime? @default(now()) @db.Timestamptz(6)
+  topic         String?
+  extension     String?   @default("text")
+  event         String?
+  payload       Json      @default("{}")
+  status        String?   @default("sent")
+  updated_at    DateTime? @default(now()) @db.Timestamptz(6)
+  owner_user_id String?   @db.Uuid
+  branch        branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies     companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  leads         leads?    @relation(fields: [lead_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([company_id], map: "idx_messages_company")
   @@index([branch_id], map: "idx_messages_branch")
   @@index([lead_id], map: "idx_messages_lead")
   @@index([created_at], map: "idx_messages_created_at")
+  @@index([company_id, lead_id, created_at(sort: Desc)], map: "messages_company_lead_created_idx")
+  @@index([company_id, owner_user_id, lead_id, created_at(sort: Desc)], map: "messages_owner_user_idx")
 }
 
 model automation_queue {
@@ -483,6 +496,7 @@ model automation_queue {
   finished_at           DateTime? @db.Timestamptz(6)
   processing_at         DateTime? @db.Timestamptz(6)
   updated_at            DateTime? @default(now()) @db.Timestamptz(6)
+  owner_user_id         String?   @db.Uuid
   branch                branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
   companies             companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   leads                 leads?    @relation(fields: [lead_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -492,6 +506,7 @@ model automation_queue {
   @@index([lead_id], map: "idx_automation_queue_lead")
   @@index([status], map: "idx_automation_queue_status")
   @@index([scheduled_at], map: "idx_automation_queue_scheduled_at")
+  @@index([company_id, owner_user_id, session_id, status], map: "automation_queue_owner_session_idx")
 }
 
 model promotion_campaigns {
@@ -512,37 +527,38 @@ model promotion_campaigns {
 }
 
 model Prospect {
-  id               String           @id @default(cuid())
-  company_id       String           @db.Uuid
-  branch_id        String?          @db.Uuid
-  name             String
-  age              Int?
-  email            String?
-  phone1           String?
-  phone2           String?
-  gender           String?
-  city             String?
-  address          String?
-  cep              String?
-  latitude         Float?
-  longitude        Float?
-  active           Boolean          @default(true)
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
-  category         String?
-  creditLimit      Float?           @map("credit_limit")
-  externalId       String?          @map("external_id")
-  lastActivationAt DateTime?        @map("last_activation_at")
-  lastOrderAt      DateTime?        @map("last_order_at")
-  lastTransferAt   DateTime?        @map("last_transfer_at")
-  paymentMethod    String?          @map("payment_method")
-  productInterest  String?
-  segment          String?
-  sourcePayload    Json?            @map("source_payload")
-  state            String?
-  branch           branches?        @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
-  companies        companies        @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "prospect_company_fk")
-  exports          ProspectExport[]
+  id                       String                     @id @default(cuid())
+  company_id               String                     @db.Uuid
+  branch_id                String?                    @db.Uuid
+  name                     String
+  age                      Int?
+  email                    String?
+  phone1                   String?
+  phone2                   String?
+  gender                   String?
+  city                     String?
+  address                  String?
+  cep                      String?
+  latitude                 Float?
+  longitude                Float?
+  active                   Boolean                    @default(true)
+  createdAt                DateTime                   @default(now())
+  updatedAt                DateTime                   @updatedAt
+  category                 String?
+  creditLimit              Float?                     @map("credit_limit")
+  externalId               String?                    @map("external_id")
+  lastActivationAt         DateTime?                  @map("last_activation_at")
+  lastOrderAt              DateTime?                  @map("last_order_at")
+  lastTransferAt           DateTime?                  @map("last_transfer_at")
+  paymentMethod            String?                    @map("payment_method")
+  productInterest          String?
+  segment                  String?
+  sourcePayload            Json?                      @map("source_payload")
+  state                    String?
+  branch                   branches?                  @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies                companies                  @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "prospect_company_fk")
+  exports                  ProspectExport[]
+  radar_snapshot_prospects radar_snapshot_prospects[]
 
   @@index([email])
   @@index([phone1])
@@ -577,22 +593,42 @@ model ProspectExport {
 }
 
 model ProspectImportJob {
-  id           String    @id @default(cuid())
-  company_id   String    @db.Uuid
-  branch_id    String?   @db.Uuid
-  fileName     String?
-  totalRows    Int       @default(0)
-  created      Int       @default(0)
-  updated      Int       @default(0)
-  duplicated   Int       @default(0)
-  invalidPhone Int       @default(0)
-  underAge     Int       @default(0)
-  status       String    @default("PENDING")
-  error        String?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  branch       branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
-  companies    companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "prospectimportjob_company_fk")
+  id                    String    @id @default(cuid())
+  company_id            String    @db.Uuid
+  branch_id             String?   @db.Uuid
+  fileName              String?
+  totalRows             Int       @default(0)
+  created               Int       @default(0)
+  updated               Int       @default(0)
+  duplicated            Int       @default(0)
+  invalidPhone          Int       @default(0)
+  underAge              Int       @default(0)
+  status                String    @default("PENDING")
+  error                 String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  snapshot_id           String?   @db.Uuid
+  storage_path          String?
+  processed_rows        Int       @default(0)
+  valid_rows            Int       @default(0)
+  invalid_count         Int       @default(0)
+  error_count           Int       @default(0)
+  removed_count         Int       @default(0)
+  progress_percent      Decimal   @default(0) @db.Decimal(5, 2)
+  attempts              Int       @default(0)
+  max_attempts          Int       @default(3)
+  locked_by             String?
+  locked_at             DateTime? @db.Timestamptz(6)
+  heartbeat_at          DateTime? @db.Timestamptz(6)
+  started_at            DateTime? @db.Timestamptz(6)
+  finished_at           DateTime? @db.Timestamptz(6)
+  requires_confirmation Boolean   @default(false)
+  confirmation_reason   String?
+  confirmed_at          DateTime? @db.Timestamptz(6)
+  confirmed_by_user_id  String?   @db.Uuid
+  metadata              Json      @default("{}")
+  branch                branches? @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies             companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "prospectimportjob_company_fk")
 
   @@index([company_id], map: "idx_prospectimportjob_company")
   @@index([branch_id], map: "idx_prospectimportjob_branch")
@@ -618,71 +654,72 @@ model ProspectUsage {
 }
 
 model companies {
-  id                 String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name               String
-  slug               String                @unique
-  logo_url           String?
-  active             Boolean               @default(true)
-  trial_ends_at      DateTime?             @db.Timestamptz(6)
-  plan_id            String?               @db.Uuid
-  created_at         DateTime              @default(now()) @db.Timestamptz(6)
-  updated_at         DateTime              @default(now()) @updatedAt @db.Timestamptz(6)
-  monthly_value      Decimal?              @default(0)
-  due_day            Int?
-  payment_method     String?               @default("PIX")
-  billing_notes      String?
-  blocked_reason     String?
-  document           String?
-  phone              String?
-  whatsapp           String?
-  owner_name         String?
-  additionals        Additional[]
-  additionalLinks    AdditionalCategory[]
-  automations        Automation[]
-  campaigns          Campaign[]
-  candidateProfiles  CandidateProfile[]
-  categories         Category[]
-  combos             Combo[]
-  comboGroups        ComboGroup[]
-  comboGroupItems    ComboGroupItem[]
-  crmCustomers       CrmCustomer[]
-  crmMessages        CrmMessage[]
-  customers          Customer[]
-  deliveryBatches    DeliveryBatch[]
-  drivers            Driver[]
-  hiringProcesses    HiringProcess[]
-  interviews         Interview[]
-  jobs               Job[]
-  jobApplications    JobApplication[]
-  orders             Order[]
-  orderItems         OrderItem[]
-  products           Product[]
-  productAdditional  ProductAdditional[]
-  productCategories  ProductCategory[]
-  prospects          Prospect[]
-  prospectExports    ProspectExport[]
-  prospectImportJobs ProspectImportJob[]
-  prospectUsages     ProspectUsage[]
-  SalesCustomer      SalesCustomer[]
-  SalesOrder         SalesOrder[]
-  SalesOrderItem     SalesOrderItem[]
-  SalesOrderOcr      SalesOrderOcr[]
-  whatsappSessions   WhatsappSession[]
-  activity_logs      activity_logs[]
-  automationQueue    automation_queue[]
-  branches           branches[]
-  plans              plans?                @relation(fields: [plan_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  companyContacts    company_contacts[]
-  company_users      company_users[]
-  featureGrants      feature_grants[]
-  leads              leads[]
-  messageTemplates   message_templates[]
-  messageVariations  message_variations[]
-  messages           messages[]
-  promotionCampaigns promotion_campaigns[]
-  radarGrants        radar_grants[]
-  subscriptions      subscriptions[]
-  supportKnowledges  support_knowledge[]
+  id                       String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                     String
+  slug                     String                     @unique
+  logo_url                 String?
+  active                   Boolean                    @default(true)
+  trial_ends_at            DateTime?                  @db.Timestamptz(6)
+  plan_id                  String?                    @db.Uuid
+  created_at               DateTime                   @default(now()) @db.Timestamptz(6)
+  updated_at               DateTime                   @default(now()) @updatedAt @db.Timestamptz(6)
+  monthly_value            Decimal?                   @default(0)
+  due_day                  Int?
+  payment_method           String?                    @default("PIX")
+  billing_notes            String?
+  blocked_reason           String?
+  document                 String?
+  phone                    String?
+  whatsapp                 String?
+  owner_name               String?
+  additionals              Additional[]
+  additionalLinks          AdditionalCategory[]
+  automations              Automation[]
+  campaigns                Campaign[]
+  candidateProfiles        CandidateProfile[]
+  categories               Category[]
+  combos                   Combo[]
+  comboGroups              ComboGroup[]
+  comboGroupItems          ComboGroupItem[]
+  crmCustomers             CrmCustomer[]
+  crmMessages              CrmMessage[]
+  customers                Customer[]
+  deliveryBatches          DeliveryBatch[]
+  drivers                  Driver[]
+  hiringProcesses          HiringProcess[]
+  interviews               Interview[]
+  jobs                     Job[]
+  jobApplications          JobApplication[]
+  orders                   Order[]
+  orderItems               OrderItem[]
+  products                 Product[]
+  productAdditional        ProductAdditional[]
+  productCategories        ProductCategory[]
+  prospects                Prospect[]
+  prospectExports          ProspectExport[]
+  prospectImportJobs       ProspectImportJob[]
+  prospectUsages           ProspectUsage[]
+  SalesCustomer            SalesCustomer[]
+  SalesOrder               SalesOrder[]
+  SalesOrderItem           SalesOrderItem[]
+  SalesOrderOcr            SalesOrderOcr[]
+  whatsappSessions         WhatsappSession[]
+  activity_logs            activity_logs[]
+  automationQueue          automation_queue[]
+  branches                 branches[]
+  plans                    plans?                     @relation(fields: [plan_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  companyContacts          company_contacts[]
+  company_users            company_users[]
+  featureGrants            feature_grants[]
+  leads                    leads[]
+  messageTemplates         message_templates[]
+  messageVariations        message_variations[]
+  messages                 messages[]
+  promotionCampaigns       promotion_campaigns[]
+  radarGrants              radar_grants[]
+  radar_snapshot_prospects radar_snapshot_prospects[]
+  subscriptions            subscriptions[]
+  supportKnowledges        support_knowledge[]
 }
 
 model branches {
@@ -889,6 +926,7 @@ model message_templates {
   template_category String?              @default("sales")
   template_scope    String?              @default("global")
   job_id            String?
+  owner_user_id     String?              @db.Uuid
   branch            branches?            @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
   companies         companies?           @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   variations        message_variations[]
@@ -896,6 +934,7 @@ model message_templates {
   @@index([company_id], map: "idx_message_templates_company_id")
   @@index([branch_id], map: "idx_message_templates_branch_id")
   @@index([intent], map: "idx_message_templates_intent")
+  @@index([company_id, owner_user_id, created_at(sort: Desc)], map: "message_templates_owner_user_idx")
 }
 
 model message_variations {
@@ -1236,9 +1275,9 @@ model CandidateDocument {
 }
 
 model SalesCustomer {
-  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  company_id            String    @db.Uuid
-  seller_id             String?   @db.Uuid
+  id                    String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id            String                  @db.Uuid
+  seller_id             String?                 @db.Uuid
   internal_code         String?
   erp_code              String?
   document              String?
@@ -1258,26 +1297,25 @@ model SalesCustomer {
   city                  String?
   state                 String?
   payment_terms         String?
-  weekly_purchase_limit Decimal?  @db.Decimal(12, 2)
+  weekly_purchase_limit Decimal?                @db.Decimal(12, 2)
   habitual_purchase_day String?
   purchase_weekdays     String[]
-  expected_ticket       Decimal?  @db.Decimal(12, 2)
+  expected_ticket       Decimal?                @db.Decimal(12, 2)
   commercial_notes      String?
-  status                String    @default("ativo")
-  customer_score        Int       @default(0)
-  risk_level            String    @default("baixo")
-  first_order_at        DateTime? @db.Timestamptz(6)
-  last_order_at         DateTime? @db.Timestamptz(6)
-  last_contact_at       DateTime? @db.Timestamptz(6)
-  last_quote_at         DateTime? @db.Timestamptz(6)
-  created_at            DateTime  @default(now()) @db.Timestamptz(6)
-  updated_at            DateTime  @default(now()) @db.Timestamptz(6)
-  branch_id             String?   @db.Uuid
-
-  branches   branches?               @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
-  companies  companies               @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  SalesOrder SalesOrder[]
-  activities SalesCustomerActivity[]
+  status                String                  @default("ativo")
+  customer_score        Int                     @default(0)
+  risk_level            String                  @default("baixo")
+  first_order_at        DateTime?               @db.Timestamptz(6)
+  last_order_at         DateTime?               @db.Timestamptz(6)
+  last_contact_at       DateTime?               @db.Timestamptz(6)
+  last_quote_at         DateTime?               @db.Timestamptz(6)
+  created_at            DateTime                @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime                @default(now()) @db.Timestamptz(6)
+  branch_id             String?                 @db.Uuid
+  branches              branches?               @relation(fields: [branch_id], references: [id], onUpdate: NoAction)
+  companies             companies               @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  activities            SalesCustomerActivity[]
+  SalesOrder            SalesOrder[]
 
   @@index([branch_id], map: "idx_sales_customer_branch")
   @@index([company_id], map: "idx_sales_customer_company")
@@ -1289,44 +1327,32 @@ model SalesCustomer {
 }
 
 model SalesCustomerActivity {
-  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id   String        @db.Uuid
+  seller_id    String?       @db.Uuid
+  customer_id  String        @db.Uuid
+  type         String        @default("followup")
+  title        String
+  description  String?
+  scheduled_at DateTime?     @db.Timestamptz(6)
+  priority     String        @default("media")
+  status       String        @default("pendente")
+  notify       Boolean       @default(true)
+  completed_by String?       @db.Uuid
+  completed_at DateTime?     @db.Timestamptz(6)
+  created_at   DateTime      @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime      @default(now()) @updatedAt @db.Timestamptz(6)
+  lead_id      String?       @db.Uuid
+  phone        String?
+  origin       String        @default("customer")
+  customer     SalesCustomer @relation(fields: [customer_id], references: [id], onDelete: Cascade)
 
-  company_id String  @db.Uuid
-  seller_id  String? @db.Uuid
-
-  customer_id String? @db.Uuid
-  lead_id     String? @db.Uuid
-
-  phone String?
-
-  type   String @default("followup")
-  origin String @default("customer")
-
-  title       String
-  description String?
-
-  scheduled_at DateTime? @db.Timestamptz(6)
-
-  priority String @default("media")
-  status   String @default("pendente")
-
-  notify Boolean @default(true)
-
-  completed_by String?   @db.Uuid
-  completed_at DateTime? @db.Timestamptz(6)
-
-  created_at DateTime @default(now()) @db.Timestamptz(6)
-  updated_at DateTime @default(now()) @updatedAt @db.Timestamptz(6)
-
-  customer SalesCustomer? @relation(fields: [customer_id], references: [id], onDelete: Cascade)
-  lead     leads?         @relation(fields: [lead_id], references: [id], onDelete: Cascade)
-
-  @@index([company_id])
-  @@index([seller_id])
-  @@index([customer_id])
-  @@index([lead_id])
-  @@index([scheduled_at])
-  @@index([status])
+  @@index([company_id], map: "idx_sales_customer_activity_company")
+  @@index([customer_id], map: "idx_sales_customer_activity_customer")
+  @@index([lead_id], map: "idx_sales_customer_activity_lead")
+  @@index([scheduled_at], map: "idx_sales_customer_activity_scheduled_at")
+  @@index([seller_id], map: "idx_sales_customer_activity_seller")
+  @@index([status], map: "idx_sales_customer_activity_status")
 }
 
 model SalesOrder {
@@ -1483,6 +1509,100 @@ model sales_goals {
   goal_amount Decimal   @default(0) @db.Decimal(14, 2)
   created_at  DateTime? @default(now()) @db.Timestamptz(6)
   updated_at  DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model radar_import_staging {
+  id                   BigInt    @id @default(autoincrement())
+  snapshot_id          String    @db.Uuid
+  company_id           String    @db.Uuid
+  branch_id            String?   @db.Uuid
+  external_customer_id String?
+  name                 String?
+  zone                 String?
+  registration_date    DateTime? @db.Timestamptz(6)
+  last_transfer_at     DateTime? @db.Timestamptz(6)
+  last_activation_at   DateTime? @db.Timestamptz(6)
+  last_order_at        DateTime? @db.Timestamptz(6)
+  phone                String?
+  normalized_phone     String?
+  credit_limit         Decimal?  @db.Decimal(15, 2)
+  payment_methods      String?
+  row_number           Int
+  validation_status    String    @default("pending")
+  validation_error     String?
+  source_payload       Json?
+  created_at           DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@unique([snapshot_id, row_number], map: "uq_radar_staging_snapshot_row")
+  @@index([snapshot_id], map: "idx_radar_staging_snapshot")
+  @@index([snapshot_id, validation_status], map: "idx_radar_staging_snapshot_validation")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model radar_snapshot_prospects {
+  snapshot_id     String          @db.Uuid
+  prospect_id     String
+  company_id      String          @db.Uuid
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  companies       companies       @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "radar_snapshot_prospects_company_fk")
+  Prospect        Prospect        @relation(fields: [prospect_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "radar_snapshot_prospects_prospect_fk")
+  radar_snapshots radar_snapshots @relation(fields: [snapshot_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "radar_snapshot_prospects_snapshot_fk")
+
+  @@id([snapshot_id, prospect_id])
+  @@index([company_id, snapshot_id], map: "idx_radar_snapshot_prospects_company_snapshot")
+  @@index([prospect_id], map: "idx_radar_snapshot_prospects_prospect")
+  @@index([snapshot_id], map: "idx_radar_snapshot_prospects_snapshot")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model radar_snapshots {
+  id                       String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id               String                     @db.Uuid
+  branch_id                String?                    @db.Uuid
+  uploaded_by_user_id      String?                    @db.Uuid
+  file_name                String
+  status                   String                     @default("pending")
+  total_rows               Int                        @default(0)
+  valid_rows               Int                        @default(0)
+  created_count            Int                        @default(0)
+  updated_count            Int                        @default(0)
+  removed_count            Int                        @default(0)
+  duplicated_count         Int                        @default(0)
+  invalid_phone_count      Int                        @default(0)
+  ignored_count            Int                        @default(0)
+  is_current               Boolean                    @default(false)
+  error                    String?
+  started_at               DateTime?                  @db.Timestamptz(6)
+  finished_at              DateTime?                  @db.Timestamptz(6)
+  created_at               DateTime                   @default(now()) @db.Timestamptz(6)
+  updated_at               DateTime                   @default(now()) @db.Timestamptz(6)
+  storage_path             String?
+  processed_rows           Int                        @default(0)
+  invalid_count            Int                        @default(0)
+  error_count              Int                        @default(0)
+  progress_percent         Decimal                    @default(0) @db.Decimal(5, 2)
+  requires_confirmation    Boolean                    @default(false)
+  confirmation_reason      String?
+  confirmed_at             DateTime?                  @db.Timestamptz(6)
+  confirmed_by_user_id     String?                    @db.Uuid
+  previous_snapshot_id     String?                    @db.Uuid
+  error_message            String?
+  metadata                 Json                       @default("{}")
+  radar_snapshot_prospects radar_snapshot_prospects[]
+}
+
+model sales_commissions {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id         String    @db.Uuid
+  seller_id          String    @db.Uuid
+  year               Int
+  month              Int
+  commission_percent Decimal?  @default(0) @db.Decimal(8, 2)
+  created_at         DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@unique([company_id, seller_id, year, month])
 }
 
 enum CategoryType {
