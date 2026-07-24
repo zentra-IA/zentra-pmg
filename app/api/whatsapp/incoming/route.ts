@@ -1290,18 +1290,56 @@ function extractKeywords(template: any) {
     .filter(Boolean);
 }
 
+/*
+ * Somente templates do tipo "ai" pertencem ao motor de respostas automáticas.
+ *
+ * Templates "campaign" são exclusivos de disparo e nunca devem ser utilizados
+ * pelo webhook de mensagens recebidas, mesmo que tenham intent, palavras-chave,
+ * mídia ou estejam ativos.
+ */
+function isAutomaticReplyTemplate(template: any) {
+  return String(template?.type || "")
+    .trim()
+    .toLowerCase() === "ai";
+}
+
+/*
+ * Faz correspondência por frase/palavra completa.
+ *
+ * Evita, por exemplo, que a palavra-chave "oi" seja encontrada dentro de
+ * "foi", "coisa" ou outra palavra maior.
+ */
+function keywordMatchesMessage(message: string, keyword: string) {
+  const normalizedMessage = normalizeText(message);
+  const normalizedKeyword = normalizeText(keyword);
+
+  if (!normalizedMessage || !normalizedKeyword) {
+    return false;
+  }
+
+  return ` ${normalizedMessage} `.includes(` ${normalizedKeyword} `);
+}
+
 function intentAliases(intent: string) {
   const normalized = String(intent || "").toUpperCase();
 
+  /*
+   * REGRA DE SEGURANÇA:
+   * - OPENING, PROSPECCAO, REATIVACAO e demais intenções de campanha
+   *   nunca podem ser usadas como resposta genérica.
+   * - Uma mensagem sem intenção específica só pode usar:
+   *   1) um template automático RESPONDEU; ou
+   *   2) um template automático DEFAULT explicitamente cadastrado.
+   */
   const aliases: Record<string, string[]> = {
-    RESPONDEU: ["DEFAULT", "OPENING", "PROSPECCAO", "RESPONDEU"],
+    RESPONDEU: ["RESPONDEU", "DEFAULT"],
     CLIENTE_QUER_COMPRAR: ["CLIENTE_QUER_COMPRAR", "PEDIDO", "NEGOCIACAO", "COTACAO", "PROMOCAO"],
     COTACAO: ["COTACAO", "ORCAMENTO", "ORÇAMENTO", "PEDIDO", "PROMOCAO"],
     NEGOCIACAO: ["NEGOCIACAO", "PAGAMENTO", "DESCONTO", "COTACAO"],
     ENTREGA: ["ENTREGA", "LOGISTICA", "PRAZO"],
     TRANSFERIR_VENDEDOR: ["TRANSFERIR_VENDEDOR", "ATENDENTE", "VENDEDOR", "REPRESENTANTE"],
     SEM_INTERESSE: ["SEM_INTERESSE", "DESCADASTRO"],
-    DEFAULT: ["DEFAULT", "OPENING"],
+    DEFAULT: ["DEFAULT"],
   };
 
   const legacy: Record<string, string[]> = {
@@ -1344,6 +1382,7 @@ async function findSalesTriggeredTemplate({
     .select("*")
     .eq("company_id", companyId)
     .eq("owner_user_id", userId)
+    .eq("type", "ai")
     .eq("active", true)
     .order("created_at", { ascending: false });
 
@@ -1353,11 +1392,19 @@ async function findSalesTriggeredTemplate({
   }
 
   for (const template of templates || []) {
+    /*
+     * Defesa em profundidade: mesmo que a consulta seja alterada no futuro,
+     * nenhum template de campanha poderá passar por este ponto.
+     */
+    if (!isAutomaticReplyTemplate(template)) {
+      continue;
+    }
+
     const keywords = extractKeywords(template);
     if (!keywords.length) continue;
 
     const hit = keywords.some((keyword: string) =>
-      text.includes(normalizeText(keyword))
+      keywordMatchesMessage(text, keyword)
     );
 
     if (!hit) continue;
@@ -1409,6 +1456,7 @@ async function getIntentTemplate({
     .select("*")
     .eq("company_id", companyId)
     .eq("owner_user_id", userId)
+    .eq("type", "ai")
     .eq("active", true)
     .in("intent", intents)
     .order("created_at", { ascending: false })
@@ -1420,8 +1468,16 @@ async function getIntentTemplate({
     return null;
   }
 
-  const rawMessage = data?.base_message || data?.message || data?.content || data?.response || data?.final_message || data?.caption || "";
-  if (!rawMessage && !data?.media_url) return null;
+  /*
+   * Segunda trava: respostas por intenção também aceitam exclusivamente
+   * templates automáticos do tipo "ai".
+   */
+  if (!data || !isAutomaticReplyTemplate(data)) {
+    return null;
+  }
+
+  const rawMessage = data.base_message || data.message || data.content || data.response || data.final_message || data.caption || "";
+  if (!rawMessage && !data.media_url) return null;
 
   return {
     reply: rawMessage ? applyVariables(rawMessage, lead, extra) : null,
@@ -2419,6 +2475,28 @@ console.log("CONTEXTO FINAL DO LEAD PARA TEMPLATE:", {
         };
 
     let replied = false;
+
+    /*
+     * Auditoria importante:
+     * registra exatamente qual template automático foi escolhido.
+     * Templates de campanha nunca devem aparecer neste log.
+     */
+    if (finalReply.reply || finalReply.mediaUrl) {
+      console.log("WHATSAPP_AUTO_REPLY_TEMPLATE_SELECTED:", {
+        leadId: lead.id,
+        companyId,
+        userId,
+        source: finalReply.source,
+        detectedIntent: intent,
+      });
+    } else {
+      console.log("WHATSAPP_AUTO_REPLY_SKIPPED_NO_REGISTERED_TEMPLATE:", {
+        leadId: lead.id,
+        companyId,
+        userId,
+        detectedIntent: intent,
+      });
+    }
 
     try {
       if (finalReply.reply || finalReply.mediaUrl) {
