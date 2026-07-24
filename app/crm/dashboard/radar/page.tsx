@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Prospect = {
   id: string;
@@ -338,6 +338,34 @@ export default function RadarPage() {
   const visualized = prospects.filter((p) => p.revealed).length;
   const notVisualized = prospects.filter((p) => !p.revealed).length;
 
+  const activeFilterCount = [
+    externalId,
+    name,
+    city,
+    state,
+    segment,
+    category,
+    product,
+    paymentMethod,
+  ].filter((value) => value.trim().length > 0).length;
+
+  function clearFilters() {
+    setCity("");
+    setState("");
+    setName("");
+    setExternalId("");
+    setSegment("");
+    setCategory("");
+    setProduct("");
+    setPaymentMethod("");
+    setView("NEW");
+    setLimit(100);
+    setSortBy("createdAt");
+    setSortDir("desc");
+    setSelected([]);
+    setMessage("");
+  }
+
   function toggleSort(field: string) {
     if (sortBy === field) {
       setSortDir((current) => (current === "asc" ? "desc" : "asc"));
@@ -368,7 +396,7 @@ export default function RadarPage() {
         sortDir,
       });
 
-      const response = await fetch(`/api/radar/search?${params.toString()}`, {
+      const response = await fetch(`/api/radar/search-v2?${params.toString()}`, {
         cache: "no-store",
       });
 
@@ -388,6 +416,12 @@ export default function RadarPage() {
     }
   }
 
+  useEffect(() => {
+    void search();
+    // Carrega a base automaticamente ao abrir a página.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function revealSelected() {
     if (!selected.length) return;
 
@@ -395,7 +429,7 @@ export default function RadarPage() {
     setMessage("");
 
     try {
-      const response = await fetch("/api/radar/reveal", {
+      const response = await fetch("/api/radar/reveal-v2", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         cache: "no-store",
@@ -518,9 +552,27 @@ export default function RadarPage() {
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
           <button
+            style={styles.ghostButton}
+            onClick={() => {
+              window.location.href = "/crm/dashboard/radar/history";
+            }}
+          >
+            Histórico
+          </button>
+
+          <button
             style={styles.secondary}
             onClick={() => {
-              window.location.href = "/crm/dashboard/radar/upload";
+              window.location.href = "/crm/dashboard/radar/compare";
+            }}
+          >
+            Comparar bases
+          </button>
+
+          <button
+            style={styles.secondary}
+            onClick={() => {
+              window.location.href = "/crm/dashboard/radar/upload-v2";
             }}
           >
             Importar base
@@ -548,13 +600,27 @@ export default function RadarPage() {
       </section>
 
       <section style={{ ...styles.card, marginBottom: 16 }}>
-        <h2 style={styles.sectionTitle}>Filtros comerciais</h2>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div>
+            <h2 style={{ ...styles.sectionTitle, marginBottom: 4 }}>Filtros comerciais</h2>
+            <div style={{ color: "#64748b", fontSize: 13, fontWeight: 700 }}>
+              {activeFilterCount
+                ? `${activeFilterCount} filtro(s) de texto ativo(s)`
+                : "Use filtros combinados para encontrar oportunidades com precisão."}
+            </div>
+          </div>
+
+          <button style={styles.ghostButton} onClick={clearFilters}>
+            Limpar filtros
+          </button>
+        </div>
 
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(5,minmax(130px,1fr))",
-            gap: 10,
+            gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))",
+            gap: 12,
+            marginTop: 16,
           }}
         >
           <div>
@@ -651,16 +717,74 @@ export default function RadarPage() {
           </div>
 
           <div>
-            <label style={styles.label}>Quantidade</label>
-            <input
+            <label style={styles.label}>Resultados por busca</label>
+            <select
               style={styles.input}
-              type="number"
-              min={1}
-              max={500}
               value={limit}
               onChange={(e) => setLimit(Number(e.target.value))}
-            />
+            >
+              <option value={25}>25 resultados</option>
+              <option value={50}>50 resultados</option>
+              <option value={100}>100 resultados</option>
+              <option value={250}>250 resultados</option>
+              <option value={500}>500 resultados</option>
+            </select>
           </div>
+
+          <div>
+            <label style={styles.label}>Ordenar por</label>
+            <select
+              style={styles.input}
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+            >
+              <option value="createdAt">Mais recentes</option>
+              <option value="name">Nome da empresa</option>
+              <option value="city">Cidade</option>
+              <option value="externalId">ID do cliente</option>
+              <option value="lastOrderAt">Último pedido</option>
+              <option value="creditLimit">Limite de crédito</option>
+              <option value="paymentMethod">Forma de pagamento</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={styles.label}>Direção</label>
+            <select
+              style={styles.input}
+              value={sortDir}
+              onChange={(e) => setSortDir(e.target.value)}
+            >
+              <option value="desc">Decrescente</option>
+              <option value="asc">Crescente</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ color: "#64748b", fontSize: 12, fontWeight: 900 }}>
+            Atalhos:
+          </span>
+
+          {[
+            ["NEW", "Não visualizados"],
+            ["REVEALED", "Visualizados"],
+            ["ALL", "Todos"],
+          ].map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setView(value)}
+              style={{
+                ...(view === value ? styles.primary : styles.ghostButton),
+                padding: "8px 12px",
+                borderRadius: 999,
+                boxShadow: "none",
+              }}
+            >
+              {label}
+            </button>
+          ))}
         </div>
 
         <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
@@ -791,7 +915,7 @@ export default function RadarPage() {
             {!prospects.length ? (
               <tr>
                 <td style={styles.td} colSpan={12}>
-                  Use os filtros para encontrar oportunidades.
+                  Nenhuma oportunidade encontrada com os filtros atuais.
                 </td>
               </tr>
             ) : (

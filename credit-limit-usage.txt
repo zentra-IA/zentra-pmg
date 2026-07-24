@@ -1,0 +1,40 @@
+﻿
+Path                                                            LineNumber Line                                        
+----                                                            ---------- ----                                        
+C:\Users\grego\zentra-sales-ai\app\api\radar\import\route.ts           192       const creditLimit = parseMoney(get(...
+C:\Users\grego\zentra-sales-ai\app\api\radar\import\route.ts           232         creditLimit,                        
+C:\Users\grego\zentra-sales-ai\app\api\radar\reveal\route.ts           200         creditLimit: p.creditLimit ?? null, 
+C:\Users\grego\zentra-sales-ai\app\api\radar\search\route.ts            43     creditLimit: { creditLimit: dir },      
+C:\Users\grego\zentra-sales-ai\app\api\radar\search\route.ts           209         creditLimit: p.creditLimit ?? null, 
+C:\Users\grego\zentra-sales-ai\app\crm\dashboard\radar\page.tsx         22   creditLimit?: number | null;              
+C:\Users\grego\zentra-sales-ai\app\crm\dashboard\radar\page.tsx        479       p.creditLimit ?? "",                  
+C:\Users\grego\zentra-sales-ai\app\crm\dashboard\radar\page.tsx        768                   field="creditLimit"       
+C:\Users\grego\zentra-sales-ai\app\crm\dashboard\radar\page.tsx        826                   <td style={styles.td}>{...
+C:\Users\grego\zentra-sales-ai\lib\radar\headers.ts                     61   creditLimit: [                            
+C:\Users\grego\zentra-sales-ai\lib\radar\staging-repository.ts          40     credit_limit:                           
+C:\Users\grego\zentra-sales-ai\lib\radar\staging-repository.ts          41       row.creditLimit === null              
+C:\Users\grego\zentra-sales-ai\lib\radar\staging-repository.ts          43         : new Prisma.Decimal(row.creditLi...
+C:\Users\grego\zentra-sales-ai\lib\radar\sync-planner.ts               123     credit_limit: Prisma.Decimal | null;    
+C:\Users\grego\zentra-sales-ai\lib\radar\sync-planner.ts               133     creditLimit: number | null;             
+C:\Users\grego\zentra-sales-ai\lib\radar\sync-planner.ts               164     normalizeMoney(staging.credit_limit) !==
+C:\Users\grego\zentra-sales-ai\lib\radar\sync-planner.ts               165     normalizeMoney(prospect.creditLimit)    
+C:\Users\grego\zentra-sales-ai\lib\radar\sync-planner.ts               167     changedFields.push("creditLimit");      
+C:\Users\grego\zentra-sales-ai\lib\radar\sync-planner.ts               311           or p.credit_limit is distinct from
+C:\Users\grego\zentra-sales-ai\lib\radar\sync-planner.ts               312              cast(s.credit_limit as doubl...
+C:\Users\grego\zentra-sales-ai\lib\radar\sync-planner.ts               402           credit_limit: true,               
+C:\Users\grego\zentra-sales-ai\lib\radar\sync-planner.ts               433               creditLimit: true,            
+C:\Users\grego\zentra-sales-ai\lib\radar\types.ts                       23   creditLimit: number | null;               
+C:\Users\grego\zentra-sales-ai\lib\radar\validate-headers.ts            27   "creditLimit",                            
+C:\Users\grego\zentra-sales-ai\lib\radar\validate-row.ts                76   const creditLimit = parseRadarMoney(      
+C:\Users\grego\zentra-sales-ai\lib\radar\validate-row.ts                79       RADAR_HEADERS.creditLimit             
+C:\Users\grego\zentra-sales-ai\lib\radar\validate-row.ts               131     creditLimit,                            
+C:\Users\grego\zentra-sales-ai\prisma\schema.prisma                    548   creditLimit              Float?        ...
+C:\Users\grego\zentra-sales-ai\prisma\schema.prisma                    569   @@index([creditLimit])                    
+C:\Users\grego\zentra-sales-ai\prisma\schema.prisma                   1529   credit_limit         Decimal?  @db.Deci...
+C:\Users\grego\zentra-sales-ai\scripts\audit-radar-differenc...        125             creditLimit: true,              
+C:\Users\grego\zentra-sales-ai\scripts\audit-radar-differenc...        161         creditLimit: {                      
+C:\Users\grego\zentra-sales-ai\scripts\audit-radar-differenc...        163             staging.credit_limit            
+C:\Users\grego\zentra-sales-ai\scripts\audit-radar-differenc...        166             prospect.creditLimit === null   
+C:\Users\grego\zentra-sales-ai\scripts\audit-radar-differenc...        168               : String(prospect.creditLim...
+
+
