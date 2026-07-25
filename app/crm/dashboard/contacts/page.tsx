@@ -367,16 +367,29 @@ export default function ContactsDispatchPage() {
   }
 
   useEffect(() => {
-    refreshAll();
+    /*
+     * Carregamento inicial completo:
+     * - contatos;
+     * - templates;
+     * - fila;
+     * - status das 5 sessões do usuário/empresa atuais.
+     *
+     * Depois disso, somente a fila é atualizada automaticamente.
+     * O status das sessões continua sendo atualizado manualmente,
+     * pelo botão "Atualizar tudo" e após iniciar/reiniciar uma sessão.
+     */
+    void refreshAll();
 
     const interval = window.setInterval(() => {
-      Promise.all([
-        loadQueueStats(),
-        loadSessionStats(),
-      ]);
-    }, 10_000);
+      if (document.visibilityState === "visible") {
+        void loadQueueStats();
+      }
+    }, 30_000);
 
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+    };
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

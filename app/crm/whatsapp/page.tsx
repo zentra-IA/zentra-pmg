@@ -1,8 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const SESSIONS = [1, 2, 3, 4, 5];
+
+const QR_POLL_INTERVAL_MS = 10_000;
+const QR_POLL_MAX_DURATION_MS = 5 * 60_000;
 
 function getCompanyId() {
   if (typeof window === "undefined") return "";
@@ -26,6 +29,44 @@ function statusLabel(status?: string) {
   if (status === "qr_pending") return "Aguardando leitura do QR";
   return "Desconectado";
 }
+function isWhatsappOnline(data: any) {
+  const status = String(
+    data?.status ||
+      data?.state ||
+      data?.connectionStatus ||
+      data?.session?.status ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+
+  return (
+    data?.connected === true ||
+    data?.online === true ||
+    data?.isConnected === true ||
+    data?.ready === true ||
+    !!data?.me ||
+    data?.session?.connected === true ||
+    ["connected", "online", "open", "ready"].includes(status)
+  );
+}
+
+function isWhatsappQrPending(data: any) {
+  const status = String(
+    data?.status ||
+      data?.state ||
+      data?.connectionStatus ||
+      data?.session?.status ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+
+  return (
+    !!data?.qr ||
+    ["qr", "qr_pending", "waiting_qr", "pending_qr"].includes(status)
+  );
+}
 
 function statusStyle(status?: string) {
   if (status === "online") return styles.onlineBadge;
@@ -37,9 +78,21 @@ export default function WhatsAppPage() {
   const [sessions, setSessions] = useState<any>({});
   const [loading, setLoading] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+const pollingTimeoutsRef = useRef<Record<number, number | undefined>>({});
+
+const pollingStartedAtRef = useRef<Record<number, number>>({});
+
+const mountedRef = useRef(true);
 
   const stats = useMemo(() => {
-    const values = SESSIONS.map((id) => sessions[id]?.status || "offline");
+    const values = SESSIONS.map((id) => {
+    const session = sessions[id];
+
+    if (isWhatsappOnline(session)) return "online";
+    if (isWhatsappQrPending(session)) return "qr_pending";
+
+    return "offline";
+});
 
     return {
       total: SESSIONS.length,
@@ -91,83 +144,202 @@ export default function WhatsAppPage() {
   }
 
   async function loadQr(sessionId: number) {
-    try {
-      const data = await callWhatsApp("qr", sessionId);
+  try {
+    const data = await callWhatsApp("qr", sessionId);
 
+    if (mountedRef.current) {
       setSessions((prev: any) => ({
         ...prev,
         [sessionId]: data,
       }));
-    } catch (error: any) {
+    }
+
+    return data;
+  } catch (error: any) {
+    const fallback = {
+      status: "offline",
+      qr: null,
+      error: error?.message || "Erro ao carregar sessão.",
+    };
+
+    if (mountedRef.current) {
       setSessions((prev: any) => ({
         ...prev,
-        [sessionId]: {
-          status: "offline",
-          qr: null,
-          error: error?.message || "Erro ao carregar sessão.",
-        },
+        [sessionId]: fallback,
       }));
     }
+
+    return fallback;
   }
+}
 
   async function loadAll() {
+  if (mountedRef.current) {
     setRefreshing(true);
+  }
 
-    try {
-      await Promise.all(SESSIONS.map((id) => loadQr(id)));
-    } finally {
+  try {
+    await Promise.all(SESSIONS.map((id) => loadQr(id)));
+  } finally {
+    if (mountedRef.current) {
       setRefreshing(false);
     }
   }
+}
 
+function stopQrPolling(sessionId: number) {
+  const timeout = pollingTimeoutsRef.current[sessionId];
+
+  if (timeout) {
+    window.clearTimeout(timeout);
+  }
+
+  delete pollingTimeoutsRef.current[sessionId];
+  delete pollingStartedAtRef.current[sessionId];
+}
+
+function stopAllQrPolling() {
+  SESSIONS.forEach(stopQrPolling);
+}
+
+function scheduleQrPolling(sessionId: number) {
+  stopQrPolling(sessionId);
+
+  pollingStartedAtRef.current[sessionId] = Date.now();
+
+  const poll = async () => {
+    if (!mountedRef.current) {
+      stopQrPolling(sessionId);
+      return;
+    }
+
+    const startedAt = pollingStartedAtRef.current[sessionId] || Date.now();
+    const elapsed = Date.now() - startedAt;
+
+    if (elapsed >= QR_POLL_MAX_DURATION_MS) {
+      stopQrPolling(sessionId);
+
+      setSessions((prev: any) => ({
+        ...prev,
+        [sessionId]: {
+          ...(prev[sessionId] || {}),
+          status:
+            prev[sessionId]?.status === "online"
+              ? "online"
+              : "offline",
+          qr:
+            prev[sessionId]?.status === "online"
+              ? prev[sessionId]?.qr
+              : null,
+          error:
+            prev[sessionId]?.status === "online"
+              ? null
+              : "Tempo para leitura do QR expirado. Gere um novo QR.",
+        },
+      }));
+
+      return;
+    }
+
+    if (document.visibilityState === "hidden") {
+      pollingTimeoutsRef.current[sessionId] = window.setTimeout(
+        poll,
+        QR_POLL_INTERVAL_MS
+      );
+
+      return;
+    }
+
+    const data = await loadQr(sessionId);
+
+if (isWhatsappOnline(data)) {
+    stopQrPolling(sessionId);
+    return;
+}
+
+pollingTimeoutsRef.current[sessionId] = window.setTimeout(
+    poll,
+    QR_POLL_INTERVAL_MS
+);
+  };
+
+  pollingTimeoutsRef.current[sessionId] = window.setTimeout(
+    poll,
+    QR_POLL_INTERVAL_MS
+  );
+}
   async function gerarQr(sessionId: number) {
-    setLoading(sessionId);
+  setLoading(sessionId);
+  stopQrPolling(sessionId);
 
-    try {
-      await callWhatsApp("start", sessionId);
+  try {
+    await callWhatsApp("start", sessionId);
 
-      setTimeout(() => {
-        loadQr(sessionId);
-        setLoading(null);
-      }, 3000);
-    } catch (error: any) {
-      alert(error?.message || "Erro ao gerar QR.");
+    window.setTimeout(async () => {
+      if (!mountedRef.current) return;
+
+      const data = await loadQr(sessionId);
+
+      setLoading(null);
+
+    if (!isWhatsappOnline(data)) {
+    scheduleQrPolling(sessionId);
+}
+    }, 3000);
+  } catch (error: any) {
+    alert(error?.message || "Erro ao gerar QR.");
+
+    if (mountedRef.current) {
       setLoading(null);
     }
   }
+}
 
-  async function resetarSessao(sessionId: number) {
-    const ok = confirm(
-      `Resetar o WhatsApp ${sessionId}? Isso vai gerar uma nova sessão para esta empresa.`
-    );
+ async function resetarSessao(sessionId: number) {
+  const ok = confirm(
+    `Resetar o WhatsApp ${sessionId}? Isso vai gerar uma nova sessão para esta empresa.`
+  );
 
-    if (!ok) return;
+  if (!ok) return;
 
-    setLoading(sessionId);
+  setLoading(sessionId);
+  stopQrPolling(sessionId);
 
-    try {
-      await callWhatsApp("restart", sessionId);
+  try {
+    await callWhatsApp("restart", sessionId);
 
-      setTimeout(() => {
-        loadQr(sessionId);
-        setLoading(null);
-      }, 4000);
-    } catch (error: any) {
-      alert(error?.message || "Erro ao resetar sessão.");
+    window.setTimeout(async () => {
+      if (!mountedRef.current) return;
+
+      const data = await loadQr(sessionId);
+
+      setLoading(null);
+
+      if (!isWhatsappOnline(data)) {
+    scheduleQrPolling(sessionId);
+}
+    }, 4000);
+  } catch (error: any) {
+    alert(error?.message || "Erro ao resetar sessão.");
+
+    if (mountedRef.current) {
       setLoading(null);
     }
   }
+}
 
   useEffect(() => {
-    loadAll();
+  mountedRef.current = true;
 
-    const interval = setInterval(() => {
-      loadAll();
-    }, 7000);
+  loadAll();
 
-    return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  return () => {
+    mountedRef.current = false;
+    stopAllQrPolling();
+  };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
 
   return (
     <main style={styles.page}>
@@ -209,10 +381,16 @@ export default function WhatsAppPage() {
       <section style={styles.grid}>
         {SESSIONS.map((sessionId) => {
           const session = sessions[sessionId];
-          const status = session?.status || "offline";
           const qr = session?.qr || null;
-          const isOnline = status === "online";
-          const isQr = status === "qr_pending";
+
+const isOnline = isWhatsappOnline(session);
+const isQr = !isOnline && isWhatsappQrPending(session);
+
+const status = isOnline
+  ? "online"
+  : isQr
+  ? "qr_pending"
+  : "offline";
 
           return (
             <article key={sessionId} style={styles.card}>
