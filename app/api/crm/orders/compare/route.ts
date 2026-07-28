@@ -1,143 +1,395 @@
 import { NextRequest, NextResponse } from "next/server";
-import { openai } from "@/lib/openai";
-import { prisma } from "@/lib/prisma";
-import { compareTypedOrderWithOcr } from "../../../../../lib/products/pmg-commercial-engine";
+
+import { requireCompanyAccess } from "@/lib/server-company";
+import {
+  normalizeQuoteCommercialUnit,
+  resolveTypedLinesWithQuoteEngine,
+} from "@/lib/products/quote-commercial-engine";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-type ParsedItem = {
-  code?: string | null;
-  name?: string | null;
-  quantity?: number | string | null;
-  unit?: string | null;
-};
+type AnyItem = Record<string, any>;
 
-function safeJsonParse(text: string) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    const arrayMatch = text.match(/\[[\s\S]*\]/);
-    if (arrayMatch) return JSON.parse(arrayMatch[0]);
-
-    const objectMatch = text.match(/\{[\s\S]*\}/);
-    if (objectMatch) return JSON.parse(objectMatch[0]);
-
-    throw new Error("A IA não retornou JSON válido.");
+function toNumber(value: unknown): number {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : 0;
   }
+
+  let text = String(value || "")
+    .trim()
+    .replace(/[R$\s]/gi, "");
+
+  if (/^-?\d{1,3}(\.\d{3})+,\d+$/.test(text)) {
+    text = text.replace(/\./g, "").replace(",", ".");
+  } else if (text.includes(",") && text.includes(".")) {
+    text = text.replace(/\./g, "").replace(",", ".");
+  } else if (text.includes(",")) {
+    text = text.replace(",", ".");
+  }
+
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
-async function resolveCompanyId(req: NextRequest) {
-  const fromCookie =
-    req.cookies.get("zentra_company_id")?.value ||
-    req.cookies.get("company_id")?.value ||
-    "";
-
-  const fromHeader = req.headers.get("x-company-id") || "";
-  const candidate = String(fromHeader || fromCookie || "").trim();
-
-  if (candidate) return candidate;
-
-  const rows = await prisma.$queryRawUnsafe<any[]>(`
-    SELECT id
-    FROM companies
-    WHERE COALESCE(active, true) = true
-    ORDER BY created_at ASC NULLS LAST
-    LIMIT 1
-  `);
-
-  const firstCompanyId = rows?.[0]?.id ? String(rows[0].id) : "";
-
-  if (!firstCompanyId) {
-    throw new Error("Empresa não identificada. Faça login novamente ou cadastre uma empresa primeiro.");
-  }
-
-  return firstCompanyId;
+function normalizeCode(value: unknown): string {
+  return String(value || "")
+    .replace(/[^0-9A-Za-z]/g, "")
+    .toUpperCase();
 }
 
-async function parseTypedOrder(typedOrder: string): Promise<ParsedItem[]> {
-  const prompt = `
-Você é um conferente comercial da PMG Atacadista.
+function mirrorProductName(item: AnyItem) {
+  return String(
+    item?.catalog_name ||
+      item?.product_name ||
+      item?.official_name ||
+      item?.name ||
+      "Produto não identificado"
+  );
+}
 
-Extraia do pedido digitado APENAS os produtos e quantidades.
-O sistema vai validar o produto no Catálogo PMG depois.
-Não invente produto.
-Não calcule valor.
-Não compare com o espelho.
-Se o vendedor escrever "caixa", "cx", "peça", "kg", "bisnaga", "pacote", mantenha isso no campo unit.
+function mirrorProductCode(item: AnyItem) {
+  return normalizeCode(
+    item?.catalog_code ||
+      item?.official_code ||
+      item?.code
+  );
+}
 
-Retorne SOMENTE JSON válido neste formato:
-[
-  {
-    "code": "código se existir",
-    "name": "nome do produto como digitado",
-    "quantity": 0,
-    "unit": "caixa | kg | peça | pacote | bisnaga | unidade | null"
-  }
-]
+function mirrorProductUnit(item: AnyItem) {
+  return normalizeQuoteCommercialUnit(
+    item?.catalog_match?.sell_unit ||
+      item?.sell_unit ||
+      item?.unit ||
+      item?.catalog_match?.default_sell_unit ||
+      ""
+  );
+}
 
-Exemplos:
-"2 caixas de requeijão tirolez sem amido" =>
-[{"name":"requeijão tirolez sem amido","quantity":2,"unit":"caixa"}]
+function formatQuantity(quantity: number, unit: string | null) {
+  const formatted = Number.isInteger(quantity)
+    ? String(quantity)
+    : quantity.toLocaleString("pt-BR", {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 3,
+      });
 
-"47,3 kg muçarela frizzo" =>
-[{"name":"muçarela frizzo","quantity":47.3,"unit":"kg"}]
-
-Pedido digitado:
-${typedOrder}
-`;
-
-  const result = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    temperature: 0,
-    messages: [{ role: "user", content: prompt }],
-  });
-
-  const text = result.choices[0]?.message?.content || "[]";
-  const parsed = safeJsonParse(text);
-
-  if (Array.isArray(parsed)) return parsed;
-  if (Array.isArray(parsed.items)) return parsed.items;
-
-  return [];
+  return unit ? `${formatted} ${unit}` : formatted;
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const companyId = await resolveCompanyId(req);
-    const { typedOrder, extracted } = await req.json();
+    const access = await requireCompanyAccess(req);
+    const body = await req.json();
 
-    if (!typedOrder || !String(typedOrder).trim()) {
+    const typedOrder = String(body?.typedOrder || "").trim();
+    const mirrorItems: AnyItem[] = Array.isArray(body?.extracted?.items)
+      ? body.extracted.items
+      : [];
+
+    if (!typedOrder) {
       return NextResponse.json(
         { error: "Cole o pedido digitado para fazer a conferência." },
         { status: 400 }
       );
     }
 
-    if (!extracted?.items?.length) {
+    if (!mirrorItems.length) {
       return NextResponse.json(
         { error: "Leia o espelho com IA antes de comparar." },
         { status: 400 }
       );
     }
 
-    const typedItems = await parseTypedOrder(String(typedOrder));
+    const mirrorCodes = mirrorItems
+      .map((item) => mirrorProductCode(item))
+      .filter(Boolean);
 
-    const comparison = await compareTypedOrderWithOcr({
-      companyId,
-      typedItems,
-      mirrorItems: extracted.items || [],
+    const mirrorQuantitiesByCode = Object.fromEntries(
+      mirrorItems
+        .map((item) => [
+          mirrorProductCode(item),
+          toNumber(item?.quantity),
+        ])
+        .filter(([code]) => Boolean(code))
+    );
+
+    const typedItems = await resolveTypedLinesWithQuoteEngine({
+      companyId: access.companyId,
+      rawText: typedOrder,
+      mirrorCodes,
+      mirrorQuantitiesByCode,
     });
+
+    const mirrorByCode = new Map<string, AnyItem[]>();
+
+    for (const item of mirrorItems) {
+      const code = mirrorProductCode(item);
+      if (!code) continue;
+
+      const current = mirrorByCode.get(code) || [];
+      current.push(item);
+      mirrorByCode.set(code, current);
+    }
+
+    const usedMirrorItems = new Set<AnyItem>();
+    const checklist: AnyItem[] = [];
+    const okItems: AnyItem[] = [];
+    const quantityDivergences: AnyItem[] = [];
+    const missingInMirror: AnyItem[] = [];
+    const extraInMirror: AnyItem[] = [];
+    const reviewItems: AnyItem[] = [];
+
+    for (const typed of typedItems) {
+      if (typed.needsReview || !typed.code) {
+        const possibleMirrorCodes = new Set(
+          (typed.alternatives || [])
+            .map((option: any) => normalizeCode(option?.code))
+            .filter(Boolean)
+        );
+
+        const possibleMirrorItems = mirrorItems.filter(
+          (item) =>
+            !usedMirrorItems.has(item) &&
+            possibleMirrorCodes.has(mirrorProductCode(item))
+        );
+
+        if (possibleMirrorItems.length === 1) {
+          usedMirrorItems.add(possibleMirrorItems[0]);
+        }
+
+        const row = {
+          product: typed.productName,
+          productName: typed.productName,
+          quantity: formatQuantity(
+            typed.inputQuantity,
+            typed.inputUnit
+          ),
+          typedQuantity: formatQuantity(
+            typed.inputQuantity,
+            typed.inputUnit
+          ),
+          mirrorQuantity: "-",
+          status: "REVIEW",
+          message:
+            typed.reason ||
+            "Produto digitado não foi identificado com segurança.",
+          confidence: typed.confidence,
+          alternatives: typed.alternatives,
+        };
+
+        checklist.push(row);
+        reviewItems.push(row);
+        continue;
+      }
+
+      const candidates = mirrorByCode.get(
+        normalizeCode(typed.code)
+      ) || [];
+
+      const mirror = candidates.find(
+        (item) => !usedMirrorItems.has(item)
+      );
+
+      if (!mirror) {
+        const row = {
+          product: typed.productName,
+          productName: typed.productName,
+          quantity: formatQuantity(
+            typed.inputQuantity,
+            typed.inputUnit
+          ),
+          typedQuantity: formatQuantity(
+            typed.inputQuantity,
+            typed.inputUnit
+          ),
+          mirrorQuantity: "-",
+          status: "MISSING_IN_MIRROR",
+          message:
+            "O SKU resolvido pelo motor da cotação não apareceu no espelho.",
+          code: typed.code,
+        };
+
+        checklist.push(row);
+        missingInMirror.push(row);
+        continue;
+      }
+
+      usedMirrorItems.add(mirror);
+
+      const mirrorQuantity = toNumber(mirror?.quantity);
+      const mirrorUnit =
+        mirrorProductUnit(mirror) ||
+        typed.mirrorUnit ||
+        null;
+
+      const convertedQuantity = toNumber(
+        typed.convertedQuantity
+      );
+
+      const difference =
+        Math.round(
+          (convertedQuantity - mirrorQuantity) * 1000
+        ) / 1000;
+
+      const tolerance =
+        mirrorUnit === "KG" ? 0.3 : 0.001;
+
+      const isOk = Math.abs(difference) <= tolerance;
+
+      const row = {
+        product: mirrorProductName(mirror),
+        productName: mirrorProductName(mirror),
+        code: mirrorProductCode(mirror),
+        quantity: formatQuantity(
+          mirrorQuantity,
+          mirrorUnit
+        ),
+        typedQuantity:
+          (typed as any).unitInterpretation ===
+          "box_written_as_piece_by_mirror"
+            ? `${typed.inputQuantity} CX informadas → interpretadas como ${typed.inputQuantity} PÇ → ${formatQuantity(
+                convertedQuantity,
+                mirrorUnit
+              )}`
+            : typed.equivalentText
+              ? `${formatQuantity(
+                  typed.inputQuantity,
+                  typed.inputUnit
+                )} → ${formatQuantity(
+                  convertedQuantity,
+                  mirrorUnit
+                )}`
+              : formatQuantity(
+                  convertedQuantity,
+                  mirrorUnit
+                ),
+        mirrorQuantity: formatQuantity(
+          mirrorQuantity,
+          mirrorUnit
+        ),
+        unit: mirrorUnit,
+        difference,
+        status: isOk ? "OK" : "QUANTITY_DIVERGENT",
+        message: isOk
+          ? "OK"
+          : "Quantidade divergente após aplicar a mesma conversão comercial da cotação.",
+        equivalentText: typed.equivalentText,
+      };
+
+      checklist.push(row);
+
+      if (isOk) {
+        okItems.push(row);
+      } else {
+        quantityDivergences.push(row);
+      }
+    }
+
+    for (const mirror of mirrorItems) {
+      if (usedMirrorItems.has(mirror)) continue;
+
+      const row = {
+        product: mirrorProductName(mirror),
+        productName: mirrorProductName(mirror),
+        code: mirrorProductCode(mirror),
+        quantity: formatQuantity(
+          toNumber(mirror?.quantity),
+          mirrorProductUnit(mirror)
+        ),
+        typedQuantity: "-",
+        mirrorQuantity: formatQuantity(
+          toNumber(mirror?.quantity),
+          mirrorProductUnit(mirror)
+        ),
+        status: "EXTRA_IN_MIRROR",
+        message:
+          "O produto está no espelho, mas não foi localizado no pedido digitado.",
+      };
+
+      checklist.push(row);
+      extraInMirror.push(row);
+    }
+
+    const checked = typedItems.length;
+    const ok = okItems.length;
+    const blocking =
+      quantityDivergences.length +
+      missingInMirror.length +
+      extraInMirror.length;
+    const warnings = reviewItems.length;
+
+    const status =
+      blocking > 0
+        ? "bloqueado"
+        : warnings > 0
+          ? "atencao"
+          : "aprovado";
+
+    const score = checked
+      ? Math.round((ok / checked) * 100)
+      : 0;
+
+    const comparison = {
+      engine: "quote-commercial-engine-shared-v1",
+      status,
+      score,
+      summary:
+        status === "aprovado"
+          ? "Pedido conferido sem divergências."
+          : status === "atencao"
+            ? "Pedido exige revisão em alguns itens."
+            : "Pedido possui divergências que bloqueiam a conferência.",
+      recommendation:
+        status === "aprovado"
+          ? "O pedido pode seguir para a próxima etapa."
+          : reviewItems.length > 0
+            ? "Revise apenas os itens ambíguos. Os demais foram comparados pelo mesmo motor da cotação."
+            : "Corrija os produtos ou quantidades divergentes e confira novamente.",
+      totals: {
+        checked,
+        ok,
+        divergences: blocking + warnings,
+        blockingDivergences: blocking,
+        warnings,
+        missing: missingInMirror.length,
+        extra: extraInMirror.length,
+        review: reviewItems.length,
+      },
+      checklist,
+      okItems,
+      quantityDivergences,
+      missingInMirror,
+      extraInMirror,
+      reviewItems,
+      typedItems,
+      mirrorItems,
+    };
 
     return NextResponse.json({
       ok: true,
       comparison,
     });
-  } catch (error: any) {
-    console.error("[POST /api/crm/orders/compare]", error);
+  } catch (error: unknown) {
+    console.error(
+      "[POST /api/crm/orders/compare]",
+      error
+    );
+
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Erro ao conferir pedido.";
+
+    const status =
+      message.includes("não identificado") ||
+      message.includes("sem acesso")
+        ? 401
+        : 500;
+
     return NextResponse.json(
-      { error: error?.message || "Erro ao conferir pedido." },
-      { status: 500 }
+      { error: message },
+      { status }
     );
   }
 }

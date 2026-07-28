@@ -1,4 +1,5 @@
 import { validateOrderItemsWithCatalog } from "@/lib/product-catalog";
+import { hasUnsafeMirrorRow } from "@/lib/products/order-mirror-safety";
 
 export type PmgCommercialRawItem = {
   code?: string | null;
@@ -391,8 +392,23 @@ export function convertTypedQuantityToBase(params: {
   } satisfies ConvertedCommercialQuantity;
 }
 
-function buildKey(item: NormalizedCommercialItem) {
+function buildKey(
+  item: NormalizedCommercialItem,
+  source: "typed" | "mirror",
+  index: number
+) {
   const code = String(item.code || "").trim();
+  const hasConflict = item.rawItems.some(
+    (raw) =>
+      raw?.catalog_match?.code_name_conflict === true ||
+      raw?.row_validation?.needs_review === true
+  );
+
+  // Linhas inseguras nunca podem ser fundidas somente pelo código.
+  if (source === "mirror" && (item.needsReview || hasConflict)) {
+    return `review:${index}:${code || normalizeText(item.productName)}`;
+  }
+
   if (code) return `code:${code}`;
   return `name:${normalizeText(item.productName)}`;
 }
@@ -552,7 +568,10 @@ async function normalizeCommercialItems(params: {
     });
 
     const confidence = Number(item.catalog_match?.confidence ?? 100);
-    const needsReview = Boolean(item.catalog_match?.needs_review) || confidence < 90;
+    const needsReview =
+      Boolean(item.catalog_match?.needs_review) ||
+      confidence < 90 ||
+      (params.source === "mirror" && hasUnsafeMirrorRow(item));
 
     const normalized: NormalizedCommercialItem = {
       key: "",
@@ -571,7 +590,7 @@ async function normalizeCommercialItems(params: {
       rawItems: [item],
     };
 
-    normalized.key = buildKey(normalized);
+    normalized.key = buildKey(normalized, params.source, index);
 
     if (normalized.key === "name:") continue;
 
@@ -648,11 +667,23 @@ function findBestMirrorMatch(
   for (const mirrorItem of mirrorItems) {
     if (usedMirrorKeys.has(mirrorItem.key)) continue;
 
-    if (typedItem.code && mirrorItem.code && typedItem.code === mirrorItem.code) {
+    const nameScore = nameSimilarity(
+      typedItem.productName,
+      mirrorItem.productName
+    );
+
+    if (
+      typedItem.code &&
+      mirrorItem.code &&
+      typedItem.code === mirrorItem.code &&
+      !typedItem.needsReview &&
+      !mirrorItem.needsReview &&
+      nameScore >= 0.35
+    ) {
       return { item: mirrorItem, score: 1 };
     }
 
-    const score = nameSimilarity(typedItem.productName, mirrorItem.productName);
+    const score = nameScore;
 
     if (score > bestScore) {
       best = mirrorItem;

@@ -860,6 +860,40 @@ export default function OrdersPage() {
                       </div>
                     )}
 
+
+                    {comparison.reviewItems?.length > 0 && (
+                      <div className="mt-5">
+                        <h4 className="text-sm font-black text-amber-800">
+                          🔎 Itens que exigem revisão manual
+                        </h4>
+                        <div className="mt-2 grid gap-2">
+                          {comparison.reviewItems.map((item: any, index: number) => (
+                            <div
+                              key={index}
+                              className="rounded-2xl border border-amber-200 bg-white p-4 text-sm"
+                            >
+                              <strong className="block text-slate-950">
+                                {item.productName || item.product || "Produto não identificado"}
+                              </strong>
+                              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                                <span className="font-bold text-slate-600">
+                                  Digitado: {item.typedQuantity || item.quantity || "-"}
+                                </span>
+                                <span className="font-bold text-slate-600">
+                                  Espelho: {item.mirrorQuantity || "-"}
+                                </span>
+                              </div>
+                              {item.message && (
+                                <p className="mt-2 font-bold text-amber-700">
+                                  {item.message}
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {comparison.okItems?.length > 0 && (
                       <details className="mt-5 rounded-2xl border border-emerald-200 bg-white p-4">
                         <summary className="cursor-pointer text-sm font-black text-emerald-800">
