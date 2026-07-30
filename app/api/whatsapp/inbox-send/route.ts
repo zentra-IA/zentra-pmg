@@ -98,24 +98,197 @@ function normalizeSessionNumber(value: unknown) {
   return parsed;
 }
 
-function buildSession(
-  companyId: string,
-  userId: string,
-  lead: any,
-  requestedSession?: unknown
+type ResolvedWhatsappSession = {
+  sessionId: number;
+  fullSessionId: string;
+  status: string;
+};
+
+async function getWhatsappSessionStatus(
+  fullSessionId: string
 ) {
-  const sessionId = normalizeSessionNumber(
-    requestedSession ?? lead?.session_id
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    5000
   );
 
-  return {
+  try {
+    const response = await fetch(
+      `${WHATSAPP_SERVER}/status/${encodeURIComponent(
+        fullSessionId
+      )}`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+        },
+        cache: "no-store",
+        signal: controller.signal,
+      }
+    );
+
+    const text = await response.text();
+
+    let data: any = {};
+
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = {
+        success: false,
+        status: "offline",
+        error: text || "Resposta inválida do servidor WhatsApp.",
+      };
+    }
+
+    return {
+      ok: response.ok,
+      status: clean(data?.status).toLowerCase(),
+      connected:
+        data?.connected === true ||
+        clean(data?.status).toLowerCase() === "online" ||
+        clean(data?.status).toLowerCase() === "connected" ||
+        clean(data?.status).toLowerCase() === "conectado",
+      lastError:
+        clean(data?.lastError || data?.error) || null,
+    };
+  } catch (error: any) {
+    return {
+      ok: false,
+      status: "offline",
+      connected: false,
+      lastError:
+        error?.name === "AbortError"
+          ? "Tempo excedido ao consultar a sessão."
+          : error?.message ||
+            "Não foi possível consultar a sessão.",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function resolveOnlineSession({
+  companyId,
+  userId,
+  lead,
+  requestedSession,
+}: {
+  companyId: string;
+  userId: string;
+  lead: any;
+  requestedSession?: unknown;
+}): Promise<ResolvedWhatsappSession> {
+  /*
+   * Isolamento multiusuário:
+   * todas as chaves são montadas somente com a empresa e o usuário
+   * autenticado. Uma sessão de outro vendedor nunca é considerada.
+   */
+  const preferredSessionId =
+    normalizeSessionNumber(
+      requestedSession ?? lead?.session_id
+    );
+
+  const candidateSessionIds = [
+    preferredSessionId,
+    ...[1, 2, 3, 4, 5].filter(
+      (sessionId) =>
+        sessionId !== preferredSessionId
+    ),
+  ];
+
+  const buildCandidate = (
+    sessionId: number
+  ) => ({
     sessionId,
     fullSessionId: buildWhatsappSessionKey({
       companyId,
       userId,
       sessionId,
     }),
-  };
+  });
+
+  /*
+   * Primeiro testa a sessão escolhida pela tela ou armazenada no lead.
+   * Isso evita chamadas desnecessárias quando o vínculo já está correto.
+   */
+  const preferred = buildCandidate(
+    preferredSessionId
+  );
+
+  const preferredStatus =
+    await getWhatsappSessionStatus(
+      preferred.fullSessionId
+    );
+
+  if (preferredStatus.connected) {
+    return {
+      ...preferred,
+      status:
+        preferredStatus.status || "online",
+    };
+  }
+
+  /*
+   * Se a preferida estiver offline, procura somente entre as outras
+   * quatro sessões do MESMO usuário e da MESMA empresa.
+   * As consultas são paralelas para não aumentar o tempo do envio.
+   */
+  const fallbackCandidates =
+    candidateSessionIds
+      .slice(1)
+      .map(buildCandidate);
+
+  const fallbackStatuses =
+    await Promise.all(
+      fallbackCandidates.map(
+        async (candidate) => ({
+          candidate,
+          status:
+            await getWhatsappSessionStatus(
+              candidate.fullSessionId
+            ),
+        })
+      )
+    );
+
+  const onlineFallback =
+    fallbackStatuses.find(
+      (item) => item.status.connected
+    );
+
+  if (onlineFallback) {
+    console.log(
+      "WHATSAPP INBOX SESSION FALLBACK:",
+      {
+        companyId,
+        userId,
+        leadId: lead?.id || null,
+        requestedSession:
+          preferredSessionId,
+        selectedSession:
+          onlineFallback.candidate
+            .sessionId,
+        selectedFullSessionId:
+          onlineFallback.candidate
+            .fullSessionId,
+      }
+    );
+
+    return {
+      ...onlineFallback.candidate,
+      status:
+        onlineFallback.status.status ||
+        "online",
+    };
+  }
+
+  throw new Error(
+    `Nenhuma sessão do WhatsApp está conectada para este usuário. ` +
+      `A sessão ${preferredSessionId} está offline. ` +
+      `Conecte uma sessão na página do WhatsApp e tente novamente.`
+  );
 }
 
 function getDestination(lead: any, fallbackPhone?: unknown) {
@@ -800,12 +973,15 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const session = buildSession(
-      companyId,
-      userId,
-      lead,
-      body?.session_id ?? body?.sessionId
-    );
+    const session =
+      await resolveOnlineSession({
+        companyId,
+        userId,
+        lead,
+        requestedSession:
+          body?.session_id ??
+          body?.sessionId,
+      });
 
     const mediaUrl = await uploadMedia({
       supabase,
