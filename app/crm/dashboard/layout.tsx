@@ -64,6 +64,12 @@ const SELLER_MENU: MenuItem[] = [
   { label: "Kanban Comercial", href: "/crm/dashboard", icon: "kanban", description: "Pipeline de vendas" },
   { label: "Disparo de Mensagens", href: "/crm/dashboard/contacts", icon: "megaphone", description: "Importação e envios" },
   { label: "Clientes", href: "/crm/dashboard/customers", icon: "users", description: "Carteira comercial" },
+{
+  label: "Promoções",
+  href: "/crm/dashboard/promotions",
+  icon: "megaphone",
+  description: "Portal e Push",
+},
   { label: "Radar Comercial", href: "/crm/dashboard/radar", icon: "target", description: "Prospecção inteligente" },
   { label: "Inbox WhatsApp", href: "/crm/dashboard/inbox", icon: "message", description: "Atendimento" },
   { label: "Campanhas", href: "/crm/dashboard/campaigns", icon: "megaphone", description: "Disparos e automações" },
