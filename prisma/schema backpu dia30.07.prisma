@@ -1669,7 +1669,6 @@ model WebPromotionAccess {
 
   token_hash    String  @unique
   token_preview String?
-  token_value   String? @unique
 
   // Manter temporariamente para compatibilidade.
   // A fonte principal deve continuar sendo SalesCustomer.
@@ -1713,10 +1712,6 @@ model WebPromotion {
   company_id String  @db.Uuid
   seller_id  String? @db.Uuid
 
-  // Nome da campanha visível somente no CRM.
-  internal_title String?
-
-  // Título público exibido no portal e no Push.
   title       String
   description String?
 
@@ -1735,14 +1730,7 @@ model WebPromotion {
   portal_text String?
 
   // Texto do botão no portal.
-  call_to_action String? @default("Entrar em contato")
-
-  // WhatsApp definido pelo vendedor em cada publicação.
-  // Salvar somente números, preferencialmente com DDI.
-  contact_whatsapp String?
-
-  // Mensagem preenchida automaticamente ao abrir o WhatsApp.
-  whatsapp_message String?
+  call_to_action String? @default("Ver promoção")
 
   // Permite criar hoje e publicar depois.
   scheduled_at DateTime? @db.Timestamptz(6)

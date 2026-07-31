@@ -43,6 +43,12 @@ const FULL_MENU: MenuItem[] = [
   { label: "Radar Comercial", href: "/crm/dashboard/radar", icon: "target", description: "Prospecção inteligente" },
   { label: "Inbox WhatsApp", href: "/crm/dashboard/inbox", icon: "message", description: "Atendimento" },
   { label: "Campanhas", href: "/crm/dashboard/campaigns", icon: "megaphone", description: "Disparos e automações" },
+{
+  label: "Promoções",
+  href: "/crm/dashboard/promotions",
+  icon: "megaphone",
+  description: "Portal e Push"
+},
   { label: "Mensagens IA", href: "/crm/dashboard/messages", icon: "mail", description: "Templates comerciais" },
   { label: "Conteúdo IA", href: "/crm/dashboard/creative-generator", icon: "spark", description: "Criativos e textos" },
   { label: "BI Comercial", href: "/crm/dashboard/bi", icon: "chart", description: "Indicadores gerenciais" },

@@ -76,7 +76,7 @@ async function notifyCRM(payload) {
   try {
     const crmUrl = getCrmUrlBySession();
 
-    console.log("➡️ Enviando mensagem para Zentra RH:", {
+    console.log("➡️ Enviando mensagem para Zentra Sales:", {
       crmUrl,
       sessionId: payload.sessionId,
       number: payload.number,
@@ -93,11 +93,11 @@ async function notifyCRM(payload) {
 
     const data = await res.json().catch(() => ({}));
 
-    console.log("⬅️ Resposta Zentra RH:", data);
+    console.log("⬅️ Resposta Zentra Sales:", data);
 
     return data;
   } catch (error) {
-    console.error("Erro ao avisar Zentra RH:", error.message);
+    console.error("Erro ao avisar Zentra Sales:", error.message);
     return null;
   }
 }
@@ -167,21 +167,19 @@ const makeWASocket =
 
   const {
     useMultiFileAuthState,
-    fetchLatestBaileysVersion,
     DisconnectReason,
+    Browsers,
   } = baileys;
 
   if (sessions[sessionId]?.sock) {
     try {
-      sessions[sessionId].sock.end();
+      sessions[sessionId].sock.end?.();
     } catch {}
   }
 
   const sessionPath = path.join(__dirname, "sessions", sessionId);
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-
-  const { version } = await fetchLatestBaileysVersion();
 
   sessions[sessionId] = {
     sock: null,
@@ -192,16 +190,16 @@ const makeWASocket =
   };
 
   const sock = makeWASocket({
-    version,
     auth: state,
     printQRInTerminal: false,
-    browser: ["Zentra RH", "Chrome", "1.0.0"],
+    browser:
+      typeof Browsers?.windows === "function"
+        ? Browsers.windows("Chrome")
+        : ["Windows", "Chrome", "10.0"],
     syncFullHistory: false,
-    markOnlineOnConnect: true,
+    markOnlineOnConnect: false,
     generateHighQualityLinkPreview: false,
-    connectTimeoutMs: 60000,
-    keepAliveIntervalMs: 30000,
-    defaultQueryTimeoutMs: 60000,
+    retryRequestDelayMs: 250,
   });
 
   sessions[sessionId].sock = sock;
@@ -263,7 +261,7 @@ const makeWASocket =
           pushName,
           message: text.trim(),
           source: "whatsapp",
-          product: "zentra-rh",
+          product: "zentra-sales",
           messageId: msg.key?.id || null,
         });
       }
@@ -342,8 +340,54 @@ const makeWASocket =
         return;
       }
 
+      const qrExpired =
+        statusCode === 408 ||
+        String(message).includes("QR refs attempts ended");
+
+      if (qrExpired) {
+        console.log(
+          `⌛ QR expirado para sessão ${sessionId}. Aguardando novo clique em Gerar QR.`
+        );
+
+        if (sessions[sessionId]) {
+          sessions[sessionId].status = "offline";
+          sessions[sessionId].qr = null;
+          sessions[sessionId].lastError =
+            message || "QR refs attempts ended";
+        }
+
+        return;
+      }
+
+      if (statusCode === 405) {
+        console.log(
+          `⛔ Registro recusado para sessão ${sessionId} (405). Aguardando novo clique em Gerar QR.`
+        );
+
+        if (sessions[sessionId]) {
+          sessions[sessionId].status = "offline";
+          sessions[sessionId].qr = null;
+          sessions[sessionId].lastError =
+            "Registro do dispositivo recusado pelo WhatsApp (405)";
+        }
+
+        return;
+      }
+
       console.log(`🔄 Reconectando sessão ${sessionId} em 5s`);
-      setTimeout(() => startSession(sessionId), 5000);
+
+      setTimeout(() => {
+        const current = sessions[sessionId];
+
+        if (current && current.status === "offline") {
+          startSession(sessionId).catch((error) => {
+            console.error(
+              `Erro ao reconectar sessão ${sessionId}:`,
+              error?.message || error
+            );
+          });
+        }
+      }, 5000);
     }
   });
 
@@ -663,7 +707,7 @@ async function restartSession(sessionId) {
 
   if (sessions[sessionId]?.sock) {
     try {
-      sessions[sessionId].sock.end();
+      sessions[sessionId].sock.end?.();
     } catch {}
   }
 
@@ -832,7 +876,7 @@ app.get("/me/:id", (req, res) => {
 app.get("/health", (req, res) => {
   return res.json({
     success: true,
-    server: "Zentra RH",
+    server: "Zentra Sales",
     status: "online",
     uptime: process.uptime(),
     port: PORT,
@@ -847,12 +891,12 @@ app.get("/health", (req, res) => {
 app.get("/", (req, res) => {
   return res.json({
     success: true,
-    message: "WhatsApp server Zentra RH rodando",
+    message: "WhatsApp server Zentra Sales rodando",
     port: PORT,
     appUrl: ZENTRA_APP_URL,
     activeSessions: Object.keys(sessions),
     routing: {
-      "all sessions": "Zentra RH",
+      "all sessions": "Zentra Sales",
       endpoint: `${ZENTRA_APP_URL}/api/whatsapp/incoming`,
     },
     routes: [
@@ -872,6 +916,32 @@ app.get("/", (req, res) => {
   });
 });
 
+function hasRegisteredCredentials(sessionId) {
+  try {
+    const credsPath = path.join(
+      __dirname,
+      "sessions",
+      String(sessionId),
+      "creds.json"
+    );
+
+    if (!fs.existsSync(credsPath)) {
+      return false;
+    }
+
+    const creds = JSON.parse(fs.readFileSync(credsPath, "utf8"));
+
+    return creds?.registered === true;
+  } catch (error) {
+    console.error(
+      `Erro ao verificar credenciais da sessão ${sessionId}:`,
+      error?.message || error
+    );
+
+    return false;
+  }
+}
+
 async function restoreSessions() {
   try {
     const sessionsDir = path.join(__dirname, "sessions");
@@ -890,6 +960,13 @@ async function restoreSessions() {
     console.log("♻️ Restaurando sessões:", folders);
 
     for (const sessionId of folders) {
+      if (!hasRegisteredCredentials(sessionId)) {
+        console.log(
+          `⏭️ Sessão ${sessionId} não registrada. Aguardando clique em Gerar QR.`
+        );
+        continue;
+      }
+
       try {
         await startSession(sessionId);
       } catch (error) {
@@ -904,8 +981,16 @@ async function restoreSessions() {
   }
 }
 
+process.on("unhandledRejection", (error) => {
+  console.error("Unhandled rejection:", error);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception:", error);
+});
+
 app.listen(PORT, async () => {
-  console.log(`🔥 WhatsApp server Zentra RH rodando na porta ${PORT}`);
+  console.log(`🔥 WhatsApp server Zentra Sales rodando na porta ${PORT}`);
   console.log(`📌 Todas as sessões → ${ZENTRA_APP_URL}/api/whatsapp/incoming`);
 
   await restoreSessions();
