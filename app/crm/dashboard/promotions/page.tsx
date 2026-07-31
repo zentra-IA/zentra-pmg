@@ -29,9 +29,11 @@ type PromotionDelivery = {
   status: string;
   queued_at?: string | null;
   sent_at?: string | null;
+  accepted_at?: string | null;
   opened_at?: string | null;
   viewed_at?: string | null;
   clicked_at?: string | null;
+  whatsapp_clicked_at?: string | null;
   error_message?: string | null;
   customer: {
     id: string;
@@ -182,10 +184,27 @@ function promotionMetrics(promotion: Promotion) {
   const viewed = deliveries.filter(
     (item) => Boolean(item.viewed_at) || Boolean(item.clicked_at)
   ).length;
-  const clicked = deliveries.filter((item) => Boolean(item.clicked_at)).length;
+  const clicked = deliveries.filter(
+    (item) => Boolean(item.clicked_at)
+  ).length;
+  const whatsapp = deliveries.filter(
+    (item) => Boolean(item.whatsapp_clicked_at)
+  ).length;
   const openRate = sent > 0 ? Math.round((opened / sent) * 100) : 0;
+  const clickRate = sent > 0 ? Math.round((clicked / sent) * 100) : 0;
 
-  return { total, sent, failed, pending, opened, viewed, clicked, openRate };
+  return {
+    total,
+    sent,
+    failed,
+    pending,
+    opened,
+    viewed,
+    clicked,
+    whatsapp,
+    openRate,
+    clickRate,
+  };
 }
 
 function tableLabel(priceTable: number) {
@@ -208,6 +227,18 @@ function formatDate(value?: string | null) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+
+function deliveryTimeline(delivery: PromotionDelivery) {
+  return [
+    { label: "Push enviado", value: delivery.sent_at },
+    { label: "Aceito pelo serviço", value: delivery.accepted_at },
+    { label: "Clicou na notificação", value: delivery.clicked_at },
+    { label: "Abriu o portal", value: delivery.opened_at },
+    { label: "Visualizou a promoção", value: delivery.viewed_at },
+    { label: "Clicou no WhatsApp", value: delivery.whatsapp_clicked_at },
+  ].filter((item) => Boolean(item.value));
 }
 
 function toInputDate(value?: string | null) {
@@ -1530,9 +1561,11 @@ export default function PromotionsPage() {
                               <span>Enviados: <b>{metrics.sent}</b></span>
                               <span>Abertos: <b>{metrics.opened}</b></span>
                               <span>Visualizados: <b>{metrics.viewed}</b></span>
-                              <span>Cliques: <b>{metrics.clicked}</b></span>
+                              <span>Cliques no Push: <b>{metrics.clicked}</b></span>
+                              <span>WhatsApp: <b>{metrics.whatsapp}</b></span>
                               <span>Falhas: <b>{metrics.failed}</b></span>
                               <span>Taxa de abertura: <b>{metrics.openRate}%</b></span>
+                              <span>CTR Push: <b>{metrics.clickRate}%</b></span>
                             </div>
 
                             <div className="delivery-list">
@@ -1549,11 +1582,19 @@ export default function PromotionsPage() {
                                       Tabela {delivery.customer.price_table ?? "—"} ·{" "}
                                       {deliveryLabel(delivery)}
                                     </span>
-                                    <small>
-                                      {deliveryDate(delivery)
-                                        ? formatDate(deliveryDate(delivery))
-                                        : "Sem atualização"}
-                                    </small>
+                                    <div className="delivery-timeline">
+                                      {deliveryTimeline(delivery).length ? (
+                                        deliveryTimeline(delivery).map((event) => (
+                                          <small key={event.label}>
+                                            <b>{event.label}:</b>{" "}
+                                            {formatDate(event.value)}
+                                          </small>
+                                        ))
+                                      ) : (
+                                        <small>Sem atualização</small>
+                                      )}
+                                    </div>
+
                                     {delivery.error_message && (
                                       <small title={delivery.error_message}>
                                         Motivo: {deliveryLabel(delivery)}
@@ -1982,6 +2023,23 @@ export default function PromotionsPage() {
 
         .delivery-metrics b {
           color: #172033;
+        }
+
+        .delivery-timeline {
+          display: grid;
+          gap: 3px;
+          margin-top: 5px;
+          padding-left: 10px;
+          border-left: 2px solid #e5e7eb;
+        }
+
+        .delivery-timeline small {
+          color: #64748b;
+          line-height: 1.35;
+        }
+
+        .delivery-timeline b {
+          color: #334155;
         }
 
         .delivery-list {

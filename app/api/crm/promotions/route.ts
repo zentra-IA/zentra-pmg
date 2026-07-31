@@ -149,6 +149,7 @@ const include = {
       opened_at: true,
       viewed_at: true,
       clicked_at: true,
+      whatsapp_clicked_at: true,
       error_code: true,
       error_message: true,
       customer: {

@@ -4,13 +4,15 @@ import { prisma } from "@/lib/prisma";
 import { getCustomerPromotionAccess } from "@/lib/promotions/customer-access";
 import PushNotificationManager from "@/components/PushNotificationManager";
 import PromotionGallery from "@/components/PromotionGallery";
+import PromotionAnalyticsTracker from "@/components/PromotionAnalyticsTracker";
 
 type PageProps = {
   params: Promise<{ token: string }>;
 };
 
-
-export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+export async function generateMetadata({
+  params,
+}: PageProps): Promise<Metadata> {
   const { token } = await params;
   const encodedToken = encodeURIComponent(token);
 
@@ -44,7 +46,9 @@ function tableFromDistance(value: unknown): number | null {
   return 5;
 }
 
-export default async function CustomerOffersPage({ params }: PageProps) {
+export default async function CustomerOffersPage({
+  params,
+}: PageProps) {
   const { token } = await params;
   const access = await getCustomerPromotionAccess(token);
 
@@ -69,12 +73,33 @@ export default async function CustomerOffersPage({ params }: PageProps) {
               some: { price_table: Number(table) },
             },
             AND: [
-              { OR: [{ valid_from: null }, { valid_from: { lte: now } }] },
-              { OR: [{ valid_until: null }, { valid_until: { gte: now } }] },
+              {
+                OR: [
+                  { valid_from: null },
+                  { valid_from: { lte: now } },
+                ],
+              },
+              {
+                OR: [
+                  { valid_until: null },
+                  { valid_until: { gte: now } },
+                ],
+              },
             ],
           },
           include: {
-            images: { orderBy: { sort_order: "asc" } },
+            images: {
+              orderBy: { sort_order: "asc" },
+            },
+            deliveries: {
+              where: {
+                customer_id: customer.id,
+              },
+              select: {
+                id: true,
+              },
+              take: 1,
+            },
           },
           orderBy: [
             { published_at: "desc" },
@@ -101,46 +126,60 @@ export default async function CustomerOffersPage({ params }: PageProps) {
         <div className="mt-8 grid gap-5">
           {promotions.length === 0 ? (
             <div className="rounded-2xl border bg-slate-50 p-10 text-center">
-              <h2 className="text-xl font-bold">Promoções em breve</h2>
+              <h2 className="text-xl font-bold">
+                Promoções em breve
+              </h2>
               <p className="mt-2 text-slate-500">
                 Não há promoção ativa para sua tabela neste momento.
               </p>
             </div>
           ) : (
-            promotions.map((promotion) => (
-              <article
-                key={promotion.id}
-                className="overflow-hidden rounded-2xl border bg-white shadow-sm"
-              >
-                <PromotionGallery
-                  title={promotion.title}
-                  images={promotion.images}
-                />
+            promotions.map((promotion) => {
+              const deliveryId = promotion.deliveries[0]?.id || "";
 
-                <div className="p-5">
-                  <h2 className="text-2xl font-black">{promotion.title}</h2>
+              return (
+                <article
+                  key={promotion.id}
+                  data-promotion-id={promotion.id}
+                  data-delivery-id={deliveryId}
+                  className="overflow-hidden rounded-2xl border bg-white shadow-sm"
+                >
+                  <PromotionGallery
+                    title={promotion.title}
+                    images={promotion.images}
+                  />
 
-                  <p className="mt-3 whitespace-pre-wrap text-slate-600">
-                    {promotion.portal_text || promotion.description}
-                  </p>
+                  <div className="p-5">
+                    <h2 className="text-2xl font-black">
+                      {promotion.title}
+                    </h2>
 
-                  {promotion.contact_whatsapp && (
-                    <a
-                      className="mt-5 flex min-h-12 items-center justify-center rounded-xl bg-green-700 px-4 font-black text-white"
-                      href={`https://wa.me/${promotion.contact_whatsapp.replace(/\D/g, "")}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {promotion.call_to_action || "Entrar em contato"}
-                    </a>
-                  )}
-                </div>
-              </article>
-            ))
+                    <p className="mt-3 whitespace-pre-wrap text-slate-600">
+                      {promotion.portal_text || promotion.description}
+                    </p>
+
+                    {promotion.contact_whatsapp && (
+                      <a
+                        className="mt-5 flex min-h-12 items-center justify-center rounded-xl bg-green-700 px-4 font-black text-white"
+                        href={`https://wa.me/${promotion.contact_whatsapp.replace(/\D/g, "")}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        data-whatsapp-promotion={promotion.id}
+                        data-whatsapp-delivery={deliveryId}
+                      >
+                        {promotion.call_to_action ||
+                          "Entrar em contato"}
+                      </a>
+                    )}
+                  </div>
+                </article>
+              );
+            })
           )}
         </div>
       </section>
 
+      <PromotionAnalyticsTracker portalToken={token} />
       <PushNotificationManager portalToken={token} />
     </main>
   );

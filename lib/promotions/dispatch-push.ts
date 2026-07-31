@@ -16,9 +16,30 @@ export type PushDispatchResult = {
   deactivated: number;
 };
 
-function absolutePortalUrl(origin: string, token?: string | null) {
+function absolutePortalUrl(
+  origin: string,
+  token: string | null | undefined,
+  promotionId: string,
+  deliveryId: string
+) {
   if (!token) return origin;
-  return new URL(`/ofertas/${token}`, origin).toString();
+
+  const url = new URL(`/ofertas/${encodeURIComponent(token)}`, origin);
+  url.searchParams.set("src", "push");
+  url.searchParams.set("promotion_id", promotionId);
+  url.searchParams.set("delivery_id", deliveryId);
+
+  return url.toString();
+}
+
+function absoluteAssetUrl(origin: string, value?: string | null) {
+  if (!value) return undefined;
+
+  try {
+    return new URL(value, origin).toString();
+  } catch {
+    return undefined;
+  }
 }
 
 export async function dispatchPromotionPush({
@@ -102,7 +123,12 @@ export async function dispatchPromotionPush({
     promotion.description ||
     "Confira a nova promoção da PMG.";
 
-  const image = promotion.images[0]?.image_url || undefined;
+  // A primeira arte da promoção vira a imagem rica do Push
+  // em navegadores/sistemas que suportam Notification.image.
+  const image = absoluteAssetUrl(
+    origin,
+    promotion.images[0]?.image_url
+  );
 
   let sent = 0;
   let failed = 0;
@@ -143,7 +169,12 @@ export async function dispatchPromotionPush({
         ? delivery.customer.webPromotionAccess.token_value
         : null;
 
-    const url = absolutePortalUrl(origin, portalToken);
+    const url = absolutePortalUrl(
+      origin,
+      portalToken,
+      promotion.id,
+      delivery.id
+    );
     let customerSent = false;
     let lastErrorCode = "PUSH_ERROR";
     let lastErrorMessage = "Falha ao enviar Push.";
