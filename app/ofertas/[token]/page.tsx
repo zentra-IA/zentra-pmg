@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { getCustomerPromotionAccess } from "@/lib/promotions/customer-access";
@@ -7,6 +8,27 @@ import PromotionGallery from "@/components/PromotionGallery";
 type PageProps = {
   params: Promise<{ token: string }>;
 };
+
+
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const { token } = await params;
+  const encodedToken = encodeURIComponent(token);
+
+  return {
+    title: "Ofertas PMG",
+    description: "Portal de ofertas PMG Atacadista",
+    manifest: `/ofertas/${encodedToken}/manifest.webmanifest`,
+    appleWebApp: {
+      capable: true,
+      statusBarStyle: "default",
+      title: "PMG Ofertas",
+    },
+    icons: {
+      apple: "/logo-pmg.png",
+      icon: "/logo-pmg.png",
+    },
+  };
+}
 
 function tableFromDistance(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
