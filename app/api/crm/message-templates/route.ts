@@ -243,10 +243,13 @@ export async function GET(req: NextRequest) {
     const active = clean(searchParams.get("active"));
 
     let query = supabase
-      .from("message_templates")
-      .select("*")
-      .eq("company_id", companyId)
-      .order("created_at", { ascending: false });
+  .from("message_templates")
+  .select(`
+    *,
+    variations:message_variations(*)
+  `)
+  .eq("company_id", companyId)
+  .order("created_at", { ascending: false });
 
     if (role === "VENDEDOR") {
       query = query.eq("owner_user_id", userId);
@@ -296,16 +299,38 @@ export async function POST(req: NextRequest) {
     }
 
     const { data, error } = await supabase
-      .from("message_templates")
-      .insert({
-        ...payload,
-        created_at: new Date().toISOString(),
-      })
-      .select("*")
-      .single();
+  .from("message_templates")
+  .insert({
+    ...payload,
+    created_at: new Date().toISOString(),
+  })
+  .select("*")
+  .single();
 
-    if (error) throw new Error(error.message);
+if (error) throw new Error(error.message);
 
+const variations = String(body.message_variations || "")
+  .split("\n")
+  .map((v: string) => v.trim())
+  .filter(Boolean);
+
+if (variations.length) {
+  const { error: variationError } = await supabase
+    .from("message_variations")
+    .insert(
+      variations.map((message: string, index: number) => ({
+        template_id: data.id,
+        company_id: companyId,
+        variation: index + 1,
+        message,
+        active: true,
+      }))
+    );
+
+  if (variationError) {
+    throw new Error(variationError.message);
+  }
+}
     return NextResponse.json({
       success: true,
       template: data,
@@ -418,8 +443,39 @@ export async function PATCH(req: NextRequest) {
     const { data, error } = await updateQuery
       .select("*")
       .single();
+if (error) throw new Error(error.message);
 
-    if (error) throw new Error(error.message);
+const { error: deleteVariationError } = await supabase
+  .from("message_variations")
+  .delete()
+  .eq("template_id", id);
+
+if (deleteVariationError) {
+  throw new Error(deleteVariationError.message);
+}
+
+const variations = String(body.message_variations || "")
+  .split("\n")
+  .map((v: string) => v.trim())
+  .filter(Boolean);
+
+if (variations.length) {
+  const { error: variationError } = await supabase
+    .from("message_variations")
+    .insert(
+      variations.map((message: string, index: number) => ({
+        template_id: id,
+        company_id: companyId,
+        variation: index + 1,
+        message,
+        active: true,
+      }))
+    );
+
+  if (variationError) {
+    throw new Error(variationError.message);
+  }
+}
 
     return NextResponse.json({
       success: true,

@@ -1201,6 +1201,7 @@ async function buildVariableContext({
   };
 }
 
+
 function applyVariables(text: string, lead: any, extra: any = {}) {
   const phone = extra?.phone || lead?.phone || "";
   const productName =
@@ -1218,6 +1219,21 @@ function applyVariables(text: string, lead: any, extra: any = {}) {
     `${APP_URL}/crm/dashboard/cotador`;
   const companyName = extra?.companyName || extra?.company || "PMG Atacadista";
   const customerName = lead?.name || extra?.name || "Cliente";
+console.log("DEBUG_VARIAVEIS", {
+  leadName: lead?.name,
+  leadPhone: lead?.phone,
+  leadProduct: lead?.product_name,
+  leadJobTitle: lead?.job_title,
+
+  extraName: extra?.name,
+  extraProductName: extra?.productName,
+  extraProduct: extra?.product,
+  extraJobTitle: extra?.jobTitle,
+  extraTitle: extra?.title,
+
+  customerName,
+  productName,
+});
 
   return String(text || "")
     .replaceAll("{cliente}", customerName)
@@ -1243,21 +1259,6 @@ function applyVariables(text: string, lead: any, extra: any = {}) {
     .replaceAll("{link_cotador}", quoteLink)
     .replaceAll("{link}", quoteLink)
 
-    // compatibilidade com templates antigos de RH
-    .replaceAll("{vaga}", productName)
-    .replaceAll("{cargo}", productName)
-    .replaceAll("{recrutador}", extra?.representativeName || "")
-    .replaceAll("{local}", extra?.location || lead?.city || "")
-    .replaceAll("{tipo_contrato}", "")
-    .replaceAll("{salario}", extra?.price || "")
-    .replaceAll("{horario_trabalho}", "")
-    .replaceAll("{beneficios}", extra?.benefits || "")
-    .replaceAll("{descricao_vaga}", extra?.description || "")
-    .replaceAll("{data}", extra?.deliveryDate || "")
-    .replaceAll("{horario}", "")
-    .replaceAll("{data_entrevista}", extra?.deliveryDate || "")
-    .replaceAll("{link_agendamento}", quoteLink)
-    .replaceAll("{link_entrevista}", quoteLink);
 }
 const templateVariationMemory = new Map<string, number>();
 
@@ -1268,7 +1269,10 @@ function getTemplateVariation(template: any): string {
     messages.push(template.base_message.trim());
   }
 
-  if (template?.message?.trim() && !messages.includes(template.message.trim())) {
+  if (
+    template?.message?.trim() &&
+    !messages.includes(template.message.trim())
+  ) {
     messages.push(template.message.trim());
   }
 
@@ -1300,16 +1304,18 @@ function getTemplateVariation(template: any): string {
   }
 
   const key = String(
-  template.id ??
-  template.template_id ??
-  template.name ??
-  template.trigger_keywords ??
-  "default"
-);
+    template.id ??
+      template.template_id ??
+      template.name ??
+      template.trigger_keywords ??
+      "default"
+  );
 
-  const currentIndex = templateVariationMemory.get(key) ?? 0;
+  const currentIndex =
+    templateVariationMemory.get(key) ?? 0;
 
-  const nextMessage = messages[currentIndex % messages.length];
+  const nextMessage =
+    messages[currentIndex % messages.length];
 
   templateVariationMemory.set(
     key,
@@ -1318,6 +1324,7 @@ function getTemplateVariation(template: any): string {
 
   return nextMessage;
 }
+
 function extractKeywords(template: any) {
   const raw =
     template.trigger_keywords ||
@@ -1618,22 +1625,6 @@ async function advanceFlowStep({
   lead: any;
   currentTemplate: any;
 }) {
-  const nextStep = Number(currentTemplate?.next_step || 0);
-
-  // Não existe próximo passo: encerra o fluxo
-  if (nextStep <= 0) {
-    await supabase
-      .from("leads")
-      .update({
-        current_flow_group: null,
-        current_flow_step: null,
-      })
-      .eq("id", lead.id);
-
-    return;
-  }
-
-  // Segurança: se não existir flow_group, encerra o fluxo
   if (!currentTemplate?.flow_group) {
     await supabase
       .from("leads")
@@ -1646,7 +1637,21 @@ async function advanceFlowStep({
     return;
   }
 
-  // Avança para o próximo passo definido no template
+  const nextStep = Number(currentTemplate?.next_step ?? 0);
+
+  // Não existe próximo passo: encerra o fluxo
+  if (!Number.isFinite(nextStep) || nextStep <= 0) {
+    await supabase
+      .from("leads")
+      .update({
+        current_flow_group: null,
+        current_flow_step: null,
+      })
+      .eq("id", lead.id);
+
+    return;
+  }
+
   await supabase
     .from("leads")
     .update({
@@ -1655,6 +1660,7 @@ async function advanceFlowStep({
     })
     .eq("id", lead.id);
 }
+
 async function getFinalSalesReply({
   supabase,
   intent,
@@ -1671,7 +1677,7 @@ async function getFinalSalesReply({
   userId: string;
 }): Promise<{
   reply: string | null;
-  mediaUrl: string | null;
+  mediaUrl: string |null;
   mediaType: string;
   currentTemplate: any;
   kanbanStatus: string | null;
@@ -1681,7 +1687,10 @@ async function getFinalSalesReply({
   source: string;
 }> {
 
-  // Continua um fluxo já iniciado
+  // =====================================================
+  // 1) CONTINUA FLUXO ATIVO (PRIORIDADE MÁXIMA)
+  // =====================================================
+
   const currentFlow = await getCurrentFlowTemplate({
     supabase,
     lead,
@@ -1690,6 +1699,7 @@ async function getFinalSalesReply({
   });
 
   if (currentFlow) {
+
     const extra = await buildVariableContext({
       supabase,
       companyId,
@@ -1705,85 +1715,116 @@ async function getFinalSalesReply({
       reply: rawMessage
         ? applyVariables(rawMessage, lead, extra)
         : null,
+
       mediaUrl: currentFlow.media_url || null,
-      mediaType: currentFlow.media_type || "text",
+
+      mediaType:
+        currentFlow.media_type || "text",
+
       currentTemplate: currentFlow,
-      kanbanStatus: getTemplateKanbanStatus(currentFlow),
-      notifyEnabled: Boolean(currentFlow.notify_enabled),
-      notifyNumber: currentFlow.notify_number || null,
-      notifyMessage: currentFlow.notify_message || null,
+
+      kanbanStatus:
+        getTemplateKanbanStatus(currentFlow),
+
+      notifyEnabled:
+        Boolean(currentFlow.notify_enabled),
+
+      notifyNumber:
+        currentFlow.notify_number || null,
+
+      notifyMessage:
+        currentFlow.notify_message || null,
+
       source: "flow",
     };
   }
 
-  // Procura template por palavra-chave
-  const triggered = await findSalesTriggeredTemplate({
-    supabase,
-    message,
-    lead,
-    companyId,
-    userId,
-  });
+  // =====================================================
+  // 2) TEMPLATE POR PALAVRA-CHAVE
+  // =====================================================
+
+  const triggered =
+    await findSalesTriggeredTemplate({
+      supabase,
+      message,
+      lead,
+      companyId,
+      userId,
+    });
 
   if (triggered) {
 
-    if (
-      triggered.currentTemplate?.flow_group &&
-      triggered.currentTemplate?.next_step
-    ) {
-      await supabase
-        .from("leads")
-        .update({
-          current_flow_group: triggered.currentTemplate.flow_group,
-          current_flow_step: triggered.currentTemplate.next_step,
-        })
-        .eq("id", lead.id);
-    }
+    /*
+      IMPORTANTE
+
+      NÃO avança o fluxo aqui.
+
+      Quem avança é somente:
+
+      replyAndSave()
+
+      Isso evita pular etapas.
+    */
 
     if (
       !triggered.kanbanStatus &&
-      shouldForceSalesStatus(message, intent, triggered.reply)
+      shouldForceSalesStatus(
+        message,
+        intent,
+        triggered.reply
+      )
     ) {
-      triggered.kanbanStatus = "em_negociacao";
+      triggered.kanbanStatus =
+        "em_negociacao";
     }
 
     return triggered;
   }
 
-  // Procura template por intenção
-  const intentTemplate = await getIntentTemplate({
-    supabase,
-    intent,
-    message,
-    lead,
-    companyId,
-    userId,
-  });
+  // =====================================================
+  // 3) TEMPLATE POR INTENT
+  // =====================================================
+
+  const intentTemplate =
+    await getIntentTemplate({
+      supabase,
+      intent,
+      message,
+      lead,
+      companyId,
+      userId,
+    });
 
   if (intentTemplate) {
 
-    if (
-      intentTemplate.currentTemplate?.flow_group &&
-      intentTemplate.currentTemplate?.next_step
-    ) {
-      await supabase
-        .from("leads")
-        .update({
-          current_flow_group: intentTemplate.currentTemplate.flow_group,
-          current_flow_step: intentTemplate.currentTemplate.next_step,
-        })
-        .eq("id", lead.id);
-    }
+    /*
+      IMPORTANTE
+
+      Também NÃO grava flow aqui.
+
+      replyAndSave()
+      fará isso depois que
+      a mensagem for enviada.
+    */
 
     if (
       !intentTemplate.kanbanStatus &&
-      shouldForceSalesStatus(message, intent, intentTemplate.reply)
+      shouldForceSalesStatus(
+        message,
+        intent,
+        intentTemplate.reply
+      )
     ) {
-      intentTemplate.kanbanStatus = "em_negociacao";
+      intentTemplate.kanbanStatus =
+        "em_negociacao";
     }
 
     return intentTemplate;
   }
+
+  // =====================================================
+  // 4) SEM TEMPLATE
+  // =====================================================
 
   return {
     reply: null,
@@ -1797,6 +1838,8 @@ async function getFinalSalesReply({
     source: "no_template",
   };
 }
+
+
 async function replyAndSave({
   supabase,
   sessionId,
@@ -2149,6 +2192,38 @@ for (const item of items as any[]) {
     _resolvedByRecentQueue: true,
   };
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 async function findLead({
   supabase,
@@ -2554,17 +2629,26 @@ export async function POST(req: Request) {
 if (queueContext) {
   const leadJobPatch: any = {};
 
-  if (!lead.job_id && queueContext.job_id) {
-    leadJobPatch.job_id = queueContext.job_id;
-  }
+  if (
+  queueContext?.job_id &&
+  lead.job_id !== queueContext.job_id
+) {
+  leadJobPatch.job_id = queueContext.job_id;
+}
 
-  if (!lead.current_job_id && queueContext.job_id) {
-    leadJobPatch.current_job_id = queueContext.job_id;
-  }
+if (
+  queueContext?.job_id &&
+  lead.current_job_id !== queueContext.job_id
+) {
+  leadJobPatch.current_job_id = queueContext.job_id;
+}
 
-  if (!lead.batch_id && queueContext.batch_id) {
-    leadJobPatch.batch_id = queueContext.batch_id;
-  }
+if (
+  queueContext?.batch_id &&
+  lead.batch_id !== queueContext.batch_id
+) {
+  leadJobPatch.batch_id = queueContext.batch_id;
+}
 
   if (Object.keys(leadJobPatch).length) {
     leadJobPatch.updated_at = new Date().toISOString();
