@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const WHATSAPP_SERVER =
   process.env.NEXT_PUBLIC_WHATSAPP_SERVER || "http://localhost:3013";
@@ -387,6 +388,11 @@ function hasAny(text: string, terms: string[]) {
   return terms.some((term) => text.includes(normalizeText(term)));
 }
 
+/*
+ * Na V2, a detecção de intenção serve somente para movimentação comercial
+ * do Kanban. A resposta automática vem exclusivamente dos templates
+ * personalizados cadastrados pelo vendedor.
+ */
 function detectSalesIntent(message: string) {
   const text = normalizeText(message);
 
@@ -532,34 +538,43 @@ const ALLOWED_KANBAN_STATUS = [
   "campanha",
   "sem_interesse",
   "perdido",
-
-  // compatibilidade com versões antigas
-  "em_negociacao",
-  "entrevista_agendada",
-  "reagendar_futuro",
-  "contratado",
-  "nao_aprovado",
 ];
 
 const LEGACY_KANBAN_STATUS_MAP: Record<string, string> = {
   respondido: "respondeu",
   interesse: "em_negociacao",
-  entrevista: "em_negociacao",
   agendamento: "cotacao_enviada",
   pedido: "pedido_fechado",
   reativar_futuro: "cliente_inativo",
   finalizado: "pedido_fechado",
-
-  // compatibilidade RH → Comercial
-  quer_agendar_entrevista: "em_negociacao",
-  entrevista_agendada: "cotacao_enviada",
-  contratado: "pedido_fechado",
-  aprovado: "pedido_fechado",
-  nao_aprovado: "perdido",
 };
 
+const KANBAN_RANK: Record<string, number> = {
+  novo: 0,
+  campanha: 1,
+  enviado: 2,
+  respondeu: 3,
+  primeiro_contato: 4,
+  em_negociacao: 5,
+  cotacao_enviada: 6,
+  pedido_fechado: 7,
+  pos_venda: 8,
+  cliente_ativo: 9,
+  cliente_inativo: 9,
+  sem_interesse: 10,
+  perdido: 10,
+};
+
+const LOCKED_KANBAN_STATUS = new Set([
+  "pedido_fechado",
+  "cliente_ativo",
+  "cliente_inativo",
+  "sem_interesse",
+  "perdido",
+]);
+
 function normalizeKanbanStatus(value: any) {
-  const raw = clean(value || "");
+  const raw = clean(value || "").toLowerCase();
   if (!raw) return null;
 
   const normalized = LEGACY_KANBAN_STATUS_MAP[raw] || raw;
@@ -570,9 +585,6 @@ function getTemplateKanbanStatus(template: any) {
   return normalizeKanbanStatus(
     template?.kanban_status ||
       template?.kanbanStatus ||
-      template?.next_stage ||
-      template?.nextStage ||
-      template?.stage ||
       template?.target_status ||
       template?.targetStatus ||
       template?.move_to_status ||
@@ -581,11 +593,87 @@ function getTemplateKanbanStatus(template: any) {
   );
 }
 
-function shouldForceSalesStatus(message: string, intent: string, reply?: string | null) {
+function chooseKanbanStatus(
+  currentValue: any,
+  candidateValue: any,
+  explicit = false
+) {
+  const current = normalizeKanbanStatus(currentValue) || "novo";
+  const candidate = normalizeKanbanStatus(candidateValue);
+
+  if (!candidate) return current;
+  if (LOCKED_KANBAN_STATUS.has(current) && !explicit) return current;
+  if (explicit) return candidate;
+
+  return (KANBAN_RANK[candidate] || 0) >= (KANBAN_RANK[current] || 0)
+    ? candidate
+    : current;
+}
+
+async function updateLeadKanbanStatus({
+  supabase,
+  lead,
+  companyId,
+  userId,
+  candidate,
+  explicit = false,
+}: {
+  supabase: any;
+  lead: any;
+  companyId: string;
+  userId: string;
+  candidate: string | null | undefined;
+  explicit?: boolean;
+}) {
+  const nextStatus = chooseKanbanStatus(
+    lead?.status || "novo",
+    candidate,
+    explicit
+  );
+
+  if (nextStatus === normalizeKanbanStatus(lead?.status || "novo")) {
+    return { ...lead, status: nextStatus };
+  }
+
+  const { data, error } = await supabase
+    .from("leads")
+    .update({
+      status: nextStatus,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", lead.id)
+    .eq("company_id", companyId)
+    .eq("owner_user_id", userId)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    console.error("[KANBAN] Erro ao atualizar status:", {
+      leadId: lead?.id,
+      currentStatus: lead?.status,
+      candidate,
+      nextStatus,
+      error,
+    });
+    return { ...lead, status: lead?.status || "novo" };
+  }
+
+  return data || { ...lead, status: nextStatus };
+}
+
+function shouldForceSalesStatus(
+  message: string,
+  intent: string,
+  reply?: string | null
+) {
   const text = normalizeText(message);
   const normalizedIntent = String(intent || "").toUpperCase();
 
-  if (["CLIENTE_QUER_COMPRAR", "COTACAO", "NEGOCIACAO"].includes(normalizedIntent)) {
+  if (
+    ["CLIENTE_QUER_COMPRAR", "COTACAO", "NEGOCIACAO"].includes(
+      normalizedIntent
+    )
+  ) {
     return true;
   }
 
@@ -609,17 +697,13 @@ function shouldForceSalesStatus(message: string, intent: string, reply?: string 
   }
 
   const responseText = normalizeText(reply || "");
-  if (
+  return (
     responseText.includes("cotador") ||
     responseText.includes("orcamento") ||
     responseText.includes("orçamento") ||
     responseText.includes("pedido") ||
     responseText.includes("tabela")
-  ) {
-    return true;
-  }
-
-  return false;
+  );
 }
 
 function getDestination({ lead, phone, lid, remoteJid }: any) {
@@ -829,15 +913,28 @@ async function saveReceivedMessage(
   }
 }
 
+
 async function saveSentMessage(
   supabase: any,
-  leadId: string,
-  companyId: string,
-  branchId: string | null,
-  userId: string | null | undefined,
-  reply: string,
-  mediaUrl?: string | null,
-  mediaType?: string | null
+  {
+    leadId,
+    companyId,
+    branchId,
+    userId,
+    reply,
+    mediaUrl,
+    mediaType,
+    metadata,
+  }: {
+    leadId: string;
+    companyId: string;
+    branchId: string | null;
+    userId?: string | null;
+    reply: string;
+    mediaUrl?: string | null;
+    mediaType?: string | null;
+    metadata?: Record<string, any>;
+  }
 ) {
   const { error } = await supabase.from("messages").insert({
     company_id: companyId,
@@ -854,26 +951,20 @@ async function saveSentMessage(
       user_id: userId || null,
       media_url: mediaUrl || null,
       media_type: mediaType || "text",
+      ...(metadata || {}),
     },
     status: "sent",
     created_at: new Date().toISOString(),
   });
 
   if (error) {
-    console.error("ERRO AO SALVAR MENSAGEM ENVIADA:", error);
-    throw new Error(`Não foi possível salvar a resposta no histórico: ${error.message}`);
+    console.error("[HISTORY] Erro ao salvar mensagem enviada:", error);
+    throw new Error(
+      `Não foi possível salvar a resposta no histórico: ${error.message}`
+    );
   }
 }
 
-function getJobIdFromLead(lead: any) {
-  return (
-    lead?.current_job_id ||
-    lead?.job_id ||
-    lead?.ID_do_trabalho_atual ||
-    lead?.id_do_trabalho ||
-    null
-  );
-}
 async function getActiveQueueContext({
   supabase,
   companyId,
@@ -935,184 +1026,6 @@ async function getActiveQueueContext({
   return null;
 }
 
-async function getJobContext(supabase: any, companyId: string, jobId?: string | null) {
-  if (!jobId) return null;
-
-  const tables = ["Job", "jobs", "rh_jobs"];
-
-  for (const table of tables) {
-    try {
-      const { data, error } = await supabase
-  .from(table)
-  .select("*")
-  .eq("job_id", jobId)
-.eq("company_id", companyId)
-  .maybeSingle();
-
-      if (!error && data) return data;
-    } catch {}
-  }
-
-  return null;
-}
-
-function formatMoney(value: any) {
-  const number = Number(value || 0);
-  if (!Number.isFinite(number) || number <= 0) return "";
-  return number.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
-
-function getJobSalary(job: any) {
-  if (!job) return "";
-  if (job.salary) return String(job.salary);
-  if (job.salaryRange) return String(job.salaryRange);
-  if (job.salary_range) return String(job.salary_range);
-
-  const min = formatMoney(job.salaryMin || job.salary_min);
-  const max = formatMoney(job.salaryMax || job.salary_max);
-
-  if (min && max) return `${min} a ${max}`;
-  if (min) return `A partir de ${min}`;
-  if (max) return `Até ${max}`;
-  return "";
-}
-
-function getJobLocation(job: any) {
-  if (!job) return "";
-  return [job.neighborhood, job.city, job.state].filter(Boolean).join(" / ");
-}
-
-function getJobBenefits(job: any) {
-  const value =
-    job?.benefits ||
-    job?.requirements?.benefits ||
-    job?.filters?.benefits ||
-    job?.aiCriteria?.benefits ||
-    "";
-
-  if (Array.isArray(value)) return value.join(", ");
-  return String(value || "");
-}
-
-function getJobWorkSchedule(job: any) {
-  return (
-    job?.shift ||
-    job?.requirements?.shift ||
-    job?.filters?.shift ||
-    job?.workSchedule ||
-    job?.work_schedule ||
-    ""
-  );
-}
-
-function formatDateTime(value?: string | null) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-
-  return date.toLocaleString("pt-BR", {
-    weekday: "long",
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-async function getNextAvailableSlot(
-  supabase: any,
-  companyId: string,
-  jobId?: string | null,
-  leadId?: string | null,
-  batchId?: string | null
-) {
-  const now = new Date();
-
-  const { data, error } = await supabase
-    .from("rh_interview_slots")
-    .select("*")
-    .limit(300);
-
-  if (error) {
-    console.error("ERRO BUSCAR SLOTS:", error);
-    return null;
-  }
-
-  const slots = data || [];
-
-  console.log("SLOTS ENCONTRADOS:", slots.length);
-  console.log("EXEMPLO SLOT:", slots[0]);
-
-  const getCompanyId = (slot: any) =>
-    slot.id_da_empresa || slot.company_id || slot.companyId;
-
-  const getJobId = (slot: any) =>
-    slot.id_do_trabalho || slot.job_id || slot.jobId;
-
-  const getBatchId = (slot: any) =>
-    slot.id_do_lote || slot.batch_id || slot.batchId;
-
-  const getDate = (slot: any) =>
-    slot.comecar_em || slot.start_at || slot.starts_at || slot.startAt;
-
-  const availableSlots = slots
-    .filter((slot: any) => {
-      const status = String(slot.status || "").toLowerCase();
-      const token = slot.token || slot.id;
-
-      const isAvailable =
-        status === "available" ||
-        status === "disponível" ||
-        status === "disponivel" ||
-        status === "livre" ||
-        status === "";
-
-      const slotDate = getDate(slot);
-      const isFuture = slotDate ? new Date(slotDate) >= now : true;
-
-      const sameCompany =
-        !companyId || String(getCompanyId(slot) || "") === String(companyId);
-
-      return token && isAvailable && isFuture && sameCompany;
-    })
-    .sort((a: any, b: any) => {
-      const dateA = new Date(getDate(a) || 0).getTime();
-      const dateB = new Date(getDate(b) || 0).getTime();
-      return dateA - dateB;
-    });
-
-  const slotByJob = availableSlots.find((slot: any) =>
-    String(getJobId(slot) || "") === String(jobId || "")
-  );
-
-  if (slotByJob) return slotByJob;
-
-  const slotByBatch = availableSlots.find((slot: any) =>
-    String(getBatchId(slot) || "") === String(batchId || "")
-  );
-
-  if (slotByBatch) return slotByBatch;
-
-  return availableSlots[0] || null;
-}
-  
-
-function publicAgendaLink(slot: any, leadId?: string | null) {
-  const token = slot?.token || slot?.id;
-  if (!token) return "";
-
-  const agendaType = String(slot?.agenda_type || slot?.agendaType || "individual").toLowerCase();
-
-  if (agendaType === "shared") {
-    return `${APP_URL}/agenda-compartilhada/${token}`;
-  }
-
-  const base = `${APP_URL}/agenda/${token}`;
-  if (!leadId) return base;
-
-  return `${base}?leadId=${encodeURIComponent(leadId)}`;
-}
-
 async function buildVariableContext({
   supabase,
   companyId,
@@ -1128,215 +1041,435 @@ async function buildVariableContext({
   phone?: string;
   lastMessage?: string;
 }) {
-  const queueContext = await getActiveQueueContext({
-    supabase,
-    companyId,
-    userId,
-    leadId: lead?.id,
-    phone: lead?.phone || phone,
-  });
+  const [queueContextResult, companyResult] = await Promise.all([
+    getActiveQueueContext({
+      supabase,
+      companyId,
+      userId,
+      leadId: lead?.id,
+      phone: lead?.phone || phone,
+    }),
+    supabase
+      .from("companies")
+      .select("id, name, document, phone, whatsapp, owner_name")
+      .eq("id", companyId)
+      .maybeSingle(),
+  ]);
 
-  const jobId =
-  getJobIdFromLead(lead) ||
-  queueContext?.job_id ||
-  queueContext?.current_job_id ||
-  queueContext?.id_do_trabalho ||
-  queueContext?.ID_do_trabalho_atual ||
-  null;
-
-  const batchId =
-    lead?.batch_id ||
-    queueContext?.batch_id ||
-    null;
-
-  const job = await getJobContext(supabase, companyId, jobId);
-  const slot = await getNextAvailableSlot(
-    supabase,
-    companyId,
-    jobId,
-    lead?.id,
-    batchId
-  );
-
-  const jobTitle =
-    job?.title ||
-    job?.name ||
-    lead?.job_title ||
-    queueContext?.job_title ||
-    queueContext?.title ||
-    "";
-
-  const scheduleLink = publicAgendaLink(slot, lead?.id || null);
-
-  console.log("VARIAVEIS_TEMPLATE_AGENDAMENTO:", {
-    lead_id: lead?.id,
-    phone: lead?.phone || phone || "",
-    job_id: jobId,
-    batch_id: batchId,
-    slot_id: slot?.id || null,
-    slot_token: slot?.token || null,
-    scheduleLink,
-  });
+  const queueContext = queueContextResult || null;
+  const company = companyResult?.data || null;
+  const queueMetadata =
+    queueContext?.metadata && typeof queueContext.metadata === "object"
+      ? queueContext.metadata
+      : {};
 
   return {
-    phone: phone || lead?.phone || "",
+    phone: lead?.phone || phone || "",
+    email: lead?.email || "",
     lastMessage: lastMessage || lead?.last_message || "",
-    job,
+    companyName:
+      company?.name ||
+      process.env.COMPANY_NAME ||
+      "Empresa",
+    cnpj: company?.document || "",
+    companyPhone: company?.whatsapp || company?.phone || "",
+    representativeName:
+      queueMetadata?.representative_name ||
+      queueMetadata?.representante ||
+      company?.owner_name ||
+      "",
+    productName:
+      queueMetadata?.product_name ||
+      queueMetadata?.produto ||
+      lead?.product_name ||
+      "",
+    category:
+      queueMetadata?.category ||
+      queueMetadata?.categoria ||
+      "",
+    price:
+      queueMetadata?.price ||
+      queueMetadata?.valor ||
+      "",
+    discount:
+      queueMetadata?.discount ||
+      queueMetadata?.desconto ||
+      "",
+    paymentMethod:
+      queueMetadata?.payment_method ||
+      queueMetadata?.forma_pagamento ||
+      "",
+    deliveryDate:
+      queueMetadata?.delivery_date ||
+      queueMetadata?.data_entrega ||
+      "",
+    orderNumber:
+      queueMetadata?.order_number ||
+      queueMetadata?.pedido ||
+      "",
+    quoteNumber:
+      queueMetadata?.quote_number ||
+      queueMetadata?.cotacao ||
+      "",
+    averageTicket:
+      queueMetadata?.average_ticket ||
+      queueMetadata?.ticket_medio ||
+      "",
+    lastPurchase:
+      queueMetadata?.last_purchase ||
+      queueMetadata?.ultima_compra ||
+      "",
+    quoteLink:
+      queueMetadata?.quote_link ||
+      queueMetadata?.link_cotador ||
+      `${APP_URL}/crm/dashboard/cotador`,
+    campaignId: queueContext?.campaign_id || "",
+    batchId: queueContext?.batch_id || lead?.batch_id || "",
     queueContext,
-    slot,
-    jobTitle,
-    scheduleLink,
-    interviewDate: formatDateTime(slot?.começar_em || slot?.start_at),
-    companyName: process.env.RH_COMPANY_NAME || process.env.COMPANY_NAME || "PMG Atacadista",
-    city: job?.city || job?.location_city || "",
-    state: job?.state || job?.location_state || "",
-    neighborhood: job?.neighborhood || "",
-    location: getJobLocation(job),
-    contractType: job?.contract_type || job?.contractType || "",
-    salary: getJobSalary(job),
-    workSchedule: getJobWorkSchedule(job),
-    benefits: getJobBenefits(job),
-    description: job?.description || job?.details || job?.requirements?.text || "",
-    recruiterName: job?.recruiter_name || job?.recruiterName || "",
+    company,
   };
 }
 
+function normalizeVariableKey(value: any) {
+  return normalizeText(value).replace(/\s+/g, "_");
+}
 
 function applyVariables(text: string, lead: any, extra: any = {}) {
-  const phone = extra?.phone || lead?.phone || "";
-  const productName =
-    extra?.productName ||
-    extra?.product ||
-    extra?.jobTitle ||
-    extra?.title ||
-    lead?.product_name ||
-    lead?.job_title ||
-    "";
+  const phone = normalizePhone(
+    extra?.phone ||
+      lead?.phone ||
+      lead?.mobile ||
+      lead?.telefone ||
+      ""
+  );
+
+  const customerName =
+    clean(lead?.name || lead?.nome || extra?.name || extra?.nome) ||
+    "Cliente";
+
+  const companyName =
+    clean(extra?.companyName || extra?.company || extra?.empresa) ||
+    "Empresa";
+
   const quoteLink =
-    extra?.quoteLink ||
-    extra?.linkCotador ||
-    extra?.scheduleLink ||
-    `${APP_URL}/crm/dashboard/cotador`;
-  const companyName = extra?.companyName || extra?.company || "PMG Atacadista";
-  const customerName = lead?.name || extra?.name || "Cliente";
-console.log("DEBUG_VARIAVEIS", {
-  leadName: lead?.name,
-  leadPhone: lead?.phone,
-  leadProduct: lead?.product_name,
-  leadJobTitle: lead?.job_title,
+    clean(
+      extra?.quoteLink ||
+        extra?.linkCotador ||
+        extra?.link_cotador ||
+        extra?.link
+    ) || `${APP_URL}/crm/dashboard/cotador`;
 
-  extraName: extra?.name,
-  extraProductName: extra?.productName,
-  extraProduct: extra?.product,
-  extraJobTitle: extra?.jobTitle,
-  extraTitle: extra?.title,
+  const values: Record<string, any> = {
+    cliente: customerName,
+    nome: customerName,
+    nome_cliente: customerName,
+    telefone: phone,
+    celular: phone,
+    whatsapp: phone,
+    email: lead?.email || extra?.email || "",
+    empresa: companyName,
+    nome_empresa: companyName,
+    cnpj: extra?.cnpj || lead?.cnpj || lead?.document || "",
+    cidade: extra?.city || extra?.cidade || lead?.city || lead?.cidade || "",
+    estado: extra?.state || extra?.estado || lead?.state || lead?.estado || "",
+    bairro:
+      extra?.neighborhood ||
+      extra?.bairro ||
+      lead?.neighborhood ||
+      lead?.bairro ||
+      "",
+    representante:
+      extra?.representativeName ||
+      extra?.representante ||
+      lead?.representative_name ||
+      "",
+    vendedor:
+      extra?.representativeName ||
+      extra?.representante ||
+      lead?.representative_name ||
+      "",
+    produto:
+      extra?.productName ||
+      extra?.product ||
+      extra?.produto ||
+      lead?.product_name ||
+      "",
+    categoria: extra?.category || extra?.categoria || "",
+    valor: extra?.price || extra?.valor || "",
+    desconto: extra?.discount || extra?.desconto || "",
+    forma_pagamento:
+      extra?.paymentMethod ||
+      extra?.formaPagamento ||
+      extra?.forma_pagamento ||
+      "",
+    data_entrega:
+      extra?.deliveryDate ||
+      extra?.dataEntrega ||
+      extra?.data_entrega ||
+      "",
+    pedido: extra?.orderNumber || extra?.pedido || "",
+    cotacao: extra?.quoteNumber || extra?.cotacao || "",
+    ticket_medio: extra?.averageTicket || extra?.ticketMedio || "",
+    ultima_compra: extra?.lastPurchase || extra?.ultimaCompra || "",
+    ultima_mensagem:
+      extra?.lastMessage ||
+      extra?.ultimaMensagem ||
+      lead?.last_message ||
+      "",
+    link_whatsapp: phone ? `https://wa.me/${phone}` : "",
+    link_cotador: quoteLink,
+    link: quoteLink,
+    campanha: extra?.campaignId || "",
+    lote: extra?.batchId || "",
+  };
 
-  customerName,
-  productName,
-});
-
-  return String(text || "")
-    .replaceAll("{cliente}", customerName)
-    .replaceAll("{nome}", customerName)
-    .replaceAll("{telefone}", phone)
-    .replaceAll("{empresa}", companyName)
-    .replaceAll("{cnpj}", extra?.cnpj || lead?.cnpj || lead?.document || "")
-    .replaceAll("{cidade}", extra?.city || lead?.city || "")
-    .replaceAll("{estado}", extra?.state || lead?.state || "")
-    .replaceAll("{representante}", extra?.representativeName || extra?.representante || "")
-    .replaceAll("{produto}", productName)
-    .replaceAll("{categoria}", extra?.category || extra?.categoria || "")
-    .replaceAll("{valor}", extra?.price || extra?.valor || "")
-    .replaceAll("{desconto}", extra?.discount || extra?.desconto || "")
-    .replaceAll("{forma_pagamento}", extra?.paymentMethod || extra?.formaPagamento || "")
-    .replaceAll("{data_entrega}", extra?.deliveryDate || extra?.dataEntrega || "")
-    .replaceAll("{pedido}", extra?.orderNumber || extra?.pedido || "")
-    .replaceAll("{cotacao}", extra?.quoteNumber || extra?.cotacao || "")
-    .replaceAll("{ticket_medio}", extra?.averageTicket || extra?.ticketMedio || "")
-    .replaceAll("{ultima_compra}", extra?.lastPurchase || extra?.ultimaCompra || "")
-    .replaceAll("{ultima_mensagem}", extra?.lastMessage || lead?.last_message || "")
-    .replaceAll("{link_whatsapp}", phone ? `https://wa.me/${normalizePhone(phone)}` : "")
-    .replaceAll("{link_cotador}", quoteLink)
-    .replaceAll("{link}", quoteLink)
-
-}
-const templateVariationMemory = new Map<string, number>();
-
-function getTemplateVariation(template: any): string {
-  const messages: string[] = [];
-
-  if (template?.base_message?.trim()) {
-    messages.push(template.base_message.trim());
-  }
-
-  if (
-    template?.message?.trim() &&
-    !messages.includes(template.message.trim())
-  ) {
-    messages.push(template.message.trim());
-  }
-
-  if (Array.isArray(template?.variations)) {
-    for (const variation of template.variations) {
-      if (typeof variation === "string") {
-        const text = variation.trim();
-
-        if (text && !messages.includes(text)) {
-          messages.push(text);
-        }
+  /*
+   * Também permite usar qualquer campo simples existente no lead ou no
+   * contexto extra, sem precisar alterar esta função a cada nova variável.
+   */
+  for (const source of [lead || {}, extra || {}]) {
+    for (const [key, value] of Object.entries(source)) {
+      if (
+        value === null ||
+        value === undefined ||
+        typeof value === "object"
+      ) {
+        continue;
       }
 
-      if (
-        typeof variation === "object" &&
-        variation?.message
-      ) {
-        const text = String(variation.message).trim();
-
-        if (text && !messages.includes(text)) {
-          messages.push(text);
-        }
+      const normalizedKey = normalizeVariableKey(key);
+      if (!(normalizedKey in values)) {
+        values[normalizedKey] = value;
       }
     }
   }
 
-  if (!messages.length) {
-    return "";
+  return String(text || "").replace(
+    /\{\{\s*([^{}]+?)\s*\}\}|\{\s*([^{}]+?)\s*\}/g,
+    (full, doubleKey, singleKey) => {
+      const key = normalizeVariableKey(doubleKey || singleKey || "");
+      return key in values ? String(values[key] ?? "") : full;
+    }
+  );
+}
+
+function variationText(variation: any) {
+  if (typeof variation === "string") return clean(variation);
+
+  return clean(
+    variation?.message ||
+      variation?.content ||
+      variation?.base_message ||
+      variation?.final_message ||
+      ""
+  );
+}
+
+function sortVariations(items: any[]) {
+  return [...items].sort((a, b) => {
+    const sortA = Number(a?.sort_order || 0);
+    const sortB = Number(b?.sort_order || 0);
+    const variationA = Number(a?.variation || 0);
+    const variationB = Number(b?.variation || 0);
+    const orderA = sortA > 0 ? sortA : variationA;
+    const orderB = sortB > 0 ? sortB : variationB;
+
+    if (orderA !== orderB) return orderA - orderB;
+
+    return (
+      new Date(a?.created_at || 0).getTime() -
+      new Date(b?.created_at || 0).getTime()
+    );
+  });
+}
+
+async function hydrateTemplatesWithVariations(
+  supabase: any,
+  templates: any[] | null | undefined
+) {
+  const rows = (templates || []).filter((item) => item?.id);
+  if (!rows.length) return [];
+
+  const missing = rows.filter(
+    (item) => !Array.isArray(item?.variations)
+  );
+
+  if (!missing.length) {
+    return rows.map((item) => ({
+      ...item,
+      variations: sortVariations(
+        (item.variations || []).filter((variation: any) => variation?.active !== false)
+      ),
+    }));
   }
 
-  const key = String(
-    template.id ??
-      template.template_id ??
-      template.name ??
-      template.trigger_keywords ??
-      "default"
+  const ids = missing.map((item) => item.id);
+
+  const { data, error } = await supabase
+    .from("message_variations")
+    .select("*")
+    .in("template_id", ids)
+    .eq("active", true)
+    .order("sort_order", { ascending: true })
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    console.error("[TEMPLATES] Erro ao carregar variações:", error);
+  }
+
+  const byTemplate = new Map<string, any[]>();
+
+  for (const variation of data || []) {
+    const key = String(variation.template_id || "");
+    const list = byTemplate.get(key) || [];
+    list.push(variation);
+    byTemplate.set(key, list);
+  }
+
+  return rows.map((item) => ({
+    ...item,
+    variations: sortVariations(
+      Array.isArray(item.variations)
+        ? item.variations.filter((variation: any) => variation?.active !== false)
+        : byTemplate.get(String(item.id)) || []
+    ),
+  }));
+}
+
+function buildTemplateMessagePool(template: any) {
+  const pool: Array<{
+    text: string;
+    variationId: string | null;
+    source: "base" | "variation";
+  }> = [];
+
+  const add = (
+    text: any,
+    source: "base" | "variation",
+    variationId: string | null = null
+  ) => {
+    const normalized = clean(text);
+    if (!normalized) return;
+
+    if (pool.some((item) => item.text === normalized)) return;
+
+    pool.push({
+      text: normalized,
+      variationId,
+      source,
+    });
+  };
+
+  add(
+    template?.base_message ||
+      template?.message ||
+      template?.content ||
+      template?.final_message,
+    "base"
   );
 
-  const currentIndex =
-    templateVariationMemory.get(key) ?? 0;
+  if (template?.message && template?.message !== template?.base_message) {
+    add(template.message, "base");
+  }
 
-  const nextMessage =
-    messages[currentIndex % messages.length];
+  for (const variation of sortVariations(template?.variations || [])) {
+    add(
+      variationText(variation),
+      "variation",
+      variation?.id ? String(variation.id) : null
+    );
+  }
 
-  templateVariationMemory.set(
-    key,
-    (currentIndex + 1) % messages.length
-  );
+  return pool;
+}
 
-  return nextMessage;
+const templateVariationMemory = new Map<string, number>();
+
+async function getTemplateVariation({
+  supabase,
+  template,
+  companyId,
+  userId,
+}: {
+  supabase: any;
+  template: any;
+  companyId: string;
+  userId: string;
+}) {
+  const pool = buildTemplateMessagePool(template);
+
+  if (!pool.length) {
+    return {
+      text: "",
+      index: -1,
+      total: 0,
+      variationId: null,
+      source: "base" as const,
+    };
+  }
+
+  /*
+   * O cursor é calculado pelo histórico persistido das mensagens enviadas
+   * com este template. Assim o rodízio não volta para zero a cada reinício
+   * do servidor. O Map é apenas fallback caso a contagem falhe.
+   */
+  let currentIndex: number | null = null;
+
+  try {
+    let query = supabase
+      .from("messages")
+      .select("id", { count: "exact", head: true })
+      .eq("company_id", companyId)
+      .eq("direction", "sent")
+      .contains("payload", { template_id: template.id });
+
+    if (userId) {
+      query = query.eq("owner_user_id", userId);
+    }
+
+    const { count, error } = await query;
+
+    if (error) {
+      console.error("[TEMPLATES] Erro ao consultar cursor persistente:", error);
+    } else {
+      currentIndex = Number(count || 0);
+    }
+  } catch (error) {
+    console.error("[TEMPLATES] Falha ao consultar cursor persistente:", error);
+  }
+
+  const memoryKey = `${companyId}:${userId}:${template.id}`;
+
+  if (currentIndex === null) {
+    currentIndex = templateVariationMemory.get(memoryKey) || 0;
+  }
+
+  const index = currentIndex % pool.length;
+  const selected = pool[index];
+
+  templateVariationMemory.set(memoryKey, currentIndex + 1);
+
+  return {
+    text: selected.text,
+    index,
+    total: pool.length,
+    variationId: selected.variationId,
+    source: selected.source,
+  };
 }
 
 function extractKeywords(template: any) {
   const raw =
-    template.trigger_keywords ||
-    template.keywords ||
-    template.trigger_text ||
-    template.keyword ||
-    template.trigger ||
+    template?.trigger_keywords ||
+    template?.keywords ||
+    template?.trigger_text ||
+    template?.keyword ||
+    template?.trigger ||
     "";
 
   const values: string[] = [];
 
-  if (Array.isArray(template.trigger_words)) {
+  if (Array.isArray(template?.trigger_words)) {
     values.push(...template.trigger_words);
   }
 
@@ -1351,201 +1484,226 @@ function extractKeywords(template: any) {
     );
   }
 
-  return values
-    .map((item) => String(item || "").trim())
-    .filter(Boolean);
+  return Array.from(
+    new Set(
+      values
+        .map((item) => clean(item))
+        .filter(Boolean)
+    )
+  );
 }
 
-/*
- * Somente templates do tipo "ai" pertencem ao motor de respostas automáticas.
- *
- * Templates "campaign" são exclusivos de disparo e nunca devem ser utilizados
- * pelo webhook de mensagens recebidas, mesmo que tenham intent, palavras-chave,
- * mídia ou estejam ativos.
- */
 function isAutomaticReplyTemplate(template: any) {
-  return String(template?.type || "")
-    .trim()
-    .toLowerCase() === "ai";
+  return clean(template?.type).toLowerCase() === "ai";
 }
 
-/*
- * Faz correspondência por frase/palavra completa.
- *
- * Evita, por exemplo, que a palavra-chave "oi" seja encontrada dentro de
- * "foi", "coisa" ou outra palavra maior.
- */
-function keywordMatchesMessage(message: string, keyword: string) {
+function templateMatchesMessage(
+  message: string,
+  keyword: string,
+  matchMode?: string | null
+) {
   const normalizedMessage = normalizeText(message);
   const normalizedKeyword = normalizeText(keyword);
 
-  if (!normalizedMessage || !normalizedKeyword) {
-    return false;
+  if (!normalizedMessage || !normalizedKeyword) return false;
+
+  const mode = clean(matchMode || "contains").toLowerCase();
+
+  if (["exact", "equals", "igual"].includes(mode)) {
+    return normalizedMessage === normalizedKeyword;
   }
 
+  if (["starts_with", "startswith", "comeca", "começa"].includes(mode)) {
+    return normalizedMessage.startsWith(normalizedKeyword);
+  }
+
+  if (["ends_with", "endswith", "termina"].includes(mode)) {
+    return normalizedMessage.endsWith(normalizedKeyword);
+  }
+
+  /*
+   * O contains usa limites de palavra/frase para que "oi" não seja
+   * encontrado dentro de "foi" ou "coisa".
+   */
   return ` ${normalizedMessage} `.includes(` ${normalizedKeyword} `);
 }
 
-function intentAliases(intent: string) {
-  const normalized = String(intent || "").toUpperCase();
+function flowMode(template: any) {
+  const mode = clean(template?.flow_mode || "global").toLowerCase();
 
-  /*
-   * REGRA DE SEGURANÇA:
-   * - OPENING, PROSPECCAO, REATIVACAO e demais intenções de campanha
-   *   nunca podem ser usadas como resposta genérica.
-   * - Uma mensagem sem intenção específica só pode usar:
-   *   1) um template automático RESPONDEU; ou
-   *   2) um template automático DEFAULT explicitamente cadastrado.
-   */
-  const aliases: Record<string, string[]> = {
-    RESPONDEU: ["RESPONDEU", "DEFAULT"],
-    CLIENTE_QUER_COMPRAR: ["CLIENTE_QUER_COMPRAR", "PEDIDO", "NEGOCIACAO", "COTACAO", "PROMOCAO"],
-    COTACAO: ["COTACAO", "ORCAMENTO", "ORÇAMENTO", "PEDIDO", "PROMOCAO"],
-    NEGOCIACAO: ["NEGOCIACAO", "PAGAMENTO", "DESCONTO", "COTACAO"],
-    ENTREGA: ["ENTREGA", "LOGISTICA", "PRAZO"],
-    TRANSFERIR_VENDEDOR: ["TRANSFERIR_VENDEDOR", "ATENDENTE", "VENDEDOR", "REPRESENTANTE"],
-    SEM_INTERESSE: ["SEM_INTERESSE", "DESCADASTRO"],
-    DEFAULT: ["DEFAULT"],
-  };
+  if (["sequence", "sequencia", "sequência"].includes(mode)) {
+    return "sequence";
+  }
 
-  const legacy: Record<string, string[]> = {
-    QUER_ENTREVISTA: aliases.CLIENTE_QUER_COMPRAR,
-    AGENDOU_ENTREVISTA: aliases.COTACAO,
-    RH_ABERTURA: ["PROSPECCAO", "OPENING"],
-    RH_ENTREVISTA: aliases.COTACAO,
-    RH_RELEMBRETE: ["POS_VENDA", "COBRANCA_LEMBRETE"],
-    RH_REAGENDAMENTO: ["REATIVACAO"],
-    RH_BANCO_TALENTOS: ["REATIVACAO"],
-  };
-
-  return [normalized, ...(aliases[normalized] || []), ...(legacy[normalized] || [])];
+  return "single";
 }
-async function findSalesTriggeredTemplate({
-  supabase,
-  message,
-  lead,
-  companyId,
-  userId,
-}: {
-  supabase: any;
-  message: string;
-  lead: any;
-  companyId: string;
-  userId: string;
-}): Promise<{
-  reply: string | null;
-  mediaUrl: string | null;
-  mediaType: string;
-  currentTemplate: any;
-  kanbanStatus: string | null;
-  notifyEnabled: boolean;
-  notifyNumber: string | null;
-  notifyMessage: string | null;
-  source: string;
-} | null> {
 
-  const text = normalizeText(message);
+function getTemplateFlowGroup(template: any) {
+  const metadata =
+    template?.metadata && typeof template.metadata === "object"
+      ? template.metadata
+      : {};
 
-  const extra = await buildVariableContext({
-    supabase,
-    companyId,
-    userId,
-    lead,
-    phone: lead?.phone,
-    lastMessage: message,
-  });
+  const explicit =
+    clean(
+      template?.flow_group ||
+        metadata?.flow_group ||
+        metadata?.flowGroup ||
+        ""
+    );
 
-  const { data: templates, error } = await supabase
-    .from("message_templates")
-    .select("*")
-    .eq("company_id", companyId)
-    .eq("owner_user_id", userId)
-    .eq("type", "ai")
-    .eq("active", true)
-    .order("created_at", { ascending: false });
+  if (explicit) return explicit;
 
-  if (error) {
-    console.error("ERRO TEMPLATES:", error);
+  const scope = clean(template?.template_scope || "");
+  if (scope && scope !== "global") return scope;
+
+  return "default";
+}
+
+function getLeadFlowGroup(lead: any) {
+  const direct = clean(lead?.current_flow_group || "");
+  if (direct) return direct;
+
+  const stage = clean(lead?.conversation_stage || "");
+  if (stage.startsWith("flow:")) {
+    return stage.slice(5);
+  }
+
+  return "";
+}
+
+function getLeadFlowStep(lead: any) {
+  const step = Number(lead?.current_flow_step || 0);
+
+  if (!Number.isFinite(step) || step <= 0) {
     return null;
   }
 
-  for (const template of templates || []) {
-
-    if (!isAutomaticReplyTemplate(template)) {
-      continue;
-    }
-
-    const keywords = extractKeywords(template);
-
-    if (!keywords.length) {
-      continue;
-    }
-
-    const hit = keywords.some((keyword: string) =>
-      keywordMatchesMessage(text, keyword)
-    );
-
-    if (!hit) {
-      continue;
-    }
-
-    const rawMessage = getTemplateVariation(template);
-
-    return {
-      reply: rawMessage
-        ? applyVariables(rawMessage, lead, extra)
-        : null,
-      mediaUrl: template.media_url || null,
-      mediaType: template.media_type || "text",
-      currentTemplate: template,
-      kanbanStatus: getTemplateKanbanStatus(template),
-      notifyEnabled: Boolean(template.notify_enabled),
-      notifyNumber: template.notify_number || null,
-      notifyMessage: template.notify_message || null,
-      source: "triggered_template",
-    };
-  }
-
-  return null;
+  /*
+   * Versões antigas criavam todo lead com current_flow_step = 1, mesmo sem
+   * um fluxo iniciado. Só consideramos o fluxo ativo quando existe grupo
+   * persistido em current_flow_group/conversation_stage.
+   */
+  return getLeadFlowGroup(lead) ? step : null;
 }
 
-async function getIntentTemplate({
+async function persistLeadFlowState({
   supabase,
-  intent,
   lead,
-  companyId,
-  userId,
-  message,
+  group,
+  step,
 }: {
   supabase: any;
-  intent: string;
   lead: any;
-  companyId: string;
-  userId: string;
-  message: string;
-}): Promise<{
+  group: string | null;
+  step: number | null;
+}) {
+  const basePatch: any = {
+    current_flow_step: step == null ? null : String(step),
+    conversation_stage: group && step ? `flow:${group}` : "new",
+    updated_at: new Date().toISOString(),
+  };
+
+  /*
+   * Alguns bancos já possuem current_flow_group e outros guardam o grupo
+   * em conversation_stage. Tentamos a coluna dedicada e fazemos fallback
+   * sem quebrar instalações mais antigas.
+   */
+  const withGroup = {
+    ...basePatch,
+    current_flow_group: group || null,
+  };
+
+  let result = await supabase
+    .from("leads")
+    .update(withGroup)
+    .eq("id", lead.id)
+    .select("*")
+    .maybeSingle();
+
+  if (result.error) {
+    const message = String(result.error?.message || "");
+
+    if (
+      message.includes("current_flow_group") ||
+      message.includes("schema cache")
+    ) {
+      result = await supabase
+        .from("leads")
+        .update(basePatch)
+        .eq("id", lead.id)
+        .select("*")
+        .maybeSingle();
+    }
+  }
+
+  if (result.error) {
+    console.error("[FLOW] Erro ao persistir estado:", {
+      leadId: lead?.id,
+      group,
+      step,
+      error: result.error,
+    });
+    return lead;
+  }
+
+  return result.data || {
+    ...lead,
+    ...basePatch,
+    current_flow_group: group || null,
+  };
+}
+
+type AutomaticReplyResult = {
   reply: string | null;
   mediaUrl: string | null;
   mediaType: string;
   currentTemplate: any;
   kanbanStatus: string | null;
   notifyEnabled: boolean;
-  notifyNumber: string | null;
+  notifyNumbers: string[];
   notifyMessage: string | null;
   source: string;
-} | null> {
+  selection: {
+    index: number;
+    total: number;
+    variationId: string | null;
+    source: "base" | "variation";
+  } | null;
+};
 
-  const intents = intentAliases(intent);
+function getNotificationNumbers(template: any) {
+  const candidates = [
+    template?.notify_number,
+    template?.notify_phone,
+    ...(String(template?.notify_numbers || "")
+      .split(/\n|,|;/)
+      .map((item) => item.trim())
+      .filter(Boolean)),
+  ];
 
-  const extra = await buildVariableContext({
-    supabase,
-    companyId,
-    userId,
-    lead,
-    phone: lead?.phone,
-    lastMessage: message,
-  });
+  return Array.from(
+    new Set(
+      candidates
+        .map((item) => normalizePhone(item))
+        .filter(Boolean)
+    )
+  );
+}
 
+async function findTriggeredTemplate({
+  supabase,
+  message,
+  lead,
+  companyId,
+  userId,
+}: {
+  supabase: any;
+  message: string;
+  lead: any;
+  companyId: string;
+  userId: string;
+}): Promise<AutomaticReplyResult | null> {
   const { data, error } = await supabase
     .from("message_templates")
     .select("*")
@@ -1553,36 +1711,173 @@ async function getIntentTemplate({
     .eq("owner_user_id", userId)
     .eq("type", "ai")
     .eq("active", true)
-    .in("intent", intents)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .order("priority", { ascending: false })
+    .order("created_at", { ascending: false });
 
   if (error) {
-    console.error("ERRO INTENT TEMPLATE:", error);
+    console.error("[TEMPLATES] Erro ao buscar respostas automáticas:", error);
     return null;
   }
 
-  if (!data || !isAutomaticReplyTemplate(data)) {
-    return null;
+  const templates = await hydrateTemplatesWithVariations(
+    supabase,
+    data || []
+  );
+
+  for (const template of templates) {
+    if (!isAutomaticReplyTemplate(template)) continue;
+
+    /*
+     * Uma etapa posterior de fluxo não pode iniciar sozinha. Ela só é usada
+     * quando o lead já está naquele fluxo.
+     */
+    if (
+      flowMode(template) === "sequence" &&
+      Number(template?.flow_step || 1) > 1
+    ) {
+      continue;
+    }
+
+    const keywords = extractKeywords(template);
+    if (!keywords.length) continue;
+
+    const matchMode =
+      template?.match_type ||
+      template?.match_mode ||
+      "contains";
+
+    const hit = keywords.some((keyword) =>
+      templateMatchesMessage(message, keyword, matchMode)
+    );
+
+    if (!hit) continue;
+
+    const [selection, extra] = await Promise.all([
+      getTemplateVariation({
+        supabase,
+        template,
+        companyId,
+        userId,
+      }),
+      buildVariableContext({
+        supabase,
+        companyId,
+        userId,
+        lead,
+        phone: lead?.phone,
+        lastMessage: message,
+      }),
+    ]);
+
+    return {
+      reply: selection.text
+        ? applyVariables(selection.text, lead, extra)
+        : null,
+      mediaUrl: template.media_url || null,
+      mediaType: template.media_type || "text",
+      currentTemplate: template,
+      kanbanStatus: getTemplateKanbanStatus(template),
+      notifyEnabled: Boolean(template.notify_enabled),
+      notifyNumbers: getNotificationNumbers(template),
+      notifyMessage: template.notify_message || null,
+      source:
+        flowMode(template) === "sequence"
+          ? "flow_started"
+          : "custom_trigger",
+      selection: {
+        index: selection.index,
+        total: selection.total,
+        variationId: selection.variationId,
+        source: selection.source,
+      },
+    };
   }
 
-  const rawMessage = getTemplateVariation(data);
+  return null;
+}
+
+async function queryFlowTemplate({
+  supabase,
+  companyId,
+  userId,
+  step,
+  group,
+}: {
+  supabase: any;
+  companyId: string;
+  userId: string;
+  step: number;
+  group?: string | null;
+}) {
+  /*
+   * Primeiro tenta a coluna flow_group, caso ela exista na instalação.
+   * Depois usa metadata.flow_group, que funciona sem migração adicional.
+   */
+  if (group && group !== "default") {
+    const grouped = await supabase
+      .from("message_templates")
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("owner_user_id", userId)
+      .eq("type", "ai")
+      .eq("active", true)
+      .eq("flow_mode", "sequence")
+      .eq("flow_step", step)
+      .eq("flow_group", group)
+      .order("priority", { ascending: false })
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (!grouped.error && grouped.data) {
+      return grouped;
+    }
+
+    const groupedError = String(grouped.error?.message || "");
+    if (
+      grouped.error &&
+      !groupedError.includes("flow_group") &&
+      !groupedError.includes("schema cache")
+    ) {
+      console.error("[FLOW] Erro ao buscar etapa por grupo:", grouped.error);
+    }
+  }
+
+  const fallback = await supabase
+    .from("message_templates")
+    .select("*")
+    .eq("company_id", companyId)
+    .eq("owner_user_id", userId)
+    .eq("type", "ai")
+    .eq("active", true)
+    .eq("flow_mode", "sequence")
+    .eq("flow_step", step)
+    .order("priority", { ascending: false })
+    .order("created_at", { ascending: true })
+    .limit(100);
+
+  if (fallback.error) {
+    return {
+      data: null,
+      error: fallback.error,
+    };
+  }
+
+  const items = fallback.data || [];
+
+  const selected =
+    group && group !== "default"
+      ? items.find(
+          (item: any) => getTemplateFlowGroup(item) === group
+        ) || null
+      : items[0] || null;
 
   return {
-    reply: rawMessage
-      ? applyVariables(rawMessage, lead, extra)
-      : null,
-    mediaUrl: data.media_url || null,
-    mediaType: data.media_type || "text",
-    currentTemplate: data,
-    kanbanStatus: getTemplateKanbanStatus(data),
-    notifyEnabled: Boolean(data.notify_enabled),
-    notifyNumber: data.notify_number || null,
-    notifyMessage: data.notify_message || null,
-    source: "intent_template",
+    data: selected,
+    error: null,
   };
 }
+
 async function getCurrentFlowTemplate({
   supabase,
   lead,
@@ -1594,26 +1889,52 @@ async function getCurrentFlowTemplate({
   companyId: string;
   userId: string;
 }) {
-  if (!lead?.current_flow_group || lead?.current_flow_step == null) {
-    return null;
-  }
+  const step = getLeadFlowStep(lead);
+  if (!step) return null;
 
-  const { data, error } = await supabase
-    .from("message_templates")
-    .select("*")
-    .eq("company_id", companyId)
-    .eq("owner_user_id", userId)
-    .eq("flow_group", lead.current_flow_group)
-    .eq("flow_step", Number(lead.current_flow_step))
-    .eq("active", true)
-    .maybeSingle();
+  const group = getLeadFlowGroup(lead) || "default";
+
+  const { data, error } = await queryFlowTemplate({
+    supabase,
+    companyId,
+    userId,
+    step,
+    group,
+  });
 
   if (error) {
-    console.error("FLOW ERROR:", error);
+    console.error("[FLOW] Erro ao buscar etapa atual:", {
+      leadId: lead?.id,
+      group,
+      step,
+      error,
+    });
     return null;
   }
 
-  return data || null;
+  if (!data) {
+    console.warn("[FLOW] Etapa não encontrada; fluxo será encerrado:", {
+      leadId: lead?.id,
+      group,
+      step,
+    });
+
+    await persistLeadFlowState({
+      supabase,
+      lead,
+      group: null,
+      step: null,
+    });
+
+    return null;
+  }
+
+  const [hydrated] = await hydrateTemplatesWithVariations(
+    supabase,
+    [data]
+  );
+
+  return hydrated || null;
 }
 
 async function advanceFlowStep({
@@ -1625,72 +1946,49 @@ async function advanceFlowStep({
   lead: any;
   currentTemplate: any;
 }) {
-  if (!currentTemplate?.flow_group) {
-    await supabase
-      .from("leads")
-      .update({
-        current_flow_group: null,
-        current_flow_step: null,
-      })
-      .eq("id", lead.id);
-
-    return;
+  if (!currentTemplate || flowMode(currentTemplate) !== "sequence") {
+    return lead;
   }
 
-  const nextStep = Number(currentTemplate?.next_step ?? 0);
+  const nextStep = Number(currentTemplate?.next_step || 0);
+  const group = getTemplateFlowGroup(currentTemplate);
 
-  // Não existe próximo passo: encerra o fluxo
   if (!Number.isFinite(nextStep) || nextStep <= 0) {
-    await supabase
-      .from("leads")
-      .update({
-        current_flow_group: null,
-        current_flow_step: null,
-      })
-      .eq("id", lead.id);
-
-    return;
+    return persistLeadFlowState({
+      supabase,
+      lead,
+      group: null,
+      step: null,
+    });
   }
 
-  await supabase
-    .from("leads")
-    .update({
-      current_flow_group: currentTemplate.flow_group,
-      current_flow_step: nextStep,
-    })
-    .eq("id", lead.id);
+  return persistLeadFlowState({
+    supabase,
+    lead,
+    group,
+    step: nextStep,
+  });
 }
 
-async function getFinalSalesReply({
+async function getFinalAutomaticReply({
   supabase,
-  intent,
   message,
   lead,
   companyId,
   userId,
 }: {
   supabase: any;
-  intent: string;
   message: string;
   lead: any;
   companyId: string;
   userId: string;
-}): Promise<{
-  reply: string | null;
-  mediaUrl: string |null;
-  mediaType: string;
-  currentTemplate: any;
-  kanbanStatus: string | null;
-  notifyEnabled: boolean;
-  notifyNumber: string | null;
-  notifyMessage: string | null;
-  source: string;
-}> {
-
-  // =====================================================
-  // 1) CONTINUA FLUXO ATIVO (PRIORIDADE MÁXIMA)
-  // =====================================================
-
+}): Promise<AutomaticReplyResult> {
+  /*
+   * REGRA PRINCIPAL DA V2:
+   * 1) se existe fluxo ativo, continua a sequência;
+   * 2) se não existe fluxo, procura uma resposta personalizada por gatilho;
+   * 3) se nada casar, não responde automaticamente.
+   */
   const currentFlow = await getCurrentFlowTemplate({
     supabase,
     lead,
@@ -1699,132 +1997,53 @@ async function getFinalSalesReply({
   });
 
   if (currentFlow) {
-
-    const extra = await buildVariableContext({
-      supabase,
-      companyId,
-      userId,
-      lead,
-      phone: lead?.phone,
-      lastMessage: message,
-    });
-
-    const rawMessage = getTemplateVariation(currentFlow);
+    const [selection, extra] = await Promise.all([
+      getTemplateVariation({
+        supabase,
+        template: currentFlow,
+        companyId,
+        userId,
+      }),
+      buildVariableContext({
+        supabase,
+        companyId,
+        userId,
+        lead,
+        phone: lead?.phone,
+        lastMessage: message,
+      }),
+    ]);
 
     return {
-      reply: rawMessage
-        ? applyVariables(rawMessage, lead, extra)
+      reply: selection.text
+        ? applyVariables(selection.text, lead, extra)
         : null,
-
       mediaUrl: currentFlow.media_url || null,
-
-      mediaType:
-        currentFlow.media_type || "text",
-
+      mediaType: currentFlow.media_type || "text",
       currentTemplate: currentFlow,
-
-      kanbanStatus:
-        getTemplateKanbanStatus(currentFlow),
-
-      notifyEnabled:
-        Boolean(currentFlow.notify_enabled),
-
-      notifyNumber:
-        currentFlow.notify_number || null,
-
-      notifyMessage:
-        currentFlow.notify_message || null,
-
-      source: "flow",
+      kanbanStatus: getTemplateKanbanStatus(currentFlow),
+      notifyEnabled: Boolean(currentFlow.notify_enabled),
+      notifyNumbers: getNotificationNumbers(currentFlow),
+      notifyMessage: currentFlow.notify_message || null,
+      source: "flow_continued",
+      selection: {
+        index: selection.index,
+        total: selection.total,
+        variationId: selection.variationId,
+        source: selection.source,
+      },
     };
   }
 
-  // =====================================================
-  // 2) TEMPLATE POR PALAVRA-CHAVE
-  // =====================================================
+  const triggered = await findTriggeredTemplate({
+    supabase,
+    message,
+    lead,
+    companyId,
+    userId,
+  });
 
-  const triggered =
-    await findSalesTriggeredTemplate({
-      supabase,
-      message,
-      lead,
-      companyId,
-      userId,
-    });
-
-  if (triggered) {
-
-    /*
-      IMPORTANTE
-
-      NÃO avança o fluxo aqui.
-
-      Quem avança é somente:
-
-      replyAndSave()
-
-      Isso evita pular etapas.
-    */
-
-    if (
-      !triggered.kanbanStatus &&
-      shouldForceSalesStatus(
-        message,
-        intent,
-        triggered.reply
-      )
-    ) {
-      triggered.kanbanStatus =
-        "em_negociacao";
-    }
-
-    return triggered;
-  }
-
-  // =====================================================
-  // 3) TEMPLATE POR INTENT
-  // =====================================================
-
-  const intentTemplate =
-    await getIntentTemplate({
-      supabase,
-      intent,
-      message,
-      lead,
-      companyId,
-      userId,
-    });
-
-  if (intentTemplate) {
-
-    /*
-      IMPORTANTE
-
-      Também NÃO grava flow aqui.
-
-      replyAndSave()
-      fará isso depois que
-      a mensagem for enviada.
-    */
-
-    if (
-      !intentTemplate.kanbanStatus &&
-      shouldForceSalesStatus(
-        message,
-        intent,
-        intentTemplate.reply
-      )
-    ) {
-      intentTemplate.kanbanStatus =
-        "em_negociacao";
-    }
-
-    return intentTemplate;
-  }
-
-  // =====================================================
-  // 4) SEM TEMPLATE
-  // =====================================================
+  if (triggered) return triggered;
 
   return {
     reply: null,
@@ -1833,12 +2052,16 @@ async function getFinalSalesReply({
     currentTemplate: null,
     kanbanStatus: null,
     notifyEnabled: false,
-    notifyNumber: null,
+    notifyNumbers: [],
     notifyMessage: null,
-    source: "no_template",
+    source: "no_custom_template",
+    selection: null,
   };
 }
 
+async function sleep(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function replyAndSave({
   supabase,
@@ -1853,9 +2076,14 @@ async function replyAndSave({
   mediaUrl,
   mediaType,
   currentTemplate,
+  selection,
 }: any) {
-  const destination = getDestination({ lead, phone, lid, remoteJid });
-  const basePayload = { sessionId, ...destination };
+  const destination = getDestination({
+    lead,
+    phone,
+    lid,
+    remoteJid,
+  });
 
   const hasDestination = Boolean(
     destination.number ||
@@ -1865,7 +2093,7 @@ async function replyAndSave({
   );
 
   if (!hasDestination) {
-    console.warn("WHATSAPP_REPLY_SKIPPED_NO_DESTINATION:", {
+    console.warn("[WHATSAPP] Resposta ignorada: destino ausente", {
       leadId,
       leadName: lead?.name,
       leadPhone: lead?.phone,
@@ -1873,62 +2101,121 @@ async function replyAndSave({
       lid,
       remoteJid,
     });
-    return;
+
+    return {
+      sent: false,
+      lead,
+    };
   }
 
-  // Envia texto
-  if (reply) {
-    const result = await sendToWhatsApp({
-      ...basePayload,
-      message: reply,
-    });
+  const delaySeconds = Math.max(
+    0,
+    Math.min(Number(currentTemplate?.delay_seconds || 0), 30)
+  );
 
-    await saveSentMessage(
-      supabase,
-      leadId,
-      lead.company_id,
-      lead.branch_id || null,
-      userId,
-      reply,
+  if (delaySeconds > 0) {
+    await sleep(delaySeconds * 1000);
+  }
+
+  const basePayload = {
+    sessionId,
+    ...destination,
+  };
+
+  const messageMetadata = {
+    template_id: currentTemplate?.id || null,
+    template_name:
+      currentTemplate?.name ||
+      currentTemplate?.title ||
       null,
-      "text"
-    );
+    template_type: currentTemplate?.type || null,
+    flow_mode: currentTemplate?.flow_mode || null,
+    flow_step: currentTemplate?.flow_step || null,
+    variation_index:
+      selection?.index !== undefined
+        ? selection.index
+        : null,
+    variation_total:
+      selection?.total !== undefined
+        ? selection.total
+        : null,
+    variation_id: selection?.variationId || null,
+    variation_source: selection?.source || null,
+  };
 
-    console.log("MENSAGEM TEXTO ENVIADA:", result);
-  }
-
-  // Envia mídia
+  /*
+   * Quando existe mídia, a mensagem é enviada como legenda. Isso evita
+   * duplicar o mesmo texto em uma mensagem separada e depois na mídia.
+   */
   if (mediaUrl) {
     const mediaResult = await sendMediaToWhatsApp({
       ...basePayload,
       mediaUrl,
       mediaType: mediaType || "document",
       caption: reply || "",
+      fileName:
+        currentTemplate?.media_name ||
+        currentTemplate?.name ||
+        undefined,
     });
 
-    await saveSentMessage(
-      supabase,
+    await saveSentMessage(supabase, {
       leadId,
-      lead.company_id,
-      lead.branch_id || null,
+      companyId: lead.company_id,
+      branchId: lead.branch_id || null,
       userId,
-      reply || "",
+      reply: reply || "",
       mediaUrl,
-      mediaType || "document"
-    );
-
-    console.log("MÍDIA ENVIADA:", mediaResult);
-  }
-
-  // Avança o fluxo APENAS UMA VEZ
-  if (currentTemplate) {
-    await advanceFlowStep({
-      supabase,
-      lead,
-      currentTemplate,
+      mediaType: mediaType || "document",
+      metadata: messageMetadata,
     });
+
+    console.log("[WHATSAPP] Mídia enviada:", {
+      leadId,
+      templateId: currentTemplate?.id,
+      result: mediaResult,
+    });
+  } else if (reply) {
+    const result = await sendToWhatsApp({
+      ...basePayload,
+      message: reply,
+    });
+
+    await saveSentMessage(supabase, {
+      leadId,
+      companyId: lead.company_id,
+      branchId: lead.branch_id || null,
+      userId,
+      reply,
+      mediaUrl: null,
+      mediaType: "text",
+      metadata: messageMetadata,
+    });
+
+    console.log("[WHATSAPP] Texto enviado:", {
+      leadId,
+      templateId: currentTemplate?.id,
+      result,
+    });
+  } else {
+    return {
+      sent: false,
+      lead,
+    };
   }
+
+  const updatedLead = await advanceFlowStep({
+    supabase,
+    lead,
+    currentTemplate,
+  });
+
+  return {
+    sent: true,
+    lead: updatedLead || lead,
+  };
 }
+
 async function sendInternalNotification({
   sessionId,
   number,
@@ -1938,13 +2225,20 @@ async function sendInternalNotification({
   number: string;
   message: string;
 }) {
+  const normalizedNumber = normalizePhone(number);
+
+  if (!normalizedNumber || !message.trim()) {
+    throw new Error(
+      "Número ou mensagem da notificação interna inválido."
+    );
+  }
+
   return sendToWhatsApp({
     sessionId,
-    number: normalizePhone(number),
+    number: normalizedNumber,
     message,
   });
 }
-
 
 function normalizeComparableName(value: any) {
   return normalizeText(value)
@@ -2112,7 +2406,6 @@ for (const item of items as any[]) {
     if (lidMatches) score += 900;
     if (remoteMatches) score += 900;
     if (nameMatches) score += 600;
-    if (item.job_id || lead.job_id || lead.current_job_id) score += 80;
     if (item.batch_id || lead.batch_id) score += 80;
 
     const status = String(item.status || "").toLowerCase();
@@ -2161,7 +2454,6 @@ for (const item of items as any[]) {
         lidMatches: item.lidMatches,
         remoteMatches: item.remoteMatches,
         nameMatches: item.nameMatches,
-        job_id: item.queue?.job_id || item.lead?.job_id || item.lead?.current_job_id || null,
         batch_id: item.queue?.batch_id || item.lead?.batch_id || null,
       })),
     });
@@ -2182,7 +2474,6 @@ for (const item of items as any[]) {
     lidMatches: selected.lidMatches,
     remoteMatches: selected.remoteMatches,
     nameMatches: selected.nameMatches,
-    job_id: selected.queue.job_id || selected.lead.job_id || selected.lead.current_job_id || null,
     batch_id: selected.queue.batch_id || selected.lead.batch_id || null,
   });
 
@@ -2192,38 +2483,6 @@ for (const item of items as any[]) {
     _resolvedByRecentQueue: true,
   };
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 async function findLead({
   supabase,
@@ -2379,7 +2638,7 @@ async function findLead({
   });
 
   if (!safeCandidates.length) {
-    console.warn("LEAD_CANDIDATO_DESCARTADO_POR_INCOMPATIBILIDADE_DE_NOME:", {
+    console.warn("LEAD_DESCARTADO_POR_INCOMPATIBILIDADE_DE_NOME:", {
       companyId,
       userId,
       phone,
@@ -2420,7 +2679,6 @@ async function findLead({
       (a.email ? 20 : 0) +
       (a.whatsapp_lid ? 10 : 0) +
       (a.remote_jid ? 10 : 0) +
-      (a.job_id || a.current_job_id ? 50 : 0) +
       (a.batch_id ? 50 : 0);
 
     const bScore =
@@ -2430,7 +2688,6 @@ async function findLead({
       (b.email ? 20 : 0) +
       (b.whatsapp_lid ? 10 : 0) +
       (b.remote_jid ? 10 : 0) +
-      (b.job_id || b.current_job_id ? 50 : 0) +
       (b.batch_id ? 50 : 0);
 
     if (aScore !== bScore) return bScore - aScore;
@@ -2460,11 +2717,8 @@ async function findLead({
   if (email && !lead.email) patch.email = email;
   if (sessionId && !lead.session_id) patch.session_id = Number(sessionId);
 
-  const queueJobId = queueContext?.job_id || null;
   const queueBatchId = queueContext?.batch_id || null;
 
-  if (queueJobId && !lead.job_id) patch.job_id = queueJobId;
-  if (queueJobId && !lead.current_job_id) patch.current_job_id = queueJobId;
   if (queueBatchId && !lead.batch_id) patch.batch_id = queueBatchId;
 
   if (Object.keys(patch).length > 1) {
@@ -2497,39 +2751,57 @@ export async function POST(req: Request) {
     const supabase = getSupabase();
     const body = await req.json();
 
+    const sentByUs =
+      body?.fromMe === true ||
+      body?.from_me === true ||
+      clean(body?.direction).toLowerCase() === "sent";
+
+    if (sentByUs) {
+      return NextResponse.json({
+        success: true,
+        action: "outgoing_message_ignored",
+      });
+    }
+
+    const remoteJid = body.remoteJid || body.remote_jid || null;
+
+    if (String(remoteJid || "").includes("@g.us")) {
+      return NextResponse.json({
+        success: true,
+        action: "group_message_ignored",
+      });
+    }
+
     const messageId = getIncomingMessageId(body);
     const rawPhone = clean(body.phone || "");
     const rawNumber = clean(body.number || "");
-    const remoteJid = body.remoteJid || body.remote_jid || null;
     const lid = normalizeLid(body.lid || remoteJid);
 
-    /*
-      REGRA CRÍTICA:
-      Se a mensagem chegou por @lid, o campo "number" pode ser apenas o ID interno do WhatsApp,
-      não o telefone real do candidato. Então NÃO usamos esse valor para salvar/alterar phone.
-      O telefone do lead vem da importação/cadastro/disparo.
-    */
     const incomingIsLid =
       body.isLid === true ||
       body.is_lid === true ||
-      String(body.isLid || body.is_lid || "").toLowerCase() === "true" ||
+      clean(body.isLid || body.is_lid).toLowerCase() === "true" ||
       String(remoteJid || "").includes("@lid") ||
       String(body.lid || "").includes("@lid");
 
-    /*
-      Se veio por @lid, o body.number pode ser ID interno, não telefone.
-      Mas se body.phone vier preenchido com telefone real, podemos usar.
-      Caso contrário, não inventamos telefone.
-    */
     const phone = rawPhone
       ? normalizePhone(rawPhone)
       : incomingIsLid
         ? ""
         : normalizePhone(rawNumber);
-    const email = clean(body.email || body.candidate_email || "");
+
+    const email = clean(body.email || body.customer_email || "");
     const incomingMedia = extractIncomingMedia(body);
-    const explicitMessage = clean(body.message || body.text || body.body || "");
-    const message = explicitMessage || incomingMedia.caption || "";
+    const explicitMessage = clean(
+      body.message ||
+        body.text ||
+        body.body ||
+        ""
+    );
+    const message =
+      explicitMessage ||
+      incomingMedia.caption ||
+      "";
     const pushName = clean(body.pushName || body.name || "");
 
     const resolved = await resolveCompanyBySession(
@@ -2541,7 +2813,11 @@ export async function POST(req: Request) {
     const branchId = resolved.branchId;
     const userId = resolved.userId;
     const sessionId = resolved.sessionId;
-    const sendSessionId = buildSendSession(companyId, userId, sessionId);
+    const sendSessionId = buildSendSession(
+      companyId,
+      userId,
+      sessionId
+    );
 
     const mediaUrl = await persistIncomingMedia({
       supabase,
@@ -2551,12 +2827,22 @@ export async function POST(req: Request) {
       media: incomingMedia,
     });
 
-    const hasMedia = Boolean(mediaUrl || incomingMedia.url || incomingMedia.base64);
-    const historyMessage = message || mediaLabel(incomingMedia.mediaType);
+    const hasMedia = Boolean(
+      mediaUrl ||
+        incomingMedia.url ||
+        incomingMedia.base64
+    );
+
+    const historyMessage =
+      message ||
+      mediaLabel(incomingMedia.mediaType);
 
     if ((!phone && !lid) || (!message && !hasMedia)) {
       return NextResponse.json(
-        { success: false, error: "Telefone/LID ou conteúdo da mensagem inválido" },
+        {
+          success: false,
+          error: "Telefone/LID ou conteúdo da mensagem inválido.",
+        },
         { status: 400 }
       );
     }
@@ -2573,102 +2859,76 @@ export async function POST(req: Request) {
       email,
     });
 
-    const intent = detectSalesIntent(message);
-    const detectedStatus = statusFromIntent(intent);
+    if (!lead) {
+      /*
+       * Repete a busca antes do insert para diminuir duplicidade quando duas
+       * mensagens do mesmo número chegam quase ao mesmo tempo.
+       */
+      lead = await findLead({
+        supabase,
+        companyId,
+        userId,
+        phone,
+        lid,
+        remoteJid,
+        pushName,
+        sessionId,
+        email,
+      });
+    }
 
     if (!lead) {
-  // Última busca antes de criar, para evitar duplicação por corrida
-  lead = await findLead({
-    supabase,
-    companyId,
-    userId,
-    phone,
-    lid,
-    remoteJid,
-    pushName,
-    sessionId,
-    email,
-  });
+      const { data: createdLead, error: createError } =
+        await supabase
+          .from("leads")
+          .insert({
+            company_id: companyId,
+            branch_id: branchId,
+            owner_user_id: userId,
+            name: pushName || "Cliente WhatsApp",
+            phone: isRealBrazilPhone(phone)
+              ? normalizePhone(phone)
+              : null,
+            email: email || null,
+            whatsapp_lid: lid || null,
+            remote_jid: remoteJid || null,
+            status: "novo",
+            session_id: sessionId,
+            ai_paused: false,
+            conversation_stage: "new",
+            current_flow_step: null,
+            unread_count: 0,
+            last_message: null,
+            last_message_at: null,
+            updated_at: new Date().toISOString(),
+          })
+          .select("*")
+          .single();
 
-  if (!lead) {
-    const created = await supabase
-      .from("leads")
-      .insert({
-        company_id: companyId,
-        branch_id: branchId,
-        owner_user_id: userId,
-        name: pushName || "Cliente WhatsApp",
-        phone: isRealBrazilPhone(phone) ? normalizePhone(phone) : null,
-        email: email || null,
-        whatsapp_lid: lid || null,
-        remote_jid: remoteJid || null,
-        status: "novo",
-        session_id: sessionId,
-        ai_paused: false,
-        current_flow_step: 1,
-        unread_count: 1,
-        last_message: historyMessage,
-        last_message_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .select("*")
-      .single();
+      if (createError) {
+        /*
+         * Se outro request criou o lead no mesmo instante, tenta localizar
+         * novamente antes de devolver erro.
+         */
+        lead = await findLead({
+          supabase,
+          companyId,
+          userId,
+          phone,
+          lid,
+          remoteJid,
+          pushName,
+          sessionId,
+          email,
+        });
 
-    if (created.error) throw new Error(created.error.message);
-    lead = created.data;
-  }
-}
-    const queueContext = await getActiveQueueContext({
-  supabase,
-  companyId,
-  userId,
-  leadId: lead.id,
-  phone: lead.phone || phone,
-});
-
-if (queueContext) {
-  const leadJobPatch: any = {};
-
-  if (
-  queueContext?.job_id &&
-  lead.job_id !== queueContext.job_id
-) {
-  leadJobPatch.job_id = queueContext.job_id;
-}
-
-if (
-  queueContext?.job_id &&
-  lead.current_job_id !== queueContext.job_id
-) {
-  leadJobPatch.current_job_id = queueContext.job_id;
-}
-
-if (
-  queueContext?.batch_id &&
-  lead.batch_id !== queueContext.batch_id
-) {
-  leadJobPatch.batch_id = queueContext.batch_id;
-}
-
-  if (Object.keys(leadJobPatch).length) {
-    leadJobPatch.updated_at = new Date().toISOString();
-
-    const { data: updatedLead, error: updateLeadJobError } = await supabase
-      .from("leads")
-      .update(leadJobPatch)
-      .eq("id", lead.id)
-      .eq("company_id", companyId)
-      .eq("owner_user_id", userId)
-      .select("*")
-      .maybeSingle();
-
-    if (updateLeadJobError) {
-      console.error("ERRO AO VINCULAR LEAD AO CONTEXTO DA CAMPANHA:", updateLeadJobError);
-    } else if (updatedLead) {
-      lead = updatedLead;
+        if (!lead) {
+          throw new Error(createError.message);
+        }
+      } else {
+        lead = createdLead;
+      }
     }
-  }
-}
 
     const duplicated = await wasMessageAlreadyProcessed(
       supabase,
@@ -2679,7 +2939,85 @@ if (
     );
 
     if (duplicated) {
-      return NextResponse.json({ success: true, action: "duplicate_ignored" });
+      return NextResponse.json({
+        success: true,
+        action: "duplicate_ignored",
+        lead_id: lead.id,
+      });
+    }
+
+    /*
+     * Atualiza somente dados seguros do lead. Nunca substitui um telefone
+     * real por @lid ou pelo número da sessão conectada.
+     */
+    const identityPatch: any = {};
+
+    if (
+      pushName &&
+      (!clean(lead.name) ||
+        ["cliente", "cliente whatsapp"].includes(
+          normalizeText(lead.name)
+        ))
+    ) {
+      identityPatch.name = pushName;
+    }
+
+    if (!lead.email && email) {
+      identityPatch.email = email;
+    }
+
+    if (!lead.whatsapp_lid && lid) {
+      identityPatch.whatsapp_lid = lid;
+    }
+
+    if (!lead.remote_jid && remoteJid) {
+      identityPatch.remote_jid = remoteJid;
+    }
+
+    if (
+      !lead.phone &&
+      isRealBrazilPhone(phone)
+    ) {
+      identityPatch.phone = normalizePhone(phone);
+    }
+
+    const queueContext = await getActiveQueueContext({
+      supabase,
+      companyId,
+      userId,
+      leadId: lead.id,
+      phone: lead.phone || phone,
+    });
+
+    if (
+      queueContext?.batch_id &&
+      !lead.batch_id
+    ) {
+      identityPatch.batch_id = queueContext.batch_id;
+    }
+
+    if (Object.keys(identityPatch).length) {
+      const { data: updatedIdentity, error: identityError } =
+        await supabase
+          .from("leads")
+          .update({
+            ...identityPatch,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", lead.id)
+          .eq("company_id", companyId)
+          .eq("owner_user_id", userId)
+          .select("*")
+          .maybeSingle();
+
+      if (identityError) {
+        console.error(
+          "[LEAD] Erro ao atualizar identidade:",
+          identityError
+        );
+      } else if (updatedIdentity) {
+        lead = updatedIdentity;
+      }
     }
 
     await saveReceivedMessage(supabase, {
@@ -2698,78 +3036,76 @@ if (
       lid,
     });
 
-    const lockedStatuses = [
-      "pedido_fechado",
-      "cliente_ativo",
-      "sem_interesse",
-      "perdido",
-      "entrevista_agendada",
-      "entrevista_confirmada",
-      "aprovado",
-      "contratado",
-      "nao_aprovado",
-      "nao_compareceu",
-    ];
+    const intent = detectSalesIntent(message);
+    const detectedStatus = statusFromIntent(intent);
+    const statusAfterIncoming = chooseKanbanStatus(
+      lead.status || "novo",
+      detectedStatus,
+      false
+    );
 
-    const currentStatus = String(lead.status || "novo");
+    const { data: updatedLead, error: updateLeadError } =
+      await supabase
+        .from("leads")
+        .update({
+          status: statusAfterIncoming,
+          unread_count:
+            Number(lead.unread_count || 0) + 1,
+          last_message: historyMessage,
+          last_message_at: new Date().toISOString(),
+          whatsapp_lid:
+            lead.whatsapp_lid ||
+            lid ||
+            null,
+          remote_jid:
+            lead.remote_jid ||
+            remoteJid ||
+            null,
+          email:
+            lead.email ||
+            email ||
+            null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", lead.id)
+        .eq("company_id", companyId)
+        .eq("owner_user_id", userId)
+        .select("*")
+        .maybeSingle();
 
-const nextStatus =
-  lockedStatuses.includes(currentStatus)
-    ? currentStatus
-    : currentStatus === "novo" || currentStatus === "enviado"
-      ? detectedStatus
-      : currentStatus;
+    if (updateLeadError) {
+      throw new Error(
+        `Não foi possível atualizar o lead: ${updateLeadError.message}`
+      );
+    }
 
-    await supabase
-      .from("leads")
-      .update({
-        status: nextStatus,
-        unread_count: Number(lead.unread_count || 0) + 1,
+    if (updatedLead) {
+      lead = updatedLead;
+    } else {
+      lead = {
+        ...lead,
+        status: statusAfterIncoming,
+        unread_count:
+          Number(lead.unread_count || 0) + 1,
         last_message: historyMessage,
-        last_message_at: new Date().toISOString(),
-        whatsapp_lid: lead.whatsapp_lid || lid || null,
-remote_jid: lead.remote_jid || remoteJid || null,
-
-        /*
-          NÃO sobrescrever phone aqui.
-          O incoming pode vir por @lid e confundir o número do candidato com ID interno.
-          Mantemos o telefone original do lead.
-        */
-        email: lead.email || email || null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", lead.id)
-      .eq("company_id", companyId)
-      .eq("owner_user_id", userId);
-
-    lead = {
-      ...lead,
-      company_id: companyId,
-      branch_id: lead.branch_id || branchId,
-      status: nextStatus,
-     whatsapp_lid: lead.whatsapp_lid || lid || null,
-remote_jid: lead.remote_jid || remoteJid || null,
-      last_message: historyMessage,
-    };
+      };
+    }
 
     if (lead.ai_paused === true) {
       return NextResponse.json({
         success: true,
-        action: "ia_pausada",
+        action: "automatic_reply_paused",
         intent,
-        kanban_status: nextStatus,
+        kanban_status: lead.status,
         lead_id: lead.id,
       });
     }
 
-    const noLoopStatuses = [
-      "entrevista_agendada",
-      "entrevista_confirmada",
-      "aprovado",
-      "contratado",
-    ];
-
-    const simpleReplies = [
+    /*
+     * Em estágios concluídos, respostas curtas não reabrem automações.
+     * Fluxos ativos continuam tendo prioridade e não entram neste bloqueio.
+     */
+    const simpleReplies = new Set([
       "ok",
       "obrigado",
       "obrigada",
@@ -2780,32 +3116,31 @@ remote_jid: lead.remote_jid || remoteJid || null,
       "sim",
       "certo",
       "combinado",
-    ];
+    ]);
+
+    const hasActiveFlow = Boolean(
+      getLeadFlowStep(lead)
+    );
 
     if (
-      noLoopStatuses.includes(String(lead.status || "")) &&
-      simpleReplies.includes(normalizeText(message))
+      !hasActiveFlow &&
+      LOCKED_KANBAN_STATUS.has(
+        normalizeKanbanStatus(lead.status) || ""
+      ) &&
+      simpleReplies.has(normalizeText(message))
     ) {
       return NextResponse.json({
         success: true,
-        action: "no_loop_ignored",
+        action: "closed_conversation_short_reply_ignored",
         intent,
-        kanban_status: nextStatus,
+        kanban_status: lead.status,
         lead_id: lead.id,
       });
     }
-console.log("CONTEXTO FINAL DO LEAD PARA TEMPLATE:", {
-  lead_id: lead.id,
-  name: lead.name,
-  status: lead.status,
-  job_id: lead.job_id,
-  current_job_id: lead.current_job_id,
-  batch_id: lead.batch_id,
-});
+
     const finalReply = message
-      ? await getFinalSalesReply({
+      ? await getFinalAutomaticReply({
           supabase,
-          intent,
           message,
           lead,
           companyId,
@@ -2815,129 +3150,239 @@ console.log("CONTEXTO FINAL DO LEAD PARA TEMPLATE:", {
           reply: null,
           mediaUrl: null,
           mediaType: "text",
+          currentTemplate: null,
           kanbanStatus: null,
           notifyEnabled: false,
-          notifyNumber: null,
+          notifyNumbers: [],
           notifyMessage: null,
           source: "media_without_text",
+          selection: null,
         };
 
     let replied = false;
+    let sendError: string | null = null;
 
-    /*
-     * Auditoria importante:
-     * registra exatamente qual template automático foi escolhido.
-     * Templates de campanha nunca devem aparecer neste log.
-     */
     if (finalReply.reply || finalReply.mediaUrl) {
-      console.log("WHATSAPP_AUTO_REPLY_TEMPLATE_SELECTED:", {
-        leadId: lead.id,
-        companyId,
-        userId,
-        source: finalReply.source,
-        detectedIntent: intent,
-      });
-    } else {
-      console.log("WHATSAPP_AUTO_REPLY_SKIPPED_NO_REGISTERED_TEMPLATE:", {
-        leadId: lead.id,
-        companyId,
-        userId,
-        detectedIntent: intent,
-      });
-    }
-
-    try {
-      if (finalReply.reply || finalReply.mediaUrl) {
-        await replyAndSave({
-  supabase,
-  sessionId: sendSessionId,
-  phone,
-  lid,
-  remoteJid,
-  lead,
-  leadId: lead.id,
-  userId,
-  reply: finalReply.reply,
-  mediaUrl: finalReply.mediaUrl,
-  mediaType: finalReply.mediaType,
-  currentTemplate: (finalReply as any).currentTemplate,
-});
-
-        replied = true;
-      }
-    } catch (sendError) {
-      console.error("FALHA AO RESPONDER WHATSAPP:", sendError);
-    }
-
-    const finalKanbanStatus =
-      normalizeKanbanStatus(finalReply.kanbanStatus) ||
-      (shouldForceSalesStatus(message, intent, finalReply.reply)
-        ? "em_negociacao"
-        : null);
-
-    if (finalKanbanStatus) {
-      const { data: updatedStatusLead, error: statusError } = await supabase
-        .from("leads")
-        .update({
-          status: finalKanbanStatus,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", lead.id)
-        .eq("company_id", companyId)
-        .select("*")
-        .maybeSingle();
-
-      if (statusError) {
-        console.error("ERRO AO ATUALIZAR STATUS FINAL DO KANBAN:", statusError);
-      } else if (updatedStatusLead) {
-        lead = updatedStatusLead;
-      }
-    }
-
-    if (finalReply.notifyEnabled && finalReply.notifyNumber) {
-      const internalMessage = applyVariables(
-        finalReply.notifyMessage ||
-          "🚨 Novo atendimento comercial\n\nCliente: {cliente}\nTelefone: {telefone}\n\nÚltima mensagem:\n{ultima_mensagem}\n\nAbrir conversa:\n{link_whatsapp}",
-        lead,
+      console.log(
+        "[AUTOMATION] Template selecionado:",
         {
-          phone: lead.phone || phone || lid || "",
-          lastMessage: message,
+          leadId: lead.id,
+          companyId,
+          userId,
+          source: finalReply.source,
+          templateId:
+            finalReply.currentTemplate?.id ||
+            null,
+          templateName:
+            finalReply.currentTemplate?.name ||
+            null,
+          variation:
+            finalReply.selection,
         }
       );
 
-      await sendInternalNotification({
-        sessionId: sendSessionId,
-        number: finalReply.notifyNumber,
-        message: internalMessage,
+      try {
+        const sendResult = await replyAndSave({
+          supabase,
+          sessionId: sendSessionId,
+          phone,
+          lid,
+          remoteJid,
+          lead,
+          leadId: lead.id,
+          userId,
+          reply: finalReply.reply,
+          mediaUrl: finalReply.mediaUrl,
+          mediaType: finalReply.mediaType,
+          currentTemplate:
+            finalReply.currentTemplate,
+          selection:
+            finalReply.selection,
+        });
+
+        replied = Boolean(sendResult?.sent);
+
+        if (sendResult?.lead) {
+          lead = sendResult.lead;
+        }
+      } catch (error: any) {
+        sendError =
+          error?.message ||
+          String(error);
+
+        console.error(
+          "[AUTOMATION] Falha ao responder WhatsApp:",
+          {
+            leadId: lead.id,
+            templateId:
+              finalReply.currentTemplate?.id,
+            error,
+          }
+        );
+      }
+    } else {
+      console.log(
+        "[AUTOMATION] Nenhum template personalizado correspondeu:",
+        {
+          leadId: lead.id,
+          companyId,
+          userId,
+          message,
+        }
+      );
+    }
+
+    const explicitTemplateStatus =
+      normalizeKanbanStatus(
+        finalReply.kanbanStatus
+      );
+
+    const fallbackSalesStatus =
+      shouldForceSalesStatus(
+        message,
+        intent,
+        finalReply.reply
+      )
+        ? "em_negociacao"
+        : null;
+
+    const requestedKanbanStatus =
+      explicitTemplateStatus ||
+      fallbackSalesStatus;
+
+    if (requestedKanbanStatus) {
+      lead = await updateLeadKanbanStatus({
+        supabase,
+        lead,
+        companyId,
+        userId,
+        candidate: requestedKanbanStatus,
+        explicit: Boolean(
+          explicitTemplateStatus
+        ),
       });
     }
 
+    let notifySent = false;
+    const notifyErrors: string[] = [];
+
+    if (
+      replied &&
+      finalReply.notifyEnabled &&
+      finalReply.notifyNumbers.length
+    ) {
+      const notificationExtra =
+        await buildVariableContext({
+          supabase,
+          companyId,
+          userId,
+          lead,
+          phone:
+            lead.phone ||
+            phone ||
+            "",
+          lastMessage: message,
+        });
+
+      const internalMessage =
+        applyVariables(
+          finalReply.notifyMessage ||
+            "🚨 Novo atendimento comercial\n\nCliente: {cliente}\nTelefone: {telefone}\n\nÚltima mensagem:\n{ultima_mensagem}\n\nAbrir conversa:\n{link_whatsapp}",
+          lead,
+          notificationExtra
+        );
+
+      const results = await Promise.allSettled(
+        finalReply.notifyNumbers.map(
+          (number) =>
+            sendInternalNotification({
+              sessionId: sendSessionId,
+              number,
+              message: internalMessage,
+            })
+        )
+      );
+
+      notifySent = results.some(
+        (result) =>
+          result.status === "fulfilled"
+      );
+
+      for (const result of results) {
+        if (result.status === "rejected") {
+          notifyErrors.push(
+            result.reason?.message ||
+              String(result.reason)
+          );
+        }
+      }
+
+      if (notifyErrors.length) {
+        console.error(
+          "[NOTIFICATION] Falhas ao avisar equipe:",
+          notifyErrors
+        );
+      }
+    }
+
     return NextResponse.json({
-      success: true,
-      action: replied ? "resposta_template_comercial" : "kanban_atualizado",
+      success: !sendError,
+      action: replied
+        ? "custom_automatic_reply_sent"
+        : sendError
+          ? "automatic_reply_failed"
+          : "kanban_updated_without_reply",
       intent,
       source: finalReply.source,
+      template_id:
+        finalReply.currentTemplate?.id ||
+        null,
+      variation:
+        finalReply.selection,
       lead_id: lead.id,
       company_id: companyId,
-      phone: lead.phone || phone || "",
+      phone:
+        lead.phone ||
+        phone ||
+        "",
       lid: lid || null,
       session_id: sessionId,
       send_session_id: sendSessionId,
-      kanban_status: finalKanbanStatus || nextStatus,
+      kanban_status:
+        lead.status ||
+        statusAfterIncoming,
       replied,
-      media_saved: Boolean(mediaUrl || incomingMedia.url),
-      media_type: incomingMedia.mediaType || null,
+      send_error: sendError,
+      media_saved: Boolean(
+        mediaUrl ||
+        incomingMedia.url
+      ),
+      media_type:
+        incomingMedia.mediaType ||
+        null,
       owner_user_id: userId,
-      notify_sent: Boolean(finalReply.notifyEnabled && finalReply.notifyNumber),
+      notify_sent: notifySent,
+      notify_errors: notifyErrors,
+    }, {
+      status: sendError ? 502 : 200,
     });
   } catch (error: any) {
-    console.error("ERRO API WHATSAPP INCOMING SALES:", error);
+    console.error(
+      "[WHATSAPP INCOMING V2] Erro:",
+      error
+    );
 
     return NextResponse.json(
       {
         success: false,
-        error: error?.message || String(error),
-        stack: process.env.NODE_ENV === "development" ? error?.stack : undefined,
+        error:
+          error?.message ||
+          String(error),
+        stack:
+          process.env.NODE_ENV ===
+          "development"
+            ? error?.stack
+            : undefined,
       },
       { status: 500 }
     );
