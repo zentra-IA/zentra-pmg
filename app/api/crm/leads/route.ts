@@ -1,30 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { requireCompanyAccess } from "@/lib/server-company";
+import {
+  COMMERCIAL_PIPELINE,
+  normalizeCommercialStatus,
+} from "@/lib/crm/commercial-pipeline";
+
 
 export const dynamic = "force-dynamic";
 
-const LEGACY_TO_NEW: Record<string, string> = {
-  respondido: "respondeu",
-  interesse: "quer_agendar_entrevista",
-  pedido: "entrevista_agendada",
-  reativar_futuro: "reagendar_futuro",
-  finalizado: "contratado",
-};
 
-const ALLOWED_STATUSES = [
-  "novo",
-  "enviado",
-  "respondeu",
-  "quer_agendar_entrevista",
-  "entrevista_agendada",
-  "campanha",
-  "reagendar_futuro",
-  "contratado",
-  "sem_interesse",
-  "nao_aprovado",
-  "selecionado_vaga",
-];
 
 type AccessRole = "GERAL" | "SUPERVISOR" | "VENDEDOR";
 
@@ -70,9 +55,7 @@ function normalizePhone(value: any) {
 }
 
 function normalizeStatus(value: any) {
-  const status = clean(value || "novo");
-  const normalized = LEGACY_TO_NEW[status] || status;
-  return ALLOWED_STATUSES.includes(normalized) ? normalized : "novo";
+  return normalizeCommercialStatus(value);
 }
 
 function normalizeRole(value: any): AccessRole {

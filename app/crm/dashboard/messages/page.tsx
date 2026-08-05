@@ -221,8 +221,9 @@ export default function MessagesPage() {
   const [mediaType, setMediaType] = useState("text");
 
   const [flowMode, setFlowMode] = useState("global");
-  const [flowStep, setFlowStep] = useState("");
-  const [nextStep, setNextStep] = useState("");
+const [flowGroup, setFlowGroup] = useState("");
+const [flowStep, setFlowStep] = useState("");
+const [nextStep, setNextStep] = useState("");
 
   const [notifyEnabled, setNotifyEnabled] = useState(false);
   const [notifyNumber, setNotifyNumber] = useState("");
@@ -400,8 +401,9 @@ const quoteLink = `${origin}/crm/dashboard/cotador`;
     setMediaUrl("");
     setMediaType("text");
     setFlowMode("global");
-    setFlowStep("");
-    setNextStep("");
+setFlowGroup("");
+setFlowStep("");
+setNextStep("");
     setNotifyEnabled(false);
     setNotifyNumber("");
     setNotifyMessage(DEFAULT_NOTIFY_MESSAGE);
@@ -421,8 +423,9 @@ const quoteLink = `${origin}/crm/dashboard/cotador`;
     setKanbanStatus("");
     setMessageVariations("");
     setFlowMode("global");
-    setFlowStep("");
-    setNextStep("");
+setFlowGroup("");
+setFlowStep("");
+setNextStep("");
   }
 
   function insertVariable(target: "message" | "notify", variable: string) {
@@ -515,8 +518,9 @@ const quoteLink = `${origin}/crm/dashboard/cotador`;
     setMediaUrl(item.media_url || "");
     setMediaType(item.media_type || "text");
     setFlowMode(item.flow_mode || "global");
-    setFlowStep(item.flow_step ? String(item.flow_step) : "");
-    setNextStep(item.next_step ? String(item.next_step) : "");
+setFlowGroup(item.flow_group || "");
+setFlowStep(item.flow_step ? String(item.flow_step) : "");
+setNextStep(item.next_step ? String(item.next_step) : "");
     setNotifyEnabled(Boolean(item.notify_enabled));
     setNotifyNumber(item.notify_number || "");
     setNotifyMessage(item.notify_message || DEFAULT_NOTIFY_MESSAGE);
@@ -582,8 +586,17 @@ const quoteLink = `${origin}/crm/dashboard/cotador`;
           flow_step: isCustomTrigger && flowMode === "sequence" ? flowStep : null,
           next_step: isCustomTrigger && flowMode === "sequence" ? nextStep || null : null,
           notify_enabled: notifyEnabled,
-          notify_number: notifyNumber,
-          notify_message: notifyMessage,
+notify_number: notifyNumber,
+notify_message: notifyMessage,
+
+flow_group:
+  isCustomTrigger && flowMode === "sequence"
+    ? (
+        editingId
+          ? flowGroup
+          : (flowGroup || crypto.randomUUID())
+      )
+    : null,
         }),
       });
 
@@ -595,6 +608,9 @@ const quoteLink = `${origin}/crm/dashboard/cotador`;
       }
 
       await loadTemplates();
+if (!editingId && flowMode === "sequence") {
+  setFlowGroup(data?.flow_group || flowGroup);
+}
 
       const savedId =
         data?.id ||
@@ -732,8 +748,9 @@ const quoteLink = `${origin}/crm/dashboard/cotador`;
                     className="input min-h-32"
                   />
                   <p className="mt-2 text-xs text-slate-500">
-                    Se o cliente enviar qualquer uma dessas frases, a IA envia a resposta configurada abaixo.
-                  </p>
+  O sistema envia automaticamente uma variação diferente a cada resposta.
+  Após utilizar todas as variações, reinicia a sequência automaticamente.
+</p>
                 </div>
 
                 <div className="rounded-2xl border border-green-100 bg-red-50 p-4 md:col-span-2">
@@ -1025,22 +1042,33 @@ const quoteLink = `${origin}/crm/dashboard/cotador`;
             >
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div>
-                  <h3 className="text-lg font-black">{item.name}</h3>
-                  <p className="mt-1 text-sm text-slate-500">
-                    {item.type === "campaign" ? "Campanha" : "Chatbot"} ·{" "}
-                    {item.intent} · {item.active ? "Ativa" : "Inativa"}
-                  </p>
+  <h3 className="text-lg font-black">{item.name}</h3>
 
-                  <p className="mt-2 text-xs text-slate-500">
-                    Tipo: <strong>{flowModeLabel(item.flow_mode)}</strong>
-                    {item.flow_mode === "sequence" && (
-                      <>
-                        {" "}· Etapa atual: <strong>{item.flow_step || 1}</strong>
-                        {" "}· Próxima etapa: <strong>{item.next_step || "não avança"}</strong>
-                      </>
-                    )}
-                  </p>
-                </div>
+  <p className="mt-1 text-sm text-slate-500">
+    {item.type === "campaign" ? "Campanha" : "Chatbot"} ·{" "}
+    {item.intent} · {item.active ? "Ativa" : "Inativa"}
+  </p>
+
+  <div className="mt-2 text-xs text-slate-500">
+    <p>
+      Tipo: <strong>{flowModeLabel(item.flow_mode)}</strong>
+    </p>
+
+    {item.flow_group && (
+      <p>
+        Grupo: <strong>{item.flow_group}</strong>
+      </p>
+    )}
+
+    {item.flow_mode === "sequence" && (
+      <p>
+        Etapa atual: <strong>{item.flow_step || 1}</strong>
+        {" • "}
+        Próxima etapa: <strong>{item.next_step || "não avança"}</strong>
+      </p>
+    )}
+  </div>
+</div>
 
                 <div className="flex flex-wrap gap-2">
                   <button

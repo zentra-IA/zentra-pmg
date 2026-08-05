@@ -1354,25 +1354,26 @@ model SalesCustomer {
 }
 
 model SalesCustomerActivity {
-  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  company_id   String        @db.Uuid
-  seller_id    String?       @db.Uuid
-  customer_id  String        @db.Uuid
-  type         String        @default("followup")
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id   String    @db.Uuid
+  seller_id    String?   @db.Uuid
+  customer_id  String?   @db.Uuid
+  type         String    @default("followup")
   title        String
   description  String?
-  scheduled_at DateTime?     @db.Timestamptz(6)
-  priority     String        @default("media")
-  status       String        @default("pendente")
-  notify       Boolean       @default(true)
-  completed_by String?       @db.Uuid
-  completed_at DateTime?     @db.Timestamptz(6)
-  created_at   DateTime      @default(now()) @db.Timestamptz(6)
-  updated_at   DateTime      @default(now()) @updatedAt @db.Timestamptz(6)
-  lead_id      String?       @db.Uuid
+  scheduled_at DateTime? @db.Timestamptz(6)
+  priority     String    @default("media")
+  status       String    @default("pendente")
+  notify       Boolean   @default(true)
+  completed_by String?   @db.Uuid
+  completed_at DateTime? @db.Timestamptz(6)
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  lead_id      String?   @db.Uuid
   phone        String?
-  origin       String        @default("customer")
-  customer     SalesCustomer @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  origin       String    @default("customer")
+
+  customer SalesCustomer? @relation(fields: [customer_id], references: [id], onDelete: Cascade)
 
   @@index([company_id], map: "idx_sales_customer_activity_company")
   @@index([customer_id], map: "idx_sales_customer_activity_customer")

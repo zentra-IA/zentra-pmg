@@ -1259,6 +1259,65 @@ function applyVariables(text: string, lead: any, extra: any = {}) {
     .replaceAll("{link_agendamento}", quoteLink)
     .replaceAll("{link_entrevista}", quoteLink);
 }
+const templateVariationMemory = new Map<string, number>();
+
+function getTemplateVariation(template: any): string {
+  const messages: string[] = [];
+
+  if (template?.base_message?.trim()) {
+    messages.push(template.base_message.trim());
+  }
+
+  if (template?.message?.trim() && !messages.includes(template.message.trim())) {
+    messages.push(template.message.trim());
+  }
+
+  if (Array.isArray(template?.variations)) {
+    for (const variation of template.variations) {
+      if (typeof variation === "string") {
+        const text = variation.trim();
+
+        if (text && !messages.includes(text)) {
+          messages.push(text);
+        }
+      }
+
+      if (
+        typeof variation === "object" &&
+        variation?.message
+      ) {
+        const text = String(variation.message).trim();
+
+        if (text && !messages.includes(text)) {
+          messages.push(text);
+        }
+      }
+    }
+  }
+
+  if (!messages.length) {
+    return "";
+  }
+
+  const key = String(
+  template.id ??
+  template.template_id ??
+  template.name ??
+  template.trigger_keywords ??
+  "default"
+);
+
+  const currentIndex = templateVariationMemory.get(key) ?? 0;
+
+  const nextMessage = messages[currentIndex % messages.length];
+
+  templateVariationMemory.set(
+    key,
+    (currentIndex + 1) % messages.length
+  );
+
+  return nextMessage;
+}
 function extractKeywords(template: any) {
   const raw =
     template.trigger_keywords ||
@@ -1366,8 +1425,20 @@ async function findSalesTriggeredTemplate({
   lead: any;
   companyId: string;
   userId: string;
-}) {
+}): Promise<{
+  reply: string | null;
+  mediaUrl: string | null;
+  mediaType: string;
+  currentTemplate: any;
+  kanbanStatus: string | null;
+  notifyEnabled: boolean;
+  notifyNumber: string | null;
+  notifyMessage: string | null;
+  source: string;
+} | null> {
+
   const text = normalizeText(message);
+
   const extra = await buildVariableContext({
     supabase,
     companyId,
@@ -1392,29 +1463,34 @@ async function findSalesTriggeredTemplate({
   }
 
   for (const template of templates || []) {
-    /*
-     * Defesa em profundidade: mesmo que a consulta seja alterada no futuro,
-     * nenhum template de campanha poderá passar por este ponto.
-     */
+
     if (!isAutomaticReplyTemplate(template)) {
       continue;
     }
 
     const keywords = extractKeywords(template);
-    if (!keywords.length) continue;
+
+    if (!keywords.length) {
+      continue;
+    }
 
     const hit = keywords.some((keyword: string) =>
       keywordMatchesMessage(text, keyword)
     );
 
-    if (!hit) continue;
+    if (!hit) {
+      continue;
+    }
 
-    const rawMessage = template.base_message || template.message || template.content || template.response || template.final_message || template.caption || "";
+    const rawMessage = getTemplateVariation(template);
 
     return {
-      reply: rawMessage ? applyVariables(rawMessage, lead, extra) : null,
+      reply: rawMessage
+        ? applyVariables(rawMessage, lead, extra)
+        : null,
       mediaUrl: template.media_url || null,
       mediaType: template.media_type || "text",
+      currentTemplate: template,
       kanbanStatus: getTemplateKanbanStatus(template),
       notifyEnabled: Boolean(template.notify_enabled),
       notifyNumber: template.notify_number || null,
@@ -1440,8 +1516,20 @@ async function getIntentTemplate({
   companyId: string;
   userId: string;
   message: string;
-}) {
+}): Promise<{
+  reply: string | null;
+  mediaUrl: string | null;
+  mediaType: string;
+  currentTemplate: any;
+  kanbanStatus: string | null;
+  notifyEnabled: boolean;
+  notifyNumber: string | null;
+  notifyMessage: string | null;
+  source: string;
+} | null> {
+
   const intents = intentAliases(intent);
+
   const extra = await buildVariableContext({
     supabase,
     companyId,
@@ -1468,21 +1556,19 @@ async function getIntentTemplate({
     return null;
   }
 
-  /*
-   * Segunda trava: respostas por intenção também aceitam exclusivamente
-   * templates automáticos do tipo "ai".
-   */
   if (!data || !isAutomaticReplyTemplate(data)) {
     return null;
   }
 
-  const rawMessage = data.base_message || data.message || data.content || data.response || data.final_message || data.caption || "";
-  if (!rawMessage && !data.media_url) return null;
+  const rawMessage = getTemplateVariation(data);
 
   return {
-    reply: rawMessage ? applyVariables(rawMessage, lead, extra) : null,
+    reply: rawMessage
+      ? applyVariables(rawMessage, lead, extra)
+      : null,
     mediaUrl: data.media_url || null,
     mediaType: data.media_type || "text",
+    currentTemplate: data,
     kanbanStatus: getTemplateKanbanStatus(data),
     notifyEnabled: Boolean(data.notify_enabled),
     notifyNumber: data.notify_number || null,
@@ -1490,7 +1576,85 @@ async function getIntentTemplate({
     source: "intent_template",
   };
 }
+async function getCurrentFlowTemplate({
+  supabase,
+  lead,
+  companyId,
+  userId,
+}: {
+  supabase: any;
+  lead: any;
+  companyId: string;
+  userId: string;
+}) {
+  if (!lead?.current_flow_group || lead?.current_flow_step == null) {
+    return null;
+  }
 
+  const { data, error } = await supabase
+    .from("message_templates")
+    .select("*")
+    .eq("company_id", companyId)
+    .eq("owner_user_id", userId)
+    .eq("flow_group", lead.current_flow_group)
+    .eq("flow_step", Number(lead.current_flow_step))
+    .eq("active", true)
+    .maybeSingle();
+
+  if (error) {
+    console.error("FLOW ERROR:", error);
+    return null;
+  }
+
+  return data || null;
+}
+
+async function advanceFlowStep({
+  supabase,
+  lead,
+  currentTemplate,
+}: {
+  supabase: any;
+  lead: any;
+  currentTemplate: any;
+}) {
+  const nextStep = Number(currentTemplate?.next_step || 0);
+
+  // Não existe próximo passo: encerra o fluxo
+  if (nextStep <= 0) {
+    await supabase
+      .from("leads")
+      .update({
+        current_flow_group: null,
+        current_flow_step: null,
+      })
+      .eq("id", lead.id);
+
+    return;
+  }
+
+  // Segurança: se não existir flow_group, encerra o fluxo
+  if (!currentTemplate?.flow_group) {
+    await supabase
+      .from("leads")
+      .update({
+        current_flow_group: null,
+        current_flow_step: null,
+      })
+      .eq("id", lead.id);
+
+    return;
+  }
+
+  // Avança para o próximo passo definido no template
+  await supabase
+    .from("leads")
+    .update({
+      current_flow_group: currentTemplate.flow_group,
+      current_flow_step: nextStep,
+    })
+    .eq("id", lead.id);
+}
 async function getFinalSalesReply({
   supabase,
   intent,
@@ -1505,7 +1669,54 @@ async function getFinalSalesReply({
   lead: any;
   companyId: string;
   userId: string;
-}) {
+}): Promise<{
+  reply: string | null;
+  mediaUrl: string | null;
+  mediaType: string;
+  currentTemplate: any;
+  kanbanStatus: string | null;
+  notifyEnabled: boolean;
+  notifyNumber: string | null;
+  notifyMessage: string | null;
+  source: string;
+}> {
+
+  // Continua um fluxo já iniciado
+  const currentFlow = await getCurrentFlowTemplate({
+    supabase,
+    lead,
+    companyId,
+    userId,
+  });
+
+  if (currentFlow) {
+    const extra = await buildVariableContext({
+      supabase,
+      companyId,
+      userId,
+      lead,
+      phone: lead?.phone,
+      lastMessage: message,
+    });
+
+    const rawMessage = getTemplateVariation(currentFlow);
+
+    return {
+      reply: rawMessage
+        ? applyVariables(rawMessage, lead, extra)
+        : null,
+      mediaUrl: currentFlow.media_url || null,
+      mediaType: currentFlow.media_type || "text",
+      currentTemplate: currentFlow,
+      kanbanStatus: getTemplateKanbanStatus(currentFlow),
+      notifyEnabled: Boolean(currentFlow.notify_enabled),
+      notifyNumber: currentFlow.notify_number || null,
+      notifyMessage: currentFlow.notify_message || null,
+      source: "flow",
+    };
+  }
+
+  // Procura template por palavra-chave
   const triggered = await findSalesTriggeredTemplate({
     supabase,
     message,
@@ -1513,13 +1724,33 @@ async function getFinalSalesReply({
     companyId,
     userId,
   });
-  if (triggered?.reply || triggered?.mediaUrl) {
-    if (!triggered.kanbanStatus && shouldForceSalesStatus(message, intent, triggered.reply)) {
+
+  if (triggered) {
+
+    if (
+      triggered.currentTemplate?.flow_group &&
+      triggered.currentTemplate?.next_step
+    ) {
+      await supabase
+        .from("leads")
+        .update({
+          current_flow_group: triggered.currentTemplate.flow_group,
+          current_flow_step: triggered.currentTemplate.next_step,
+        })
+        .eq("id", lead.id);
+    }
+
+    if (
+      !triggered.kanbanStatus &&
+      shouldForceSalesStatus(message, intent, triggered.reply)
+    ) {
       triggered.kanbanStatus = "em_negociacao";
     }
+
     return triggered;
   }
 
+  // Procura template por intenção
   const intentTemplate = await getIntentTemplate({
     supabase,
     intent,
@@ -1528,10 +1759,29 @@ async function getFinalSalesReply({
     companyId,
     userId,
   });
-  if (intentTemplate?.reply || intentTemplate?.mediaUrl) {
-    if (!intentTemplate.kanbanStatus && shouldForceSalesStatus(message, intent, intentTemplate.reply)) {
+
+  if (intentTemplate) {
+
+    if (
+      intentTemplate.currentTemplate?.flow_group &&
+      intentTemplate.currentTemplate?.next_step
+    ) {
+      await supabase
+        .from("leads")
+        .update({
+          current_flow_group: intentTemplate.currentTemplate.flow_group,
+          current_flow_step: intentTemplate.currentTemplate.next_step,
+        })
+        .eq("id", lead.id);
+    }
+
+    if (
+      !intentTemplate.kanbanStatus &&
+      shouldForceSalesStatus(message, intent, intentTemplate.reply)
+    ) {
       intentTemplate.kanbanStatus = "em_negociacao";
     }
+
     return intentTemplate;
   }
 
@@ -1539,6 +1789,7 @@ async function getFinalSalesReply({
     reply: null,
     mediaUrl: null,
     mediaType: "text",
+    currentTemplate: null,
     kanbanStatus: null,
     notifyEnabled: false,
     notifyNumber: null,
@@ -1546,7 +1797,6 @@ async function getFinalSalesReply({
     source: "no_template",
   };
 }
-
 async function replyAndSave({
   supabase,
   sessionId,
@@ -1559,6 +1809,7 @@ async function replyAndSave({
   reply,
   mediaUrl,
   mediaType,
+  currentTemplate,
 }: any) {
   const destination = getDestination({ lead, phone, lid, remoteJid });
   const basePayload = { sessionId, ...destination };
@@ -1582,8 +1833,12 @@ async function replyAndSave({
     return;
   }
 
+  // Envia texto
   if (reply) {
-    const result = await sendToWhatsApp({ ...basePayload, message: reply });
+    const result = await sendToWhatsApp({
+      ...basePayload,
+      message: reply,
+    });
 
     await saveSentMessage(
       supabase,
@@ -1599,6 +1854,7 @@ async function replyAndSave({
     console.log("MENSAGEM TEXTO ENVIADA:", result);
   }
 
+  // Envia mídia
   if (mediaUrl) {
     const mediaResult = await sendMediaToWhatsApp({
       ...basePayload,
@@ -1620,8 +1876,16 @@ async function replyAndSave({
 
     console.log("MÍDIA ENVIADA:", mediaResult);
   }
-}
 
+  // Avança o fluxo APENAS UMA VEZ
+  if (currentTemplate) {
+    await advanceFlowStep({
+      supabase,
+      lead,
+      currentTemplate,
+    });
+  }
+}
 async function sendInternalNotification({
   sessionId,
   number,
@@ -2501,18 +2765,19 @@ console.log("CONTEXTO FINAL DO LEAD PARA TEMPLATE:", {
     try {
       if (finalReply.reply || finalReply.mediaUrl) {
         await replyAndSave({
-          supabase,
-          sessionId: sendSessionId,
-          phone,
-          lid,
-          remoteJid,
-          lead,
-          leadId: lead.id,
-          userId,
-          reply: finalReply.reply,
-          mediaUrl: finalReply.mediaUrl,
-          mediaType: finalReply.mediaType,
-        });
+  supabase,
+  sessionId: sendSessionId,
+  phone,
+  lid,
+  remoteJid,
+  lead,
+  leadId: lead.id,
+  userId,
+  reply: finalReply.reply,
+  mediaUrl: finalReply.mediaUrl,
+  mediaType: finalReply.mediaType,
+  currentTemplate: (finalReply as any).currentTemplate,
+});
 
         replied = true;
       }
