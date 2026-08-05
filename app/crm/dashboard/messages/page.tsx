@@ -184,14 +184,20 @@ function getTemplateTriggers(item: any) {
 }
 
 function formatVariations(value: any) {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => item?.content || "")
-      .filter(Boolean)
-      .join("\n");
-  }
+  if (!Array.isArray(value)) return "";
 
-  return "";
+  return value
+    .map((item) =>
+      String(
+        item?.message ||
+          item?.content ||
+          item?.base_message ||
+          item?.final_message ||
+          ""
+      ).trim()
+    )
+    .filter(Boolean)
+    .join("\n");
 }
 
 function flowModeLabel(value: any) {
@@ -502,9 +508,11 @@ setNextStep("");
     setBaseMessage(item.base_message || "");
 
     setMessageVariations(
-      Array.isArray(item.message_variations)
-        ? item.message_variations.map((v: any) => v.content).join("\n")
-        : ""
+      formatVariations(
+        Array.isArray(item?.variations)
+          ? item.variations
+          : item?.message_variations
+      )
     );
 
     /*
@@ -925,7 +933,7 @@ if (!editingId && flowMode === "sequence") {
               />
 
               <p className="mt-2 text-xs text-slate-500">
-                O sistema escolhe uma versão aleatória em cada disparo ou resposta.
+                O sistema alterna a mensagem principal e as variações em sequência, reiniciando o ciclo ao chegar ao final.
               </p>
             </div>
 

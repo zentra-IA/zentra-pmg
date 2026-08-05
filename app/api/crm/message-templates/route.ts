@@ -263,7 +263,33 @@ export async function GET(req: NextRequest) {
 
     if (error) throw new Error(error.message);
 
-    return NextResponse.json(data || []);
+    const normalized = (data || []).map((item: any) => {
+      const variations = Array.isArray(item?.variations)
+        ? item.variations.map((variation: any) => ({
+            ...variation,
+            content:
+              variation?.content ||
+              variation?.message ||
+              variation?.base_message ||
+              variation?.final_message ||
+              "",
+            message:
+              variation?.message ||
+              variation?.content ||
+              variation?.base_message ||
+              variation?.final_message ||
+              "",
+          }))
+        : [];
+
+      return {
+        ...item,
+        variations,
+        message_variations: variations,
+      };
+    });
+
+    return NextResponse.json(normalized);
   } catch (error: any) {
     console.error("GET /api/crm/message-templates:", error);
     return NextResponse.json(
@@ -321,8 +347,11 @@ if (variations.length) {
       variations.map((message: string, index: number) => ({
         template_id: data.id,
         company_id: companyId,
-        variation: index + 1,
+        branch_id: branchId || null,
+        variation: String(index + 1),
+        sort_order: index,
         message,
+        content: message,
         active: true,
       }))
     );
@@ -331,9 +360,20 @@ if (variations.length) {
     throw new Error(variationError.message);
   }
 }
+    const { data: savedVariations } = await supabase
+      .from("message_variations")
+      .select("*")
+      .eq("template_id", data.id)
+      .eq("active", true)
+      .order("sort_order", { ascending: true });
+
     return NextResponse.json({
       success: true,
-      template: data,
+      template: {
+        ...data,
+        variations: savedVariations || [],
+        message_variations: savedVariations || [],
+      },
     });
   } catch (error: any) {
     console.error("POST /api/crm/message-templates:", error);
@@ -445,41 +485,57 @@ export async function PATCH(req: NextRequest) {
       .single();
 if (error) throw new Error(error.message);
 
-const { error: deleteVariationError } = await supabase
-  .from("message_variations")
-  .delete()
-  .eq("template_id", id);
-
-if (deleteVariationError) {
-  throw new Error(deleteVariationError.message);
-}
-
-const variations = String(body.message_variations || "")
-  .split("\n")
-  .map((v: string) => v.trim())
-  .filter(Boolean);
-
-if (variations.length) {
-  const { error: variationError } = await supabase
+if (body.message_variations !== undefined) {
+  const { error: deleteVariationError } = await supabase
     .from("message_variations")
-    .insert(
-      variations.map((message: string, index: number) => ({
-        template_id: id,
-        company_id: companyId,
-        variation: index + 1,
-        message,
-        active: true,
-      }))
-    );
+    .delete()
+    .eq("template_id", id);
 
-  if (variationError) {
-    throw new Error(variationError.message);
+  if (deleteVariationError) {
+    throw new Error(deleteVariationError.message);
+  }
+
+  const variations = String(body.message_variations || "")
+    .split("\n")
+    .map((v: string) => v.trim())
+    .filter(Boolean);
+
+  if (variations.length) {
+    const { error: variationError } = await supabase
+      .from("message_variations")
+      .insert(
+        variations.map((message: string, index: number) => ({
+          template_id: id,
+          company_id: companyId,
+          branch_id: branchId || existing.branch_id || null,
+          variation: String(index + 1),
+          sort_order: index,
+          message,
+          content: message,
+          active: true,
+        }))
+      );
+
+    if (variationError) {
+      throw new Error(variationError.message);
+    }
   }
 }
 
+    const { data: savedVariations } = await supabase
+      .from("message_variations")
+      .select("*")
+      .eq("template_id", id)
+      .eq("active", true)
+      .order("sort_order", { ascending: true });
+
     return NextResponse.json({
       success: true,
-      template: data,
+      template: {
+        ...data,
+        variations: savedVariations || [],
+        message_variations: savedVariations || [],
+      },
     });
   } catch (error: any) {
     console.error("PATCH /api/crm/message-templates:", error);

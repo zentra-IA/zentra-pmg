@@ -70,7 +70,10 @@ function isRealBrazilPhone(value: any) {
 function normalizeLid(value: any) {
   const text = clean(value);
   if (!text) return null;
-  if (text.includes("@lid") || text.includes("@s.whatsapp.net")) return text;
+
+  // LID é somente o identificador @lid. JID telefônico fica em remote_jid.
+  if (text.includes("@lid")) return text;
+
   return null;
 }
 
@@ -708,34 +711,23 @@ function shouldForceSalesStatus(
 
 function getDestination({ lead, phone, lid, remoteJid }: any) {
   /*
-    REGRA REAL DO WHATSAPP:
-    - Se existe telefone real, SEMPRE usa telefone.
-    - Se o WhatsApp/Baileys só entregou @lid, usa @lid APENAS para responder aquela conversa.
-    - Nunca salva @lid como phone.
-    - Nunca troca phone do lead pelo número do QR Code/remetente.
-  */
+   * REGRA DE SEGURANÇA V2.1:
+   * a resposta automática deve voltar para o identificador EXATO que originou
+   * a mensagem atual. O cadastro do lead é apenas fallback.
+   *
+   * Isso impede que um LID/JID vinculado incorretamente no passado faça a
+   * resposta ser enviada para o telefone de outro lead.
+   */
 
-  const finalPhone = normalizePhone(
-    lead?.phone ||
-      lead?.mobile ||
-      lead?.telefone ||
-      phone ||
-      ""
-  );
+  const incomingRemoteJid = clean(remoteJid || "");
 
-  if (finalPhone) {
-    return {
-      number: finalPhone,
-      phone: finalPhone,
-      lid: null,
-      jid: `${finalPhone}@s.whatsapp.net`,
-      isLid: false,
-    };
-  }
+  if (
+    incomingRemoteJid &&
+    incomingRemoteJid.includes("@s.whatsapp.net") &&
+    !incomingRemoteJid.includes("@lid")
+  ) {
+    const phoneFromJid = normalizePhone(incomingRemoteJid.split("@")[0]);
 
-  const finalJid = clean(remoteJid || "");
-  if (finalJid && finalJid.includes("@s.whatsapp.net") && !finalJid.includes("@lid")) {
-    const phoneFromJid = normalizePhone(finalJid.split("@")[0]);
     if (phoneFromJid) {
       return {
         number: phoneFromJid,
@@ -747,15 +739,94 @@ function getDestination({ lead, phone, lid, remoteJid }: any) {
     }
   }
 
-  const finalLid = normalizeLid(lid || remoteJid || lead?.whatsapp_lid || lead?.remote_jid);
+  if (incomingRemoteJid && incomingRemoteJid.includes("@lid")) {
+    const exactLid = normalizeLid(incomingRemoteJid);
 
-  if (finalLid && String(finalLid).includes("@lid")) {
+    if (exactLid) {
+      return {
+        number: "",
+        phone: "",
+        lid: exactLid,
+        jid: exactLid,
+        isLid: true,
+      };
+    }
+  }
+
+  const incomingLid = normalizeLid(lid || "");
+
+  if (incomingLid && String(incomingLid).includes("@lid")) {
     return {
       number: "",
       phone: "",
-      lid: finalLid,
-      jid: finalLid,
+      lid: incomingLid,
+      jid: incomingLid,
       isLid: true,
+    };
+  }
+
+  const incomingPhone = normalizePhone(phone || "");
+
+  if (incomingPhone) {
+    return {
+      number: incomingPhone,
+      phone: incomingPhone,
+      lid: null,
+      jid: `${incomingPhone}@s.whatsapp.net`,
+      isLid: false,
+    };
+  }
+
+  const leadRemoteJid = clean(lead?.remote_jid || "");
+
+  if (
+    leadRemoteJid &&
+    leadRemoteJid.includes("@s.whatsapp.net") &&
+    !leadRemoteJid.includes("@lid")
+  ) {
+    const leadPhoneFromJid = normalizePhone(leadRemoteJid.split("@")[0]);
+
+    if (leadPhoneFromJid) {
+      return {
+        number: leadPhoneFromJid,
+        phone: leadPhoneFromJid,
+        lid: null,
+        jid: `${leadPhoneFromJid}@s.whatsapp.net`,
+        isLid: false,
+      };
+    }
+  }
+
+  const leadLid = normalizeLid(
+    lead?.whatsapp_lid ||
+      lead?.lid ||
+      (String(leadRemoteJid).includes("@lid") ? leadRemoteJid : "")
+  );
+
+  if (leadLid && String(leadLid).includes("@lid")) {
+    return {
+      number: "",
+      phone: "",
+      lid: leadLid,
+      jid: leadLid,
+      isLid: true,
+    };
+  }
+
+  const leadPhone = normalizePhone(
+    lead?.phone ||
+      lead?.mobile ||
+      lead?.telefone ||
+      ""
+  );
+
+  if (leadPhone) {
+    return {
+      number: leadPhone,
+      phone: leadPhone,
+      lid: null,
+      jid: `${leadPhone}@s.whatsapp.net`,
+      isLid: false,
     };
   }
 
@@ -1421,7 +1492,7 @@ async function getTemplateVariation({
       .select("id", { count: "exact", head: true })
       .eq("company_id", companyId)
       .eq("direction", "sent")
-      .contains("payload", { template_id: template.id });
+      .contains("payload", { template_id: template.id, variation_counted: true });
 
     if (userId) {
       query = query.eq("owner_user_id", userId);
@@ -2144,39 +2215,21 @@ async function replyAndSave({
   };
 
   /*
-   * Quando existe mídia, a mensagem é enviada como legenda. Isso evita
-   * duplicar o mesmo texto em uma mensagem separada e depois na mídia.
+   * Texto e mídia são enviados como eventos separados.
+   *
+   * Áudio do WhatsApp não exibe caption de forma confiável. Na versão
+   * anterior o texto era enviado somente como legenda da mídia e, quando a
+   * mídia era áudio, o cliente recebia apenas o áudio.
+   *
+   * Regra atual:
+   * 1) envia o texto, quando existir;
+   * 2) envia a mídia;
+   * 3) salva os dois eventos no histórico do mesmo lead.
    */
-  if (mediaUrl) {
-    const mediaResult = await sendMediaToWhatsApp({
-      ...basePayload,
-      mediaUrl,
-      mediaType: mediaType || "document",
-      caption: reply || "",
-      fileName:
-        currentTemplate?.media_name ||
-        currentTemplate?.name ||
-        undefined,
-    });
+  let sentSomething = false;
 
-    await saveSentMessage(supabase, {
-      leadId,
-      companyId: lead.company_id,
-      branchId: lead.branch_id || null,
-      userId,
-      reply: reply || "",
-      mediaUrl,
-      mediaType: mediaType || "document",
-      metadata: messageMetadata,
-    });
-
-    console.log("[WHATSAPP] Mídia enviada:", {
-      leadId,
-      templateId: currentTemplate?.id,
-      result: mediaResult,
-    });
-  } else if (reply) {
-    const result = await sendToWhatsApp({
+  if (reply) {
+    const textResult = await sendToWhatsApp({
       ...basePayload,
       message: reply,
     });
@@ -2189,15 +2242,59 @@ async function replyAndSave({
       reply,
       mediaUrl: null,
       mediaType: "text",
-      metadata: messageMetadata,
+      metadata: {
+        ...messageMetadata,
+        variation_counted: true,
+      },
     });
+
+    sentSomething = true;
 
     console.log("[WHATSAPP] Texto enviado:", {
       leadId,
       templateId: currentTemplate?.id,
-      result,
+      destination,
+      result: textResult,
     });
-  } else {
+  }
+
+  if (mediaUrl) {
+    const mediaResult = await sendMediaToWhatsApp({
+      ...basePayload,
+      mediaUrl,
+      mediaType: mediaType || "document",
+      caption: "",
+      fileName:
+        currentTemplate?.media_name ||
+        currentTemplate?.name ||
+        undefined,
+    });
+
+    await saveSentMessage(supabase, {
+      leadId,
+      companyId: lead.company_id,
+      branchId: lead.branch_id || null,
+      userId,
+      reply: "",
+      mediaUrl,
+      mediaType: mediaType || "document",
+      metadata: {
+        attachment_template_id: currentTemplate?.id || null,
+        attachment_of_message: Boolean(reply),
+      },
+    });
+
+    sentSomething = true;
+
+    console.log("[WHATSAPP] Mídia enviada:", {
+      leadId,
+      templateId: currentTemplate?.id,
+      destination,
+      result: mediaResult,
+    });
+  }
+
+  if (!sentSomething) {
     return {
       sent: false,
       lead,
@@ -2595,20 +2692,15 @@ async function findLead({
     );
   }
 
-  const queueLead = await findLeadFromRecentQueue({
-    supabase,
-    companyId,
-    phone,
-    lid,
-    remoteJid,
-    sessionId,
-    pushName,
-    userId,
-  });
-
-  if (queueLead?.id) {
-    await addCandidate(queueLead, "queue");
-  }
+  /*
+   * Não usamos mais "fila recente" para adivinhar o lead de uma mensagem
+   * recebida. Um vínculo por proximidade/nome pode misturar duas conversas.
+   *
+   * O incoming agora aceita apenas identificadores exatos:
+   * telefone, e-mail, whatsapp_lid ou remote_jid.
+   * Se nenhum deles encontrar um lead, um novo contato é criado para aquele
+   * LID/JID, sem contaminar o histórico de outro cliente.
+   */
 
   if (!candidates.length) return null;
 
@@ -2621,17 +2713,26 @@ async function findLead({
     // Telefone/e-mail são identificadores fortes.
     if (sources.includes("phone") || sources.includes("email")) return true;
 
-    // Fila recente já passou pela validação segura.
-    if (sources.includes("queue") || lead._resolvedByRecentQueue) return true;
-
     /*
-      Se chegou apenas por @lid e encontramos um lead por LID/JID,
-      mas o nome do WhatsApp não bate com o nome do lead, NÃO usa esse lead.
-      Isso evita Angélica cair na conversa do Gregory caso um LID tenha sido
-      salvo errado em algum teste anterior.
-    */
-    if (lidOnly && normalizedPushName) {
-      return isLeadCompatibleWithPushName(lead, pushName);
+     * Para mensagens que chegam somente por @lid:
+     * - com pushName, exige compatibilidade de nome;
+     * - sem pushName, só reutiliza um lead que também seja exclusivamente LID.
+     *
+     * Um lead que já possui telefone real não será escolhido por um LID antigo
+     * sem uma segunda evidência. É preferível criar um contato separado a
+     * misturar duas conversas e responder a pessoa errada.
+     */
+    if (lidOnly) {
+      if (normalizedPushName) {
+        return isLeadCompatibleWithPushName(lead, pushName);
+      }
+
+      return !normalizePhone(
+        lead?.phone ||
+          lead?.mobile ||
+          lead?.telefone ||
+          ""
+      );
     }
 
     return true;
@@ -2706,9 +2807,21 @@ async function findLead({
     updated_at: new Date().toISOString(),
   };
 
-  // Só vincula LID/JID se o lead foi achado com segurança.
-  if (lid && !lead.whatsapp_lid) patch.whatsapp_lid = lid;
-  if (remoteJid && !lead.remote_jid) patch.remote_jid = remoteJid;
+  /*
+   * Só grava identificadores recebidos quando o lead foi encontrado por um
+   * identificador forte ou pelo próprio LID/JID exato.
+   */
+  const leadSources = Array.isArray(lead?._sources) ? lead._sources : [];
+  const strongIdentityMatch =
+    leadSources.includes("phone") ||
+    leadSources.includes("email") ||
+    leadSources.includes("lid") ||
+    leadSources.includes("remoteJid");
+
+  if (strongIdentityMatch) {
+    if (lid && !lead.whatsapp_lid) patch.whatsapp_lid = lid;
+    if (remoteJid && !lead.remote_jid) patch.remote_jid = remoteJid;
+  }
 
   if (phone && !lead.phone && isRealBrazilPhone(phone)) {
     patch.phone = normalizePhone(phone);
@@ -2775,7 +2888,6 @@ export async function POST(req: Request) {
     const messageId = getIncomingMessageId(body);
     const rawPhone = clean(body.phone || "");
     const rawNumber = clean(body.number || "");
-    const lid = normalizeLid(body.lid || remoteJid);
 
     const incomingIsLid =
       body.isLid === true ||
@@ -2784,11 +2896,36 @@ export async function POST(req: Request) {
       String(remoteJid || "").includes("@lid") ||
       String(body.lid || "").includes("@lid");
 
-    const phone = rawPhone
-      ? normalizePhone(rawPhone)
-      : incomingIsLid
-        ? ""
-        : normalizePhone(rawNumber);
+    const lid = incomingIsLid
+      ? normalizeLid(body.lid || remoteJid)
+      : null;
+
+    /*
+     * remoteJid é a identidade mais confiável da mensagem atual.
+     * Não priorizamos body.phone/body.number quando existe um JID explícito,
+     * pois alguns servidores usam "phone" para o número da sessão conectada.
+     */
+    const phoneFromRemoteJid =
+      !incomingIsLid &&
+      String(remoteJid || "").includes("@s.whatsapp.net")
+        ? normalizePhone(String(remoteJid).split("@")[0])
+        : "";
+
+    const explicitSenderPhone = normalizePhone(
+      body.senderPhone ||
+        body.sender_phone ||
+        body.contactPhone ||
+        body.contact_phone ||
+        ""
+    );
+
+    const phone = phoneFromRemoteJid
+      ? phoneFromRemoteJid
+      : explicitSenderPhone
+        ? explicitSenderPhone
+        : remoteJid
+          ? ""
+          : normalizePhone(rawPhone || rawNumber);
 
     const email = clean(body.email || body.customer_email || "");
     const incomingMedia = extractIncomingMedia(body);
@@ -2966,11 +3103,19 @@ export async function POST(req: Request) {
       identityPatch.email = email;
     }
 
-    if (!lead.whatsapp_lid && lid) {
+    const leadSources = Array.isArray(lead?._sources) ? lead._sources : [];
+    const exactLeadIdentity =
+      leadSources.includes("phone") ||
+      leadSources.includes("email") ||
+      leadSources.includes("lid") ||
+      leadSources.includes("remoteJid") ||
+      (!leadSources.length && Boolean(lead?.id));
+
+    if (exactLeadIdentity && !lead.whatsapp_lid && lid) {
       identityPatch.whatsapp_lid = lid;
     }
 
-    if (!lead.remote_jid && remoteJid) {
+    if (exactLeadIdentity && !lead.remote_jid && remoteJid) {
       identityPatch.remote_jid = remoteJid;
     }
 
