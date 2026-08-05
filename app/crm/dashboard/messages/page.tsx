@@ -798,7 +798,7 @@ if (!editingId && flowMode === "sequence") {
                           min="1"
                           value={nextStep}
                           onChange={(e) => setNextStep(e.target.value)}
-                          placeholder="Próxima etapa. Ex: 2"
+                          placeholder="Próxima etapa; vazio = encerrar"
                           className="input"
                         />
                       </>
@@ -806,8 +806,10 @@ if (!editingId && flowMode === "sequence") {
                   </div>
 
                   <p className="mt-2 text-xs text-slate-500">
-                    Resposta avulsa funciona a qualquer momento. Fluxo em ordem
-                    só responde quando o cliente estiver na etapa configurada.
+                    Resposta avulsa funciona a qualquer momento. No fluxo em
+                    ordem, informe a etapa atual e a próxima etapa. Na última
+                    etapa, deixe “Próxima etapa” vazio: o fluxo será concluído
+                    e não reiniciará automaticamente para o mesmo lead.
                   </p>
                 </div>
 

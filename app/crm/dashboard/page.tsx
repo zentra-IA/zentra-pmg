@@ -30,7 +30,7 @@ const STAGES = [
     badge: "bg-emerald-50 text-emerald-700 border-emerald-200",
   },
   {
-    key: "quer_agendar_entrevista",
+    key: "em_negociacao",
     label: "Quer cotação",
     description: "Cliente demonstrou interesse e precisa receber proposta.",
     color: "from-[#f59e0b] to-[#d97706]",
@@ -38,7 +38,7 @@ const STAGES = [
     badge: "bg-amber-50 text-amber-700 border-amber-200",
   },
   {
-    key: "entrevista_agendada",
+    key: "cotacao_enviada",
     label: "Cotação enviada",
     description: "Cotação enviada aguardando retorno ou negociação.",
     color: "from-[#d71920] to-[#ef4444]",
@@ -54,7 +54,7 @@ const STAGES = [
     badge: "bg-rose-50 text-rose-700 border-rose-200",
   },
   {
-    key: "reagendar_futuro",
+    key: "cliente_inativo",
     label: "Retomar depois",
     description: "Cliente com potencial para uma nova abordagem futura.",
     color: "from-[#64748b] to-[#0f7a3a]",
@@ -62,7 +62,7 @@ const STAGES = [
     badge: "bg-slate-50 text-slate-700 border-slate-200",
   },
   {
-    key: "contratado",
+    key: "pedido_fechado",
     label: "Pedido fechado",
     description: "Venda fechada, pedido realizado ou cliente convertido.",
     color: "from-[#15803d] to-[#22c55e]",
@@ -78,7 +78,7 @@ const STAGES = [
     badge: "bg-gray-50 text-gray-600 border-gray-200",
   },
   {
-    key: "nao_aprovado",
+    key: "perdido",
     label: "Perdido",
     description: "Negociação perdida, contato inválido ou oportunidade descartada.",
     color: "from-[#d71920] to-[#991b1b]",
@@ -88,23 +88,46 @@ const STAGES = [
 ];
 
 const LEGACY_STATUS_MAP: Record<string, string> = {
+  new: "novo",
+  novo_lead: "novo",
+  primeiro_contato: "respondeu",
   respondido: "respondeu",
-  interesse: "quer_agendar_entrevista",
-  pedido: "entrevista_agendada",
-  entrevista: "entrevista_agendada",
-  entrevista_agendada: "entrevista_agendada",
-  agendado: "entrevista_agendada",
-  contratado: "contratado",
-  aprovado: "contratado",
-  finalizado: "contratado",
-  reativar_futuro: "reagendar_futuro",
-  banco_talentos: "reagendar_futuro",
-  sem_interesse: "sem_interesse",
-  nao_aprovado: "nao_aprovado",
+  cliente_respondeu: "respondeu",
+
+  interesse: "em_negociacao",
+  negociacao: "em_negociacao",
+  quer_cotacao: "em_negociacao",
+  quer_agendar_entrevista: "em_negociacao",
+
+  proposta: "cotacao_enviada",
+  cotacao: "cotacao_enviada",
+  orcamento_enviado: "cotacao_enviada",
+  entrevista: "cotacao_enviada",
+  entrevista_agendada: "cotacao_enviada",
+  agendado: "cotacao_enviada",
+
+  contratado: "pedido_fechado",
+  aprovado: "pedido_fechado",
+  finalizado: "pedido_fechado",
+  cliente_ativo: "pedido_fechado",
+  pos_venda: "pedido_fechado",
+
+  reagendar_futuro: "cliente_inativo",
+  reativar_futuro: "cliente_inativo",
+  banco_talentos: "cliente_inativo",
+
+  nao_aprovado: "perdido",
+  descartado: "perdido",
 };
 
 function normalizeStatus(status?: string | null) {
-  const value = String(status || "novo").trim();
+  const value = String(status || "novo")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\s-]+/g, "_");
+
   return LEGACY_STATUS_MAP[value] || value || "novo";
 }
 
@@ -256,11 +279,11 @@ export default function DashboardPage() {
       enviado: leads.filter((lead) => normalizeStatus(lead.status) === "enviado").length,
       respondeu: leads.filter((lead) => normalizeStatus(lead.status) === "respondeu").length,
       negociacao: leads.filter((lead) =>
-        ["quer_agendar_entrevista", "entrevista_agendada"].includes(
+        ["em_negociacao", "cotacao_enviada"].includes(
           normalizeStatus(lead.status)
         )
       ).length,
-      fechado: leads.filter((lead) => normalizeStatus(lead.status) === "contratado").length,
+      fechado: leads.filter((lead) => normalizeStatus(lead.status) === "pedido_fechado").length,
     };
   }, [leads]);
 
@@ -558,7 +581,7 @@ function LeadCard({
         </div>
       )}
 
-      {normalizeStatus(lead.status) === "reagendar_futuro" && (
+      {normalizeStatus(lead.status) === "cliente_inativo" && (
         <div className="mt-3 rounded-2xl border border-green-100 bg-green-50 p-3 text-xs font-bold text-[#0f7a3a]">
           Retomar abordagem em oportunidade futura.
         </div>

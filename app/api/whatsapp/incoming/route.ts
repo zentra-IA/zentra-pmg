@@ -1643,6 +1643,16 @@ function getLeadFlowGroup(lead: any) {
   return "";
 }
 
+function getCompletedFlowGroup(lead: any) {
+  const stage = clean(lead?.conversation_stage || "");
+
+  if (stage.startsWith("flow_completed:")) {
+    return stage.slice("flow_completed:".length);
+  }
+
+  return "";
+}
+
 function getLeadFlowStep(lead: any) {
   const step = Number(lead?.current_flow_step || 0);
 
@@ -1725,6 +1735,70 @@ async function persistLeadFlowState({
   };
 }
 
+
+async function completeLeadFlowState({
+  supabase,
+  lead,
+  group,
+}: {
+  supabase: any;
+  lead: any;
+  group: string;
+}) {
+  const completedGroup = clean(group || getLeadFlowGroup(lead) || "default");
+
+  const basePatch: any = {
+    current_flow_step: null,
+    conversation_stage: `flow_completed:${completedGroup}`,
+    updated_at: new Date().toISOString(),
+  };
+
+  const withGroup = {
+    ...basePatch,
+    current_flow_group: null,
+  };
+
+  let result = await supabase
+    .from("leads")
+    .update(withGroup)
+    .eq("id", lead.id)
+    .select("*")
+    .maybeSingle();
+
+  if (result.error) {
+    const message = String(result.error?.message || "");
+
+    if (
+      message.includes("current_flow_group") ||
+      message.includes("schema cache")
+    ) {
+      result = await supabase
+        .from("leads")
+        .update(basePatch)
+        .eq("id", lead.id)
+        .select("*")
+        .maybeSingle();
+    }
+  }
+
+  if (result.error) {
+    console.error("[FLOW] Erro ao concluir fluxo:", {
+      leadId: lead?.id,
+      group: completedGroup,
+      error: result.error,
+    });
+
+    return lead;
+  }
+
+  return result.data || {
+    ...lead,
+    ...basePatch,
+    current_flow_group: null,
+  };
+}
+
+
 type AutomaticReplyResult = {
   reply: string | null;
   mediaUrl: string | null;
@@ -1805,6 +1879,18 @@ async function findTriggeredTemplate({
     if (
       flowMode(template) === "sequence" &&
       Number(template?.flow_step || 1) > 1
+    ) {
+      continue;
+    }
+
+    /*
+     * Um fluxo concluído não reinicia sozinho quando o cliente repete a
+     * palavra-chave inicial. Para reabrir o mesmo fluxo, o lead precisa ser
+     * resetado manualmente ou receber uma nova campanha que limpe o marcador.
+     */
+    if (
+      flowMode(template) === "sequence" &&
+      getCompletedFlowGroup(lead) === getTemplateFlowGroup(template)
     ) {
       continue;
     }
@@ -1990,11 +2076,10 @@ async function getCurrentFlowTemplate({
       step,
     });
 
-    await persistLeadFlowState({
+    await completeLeadFlowState({
       supabase,
       lead,
-      group: null,
-      step: null,
+      group,
     });
 
     return null;
@@ -2025,11 +2110,10 @@ async function advanceFlowStep({
   const group = getTemplateFlowGroup(currentTemplate);
 
   if (!Number.isFinite(nextStep) || nextStep <= 0) {
-    return persistLeadFlowState({
+    return completeLeadFlowState({
       supabase,
       lead,
-      group: null,
-      step: null,
+      group,
     });
   }
 
