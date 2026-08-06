@@ -4,19 +4,6 @@ import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
 
-const ADMIN_ROLES = new Set([
-  "GERAL", "MASTER", "ADMIN", "OWNER",
-  "SUPERVISOR", "GESTOR", "MANAGER",
-]);
-
-function sellerFilter(
-  access: Awaited<ReturnType<typeof requireCompanyAccess>>
-) {
-  return ADMIN_ROLES.has(String(access.userRole || "").toUpperCase())
-    ? {}
-    : { seller_id: access.userId };
-}
-
 function tableFromDistance(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
 
@@ -29,14 +16,6 @@ function tableFromDistance(value: unknown): number | null {
   if (distance < 400) return 3;
   if (distance < 500) return 4;
   return 5;
-}
-
-function normalizeStoredTable(value: unknown): number | null {
-  const table = Number(value);
-  if (!Number.isInteger(table)) return null;
-  if (table < 0) return null;
-  if (table > 5) return 5;
-  return table;
 }
 
 const LABELS = [
@@ -52,10 +31,17 @@ export async function GET(request: NextRequest) {
   try {
     const access = await requireCompanyAccess(request);
 
+    if (!access.userId) {
+      return NextResponse.json(
+        { error: "Vendedor não identificado." },
+        { status: 401 }
+      );
+    }
+
     const customers = await prisma.salesCustomer.findMany({
       where: {
         company_id: access.companyId,
-        ...sellerFilter(access),
+        seller_id: access.userId,
         status: {
           equals: "ativo",
           mode: "insensitive",
@@ -72,10 +58,13 @@ export async function GET(request: NextRequest) {
     const updates: Array<ReturnType<typeof prisma.salesCustomer.update>> = [];
 
     for (const customer of customers) {
-      const calculatedTable = tableFromDistance(customer.distance_km);
-      const storedTable = normalizeStoredTable(customer.price_table);
-      const table = calculatedTable ?? storedTable;
+      const table = tableFromDistance(customer.distance_km);
 
+      /*
+       * Cliente sem distância calculada não entra em nenhuma tabela.
+       * Nunca usamos price_table como fallback, porque um valor antigo
+       * poderia colocar um cliente pendente na Tabela 0.
+       */
       if (table === null) continue;
 
       counts[table] += 1;
@@ -97,6 +86,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       total_customers: customers.length,
       classified_customers: counts.reduce((sum, value) => sum + value, 0),
+      pending_count:
+        customers.length - counts.reduce((sum, value) => sum + value, 0),
       unclassified_customers:
         customers.length - counts.reduce((sum, value) => sum + value, 0),
       tables: counts.map((customer_count, price_table) => ({

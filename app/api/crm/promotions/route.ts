@@ -107,16 +107,6 @@ function sellerFilter(
     : { seller_id: access.userId };
 }
 
-function customerSellerFilter(
-  access: Awaited<ReturnType<typeof requireCompanyAccess>>
-) {
-  return ADMIN_ROLES.has(
-    String(access.userRole || "").toUpperCase()
-  )
-    ? {}
-    : { seller_id: access.userId };
-}
-
 function responseError(error: unknown, fallback: string) {
   const message =
     error instanceof Error ? error.message : fallback;
@@ -220,16 +210,27 @@ async function queueMissingDeliveries(
     sellerId: string | null;
     promotionId: string;
     tables: number[];
-    access: Awaited<ReturnType<typeof requireCompanyAccess>>;
     now: Date;
   }
 ) {
+  if (!options.sellerId) {
+    throw new Error("Vendedor não identificado.");
+  }
+
   const customers = await tx.salesCustomer.findMany({
     where: {
       company_id: options.companyId,
-      ...customerSellerFilter(options.access),
-      status: "ativo",
-      price_table: { in: options.tables },
+      seller_id: options.sellerId,
+      status: {
+        equals: "ativo",
+        mode: "insensitive",
+      },
+      distance_km: {
+        not: null,
+      },
+      price_table: {
+        in: options.tables,
+      },
     },
     select: {
       id: true,
@@ -387,7 +388,6 @@ export async function POST(request: NextRequest) {
             sellerId: access.userId,
             promotionId: created.id,
             tables,
-            access,
             now,
           });
         }
@@ -540,7 +540,6 @@ export async function PATCH(request: NextRequest) {
           sellerId: access.userId,
           promotionId: id,
           tables,
-          access,
           now,
         });
       }
