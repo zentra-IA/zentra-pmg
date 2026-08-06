@@ -97,17 +97,58 @@ const KANBAN_STATUS = [
   { value: "", label: "Não alterar etapa" },
   { value: "novo", label: "Novo lead" },
   { value: "enviado", label: "Mensagem enviada" },
-  { value: "respondeu", label: "Respondeu" },
-  { value: "primeiro_contato", label: "Primeiro contato" },
-  { value: "em_negociacao", label: "Em negociação" },
+  { value: "respondeu", label: "Cliente respondeu" },
+  { value: "em_negociacao", label: "Quer cotação" },
   { value: "cotacao_enviada", label: "Cotação enviada" },
+  { value: "campanha", label: "Em campanha" },
+  { value: "cliente_inativo", label: "Retomar depois" },
   { value: "pedido_fechado", label: "Pedido fechado" },
-  { value: "pos_venda", label: "Pós-venda" },
-  { value: "cliente_ativo", label: "Cliente ativo" },
-  { value: "cliente_inativo", label: "Cliente inativo" },
-  { value: "sem_interesse", label: "Sem interesse" },
+  { value: "sem_interesse", label: "Sem interesse agora" },
   { value: "perdido", label: "Perdido" },
 ];
+
+const KANBAN_STATUS_ALIASES: Record<string, string> = {
+  new: "novo",
+  novo_lead: "novo",
+  primeiro_contato: "respondeu",
+  respondido: "respondeu",
+  cliente_respondeu: "respondeu",
+  interesse: "em_negociacao",
+  negociacao: "em_negociacao",
+  quer_cotacao: "em_negociacao",
+  proposta: "cotacao_enviada",
+  cotacao: "cotacao_enviada",
+  orcamento_enviado: "cotacao_enviada",
+  em_campanha: "campanha",
+  campanha_ativa: "campanha",
+  retomar_depois: "cliente_inativo",
+  reativacao: "cliente_inativo",
+  cliente_ativo: "pedido_fechado",
+  pos_venda: "pedido_fechado",
+  finalizado: "pedido_fechado",
+  descartado: "perdido",
+};
+
+function normalizeKanbanStatus(value?: string | null) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\s-]+/g, "_");
+
+  return KANBAN_STATUS_ALIASES[normalized] || normalized;
+}
+
+function getKanbanStatusLabel(value?: string | null) {
+  const normalized = normalizeKanbanStatus(value);
+
+  return (
+    KANBAN_STATUS.find((item) => item.value === normalized)?.label ||
+    normalized ||
+    "Não alterar etapa"
+  );
+}
 
 const VARIABLES = [
   { label: "Cliente", value: "{cliente}" },
@@ -522,7 +563,7 @@ setNextStep("");
     setTriggerKeywords(getTemplateTriggers(item));
 
     setMatchType(item.match_type || "contains");
-    setKanbanStatus(item.kanban_status || "");
+    setKanbanStatus(normalizeKanbanStatus(item.kanban_status));
     setMediaUrl(item.media_url || "");
     setMediaType(item.media_type || "text");
     setFlowMode(item.flow_mode || "global");
@@ -589,7 +630,7 @@ setNextStep(item.next_step ? String(item.next_step) : "");
           match_type: matchType,
           media_url: mediaUrl || null,
           media_type: mediaUrl ? mediaType : "text",
-          kanban_status: kanbanStatus || null,
+          kanban_status: kanbanStatus ? normalizeKanbanStatus(kanbanStatus) : null,
           flow_mode: isCustomTrigger ? flowMode : "global",
           flow_step: isCustomTrigger && flowMode === "sequence" ? flowStep : null,
           next_step: isCustomTrigger && flowMode === "sequence" ? nextStep || null : null,
@@ -1160,7 +1201,7 @@ if (!editingId && flowMode === "sequence") {
 
               {item.kanban_status && (
                 <p className="mt-3 text-xs text-slate-500">
-                  Move cliente para: <strong>{item.kanban_status}</strong>
+                  Move cliente para: <strong>{getKanbanStatusLabel(item.kanban_status)}</strong>
                 </p>
               )}
             </article>
