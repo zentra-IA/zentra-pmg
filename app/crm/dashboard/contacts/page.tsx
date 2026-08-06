@@ -694,6 +694,11 @@ export default function ContactsDispatchPage() {
               template_id: selectedTemplate.id,
               intent: selectedTemplate.intent || "",
               session_id: selectedSession,
+              /*
+               * Mantém o ciclo previsível por lote:
+               * base → variação 1 → variação 2 → base...
+               */
+              sequence_index: index,
             }),
           }
         );

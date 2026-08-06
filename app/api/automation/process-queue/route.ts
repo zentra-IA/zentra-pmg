@@ -518,7 +518,9 @@ function scoreTemplate(
     score += 900;
   }
 
-  const itemIntent = normalizeIntent(item?.intent);
+  const itemIntent = normalizeIntent(
+    item?.intent || item?.type
+  );
   const templateIntent = normalizeIntent(template?.intent);
 
   if (itemIntent && templateIntent && itemIntent === templateIntent) {
@@ -677,6 +679,53 @@ async function buildQueueMessage({
     template
   );
 
+  const rawQueueMessage = clean(item?.message);
+
+  /*
+   * A rota /api/crm/queue já grava a mensagem final na fila:
+   * - variação selecionada
+   * - variáveis aplicadas
+   *
+   * Portanto o worker deve priorizar item.message para não escolher
+   * outra variação e desfazer o ciclo definido no lote.
+   *
+   * Para itens legados sem texto, ainda existe o fallback pelo template.
+   */
+  if (rawQueueMessage) {
+    const message = applyVariables(
+      rawQueueMessage,
+      lead,
+      item
+    );
+
+    if (!message) {
+      throw new Error(
+        "Mensagem ficou vazia após aplicar as variáveis."
+      );
+    }
+
+    return {
+      message,
+      template,
+      variations,
+      selectedIndex: Number(
+        item?.sequence_index ??
+          item?.variation_index ??
+          0
+      ) || 0,
+      totalVariations: Math.max(
+        1,
+        uniqueTexts([
+          getTemplateBaseMessage(template),
+          ...variations.map((variation: AnyRecord) =>
+            getVariationText(variation)
+          ),
+        ]).length
+      ),
+      selectedSource: "queue_resolved",
+    };
+  }
+
   const pool = uniqueTexts([
     getTemplateBaseMessage(template),
     ...variations.map((variation: AnyRecord) =>
@@ -684,14 +733,10 @@ async function buildQueueMessage({
     ),
   ]);
 
-  const rawFallback = clean(item?.message);
-
-  if (!pool.length && rawFallback) {
-    pool.push(rawFallback);
-  }
-
   if (!pool.length) {
-    throw new Error("Item sem mensagem e sem template de campanha válido.");
+    throw new Error(
+      "Item sem mensagem e sem template de campanha válido."
+    );
   }
 
   const sequenceIndex = await getSequenceIndex(
@@ -709,7 +754,9 @@ async function buildQueueMessage({
   );
 
   if (!message) {
-    throw new Error("Mensagem ficou vazia após aplicar as variáveis.");
+    throw new Error(
+      "Mensagem ficou vazia após aplicar as variáveis."
+    );
   }
 
   return {
@@ -719,11 +766,9 @@ async function buildQueueMessage({
     selectedIndex,
     totalVariations: pool.length,
     selectedSource:
-      selectedIndex === 0 && template
+      selectedIndex === 0
         ? "base"
-        : template
-          ? "variation"
-          : "queue",
+        : "variation",
   };
 }
 
@@ -784,46 +829,120 @@ async function saveSentHistory({
 
   const now = new Date().toISOString();
 
-  const { error: messageError } = await supabase
-    .from("messages")
-    .insert({
-      company_id: companyId,
-      branch_id: item?.branch_id || lead?.branch_id || null,
-      lead_id: lead.id,
-      owner_user_id:
-        item?.owner_user_id ||
-        lead?.owner_user_id ||
-        template?.owner_user_id ||
-        null,
-      direction: "sent",
-      topic: "whatsapp",
-      extension: "text",
-      event: "message_sent",
-      content: message,
-      status: "sent",
-      payload: {
-        source: "automation_queue",
-        queue_id: item.id,
-        campaign_id: item?.campaign_id || null,
-        template_id: template?.id || null,
-        template_name:
-          template?.name ||
-          template?.title ||
-          null,
-        variation_index: selectedIndex,
-        variation_total: totalVariations,
-        variation_source: selectedSource,
-        variation_counted: true,
-        session_id: Number(item?.session_id || lead?.session_id || 1),
-      },
-      created_at: now,
-      updated_at: now,
-    });
+  const payload = {
+    source: "automation_queue",
+    queue_id: item.id,
+    campaign_id: item?.campaign_id || null,
+    template_id: template?.id || null,
+    template_name:
+      template?.name ||
+      template?.title ||
+      null,
+    variation_index: selectedIndex,
+    variation_total: totalVariations,
+    variation_source: selectedSource,
+    variation_counted: true,
+    session_id: Number(
+      item?.session_id ||
+        lead?.session_id ||
+        1
+    ),
+  };
 
-  if (messageError) {
-    throw new Error(
-      `Mensagem enviada, mas não foi salva no Inbox: ${messageError.message}`
+  /*
+   * A fila CRM cria um registro "queued" para o Inbox não ficar vazio.
+   * Quando este worker efetivamente envia, atualizamos esse mesmo registro
+   * em vez de criar uma mensagem duplicada.
+   */
+  const { data: queuedHistory, error: queuedHistoryError } =
+    await supabase
+      .from("messages")
+      .select("id, payload")
+      .eq("company_id", companyId)
+      .eq("lead_id", lead.id)
+      .contains("payload", {
+        queue_id: item.id,
+      })
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+  if (queuedHistoryError) {
+    console.error(
+      "[QUEUE] Erro ao procurar histórico enfileirado:",
+      queuedHistoryError
     );
+  }
+
+  if (queuedHistory?.id) {
+    const { error: updateMessageError } = await supabase
+      .from("messages")
+      .update({
+        direction: "sent",
+        topic: "whatsapp",
+        extension: "text",
+        event: "message_sent",
+        content: message,
+        status: "sent",
+        payload: {
+          ...(
+            queuedHistory?.payload &&
+            typeof queuedHistory.payload === "object"
+              ? queuedHistory.payload
+              : {}
+          ),
+          ...payload,
+          variation_index:
+            queuedHistory?.payload?.variation_index ??
+            payload.variation_index,
+          variation_total:
+            queuedHistory?.payload?.variation_total ??
+            payload.variation_total,
+          variation_source:
+            queuedHistory?.payload?.variation_source ??
+            payload.variation_source,
+        },
+        updated_at: now,
+      })
+      .eq("id", queuedHistory.id)
+      .eq("company_id", companyId);
+
+    if (updateMessageError) {
+      throw new Error(
+        `Mensagem enviada, mas o histórico não foi atualizado: ${updateMessageError.message}`
+      );
+    }
+  } else {
+    const { error: messageError } = await supabase
+      .from("messages")
+      .insert({
+        company_id: companyId,
+        branch_id:
+          item?.branch_id ||
+          lead?.branch_id ||
+          null,
+        lead_id: lead.id,
+        owner_user_id:
+          item?.owner_user_id ||
+          lead?.owner_user_id ||
+          template?.owner_user_id ||
+          null,
+        direction: "sent",
+        topic: "whatsapp",
+        extension: "text",
+        event: "message_sent",
+        content: message,
+        status: "sent",
+        payload,
+        created_at: now,
+        updated_at: now,
+      });
+
+    if (messageError) {
+      throw new Error(
+        `Mensagem enviada, mas não foi salva no Inbox: ${messageError.message}`
+      );
+    }
   }
 
   const requestedStatus = normalizeKanbanStatus(

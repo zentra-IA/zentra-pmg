@@ -69,6 +69,334 @@ function normalizeSessionNumber(value: unknown, fallback = 1) {
   return Math.max(1, Math.min(5, Math.trunc(number)));
 }
 
+function clean(value: unknown) {
+  return String(value ?? "").trim();
+}
+
+function firstText(...values: unknown[]) {
+  for (const value of values) {
+    const text = clean(value);
+
+    if (text) {
+      return text;
+    }
+  }
+
+  return "";
+}
+
+function uniqueTexts(values: unknown[]) {
+  const result: string[] = [];
+
+  for (const value of values) {
+    const text = clean(value);
+
+    if (text && !result.includes(text)) {
+      result.push(text);
+    }
+  }
+
+  return result;
+}
+
+function getVariationText(variation: any) {
+  if (typeof variation === "string") {
+    return clean(variation);
+  }
+
+  return firstText(
+    variation?.message,
+    variation?.content,
+    variation?.base_message,
+    variation?.final_message
+  );
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function replaceVariable(
+  text: string,
+  keys: string[],
+  value: unknown
+) {
+  let result = text;
+  const replacement = clean(value);
+
+  for (const key of keys) {
+    const escaped = escapeRegExp(key);
+
+    result = result
+      .replace(
+        new RegExp(`{{\\s*${escaped}\\s*}}`, "gi"),
+        replacement
+      )
+      .replace(
+        new RegExp(`{\\s*${escaped}\\s*}`, "gi"),
+        replacement
+      );
+  }
+
+  return result;
+}
+
+function applyCommercialVariables(
+  text: string,
+  lead: any,
+  template: any
+) {
+  const leadName = firstText(
+    lead?.name,
+    lead?.nome,
+    lead?.contact_name,
+    lead?.company_name,
+    lead?.razao_social,
+    "cliente"
+  );
+
+  const phone = normalizePhone(
+    firstText(
+      lead?.phone,
+      lead?.telefone,
+      lead?.whatsapp
+    )
+  );
+
+  const companyName = firstText(
+    lead?.company_name,
+    lead?.empresa,
+    lead?.business_name,
+    lead?.razao_social,
+    lead?.fantasy_name,
+    lead?.nome_fantasia,
+    leadName
+  );
+
+  const values: Array<{
+    keys: string[];
+    value: unknown;
+  }> = [
+    {
+      keys: ["nome", "cliente", "client"],
+      value: leadName,
+    },
+    {
+      keys: ["telefone", "phone", "whatsapp"],
+      value: phone,
+    },
+    {
+      keys: ["email", "e-mail"],
+      value: firstText(lead?.email),
+    },
+    {
+      keys: ["empresa", "company", "razao_social"],
+      value: companyName,
+    },
+    {
+      keys: ["cnpj", "cpf", "cnpj_cpf"],
+      value: firstText(
+        lead?.cnpj,
+        lead?.cpf,
+        lead?.document,
+        lead?.documento
+      ),
+    },
+    {
+      keys: ["cidade", "city"],
+      value: firstText(lead?.city, lead?.cidade),
+    },
+    {
+      keys: ["estado", "uf", "state"],
+      value: firstText(lead?.state, lead?.estado, lead?.uf),
+    },
+    {
+      keys: ["representante", "vendedor"],
+      value: firstText(
+        lead?.representative_name,
+        lead?.seller_name,
+        lead?.vendedor,
+        template?.representative_name
+      ),
+    },
+    {
+      keys: ["produto", "product"],
+      value: firstText(
+        lead?.product,
+        lead?.produto,
+        template?.product
+      ),
+    },
+    {
+      keys: ["categoria", "category"],
+      value: firstText(
+        lead?.category,
+        lead?.categoria,
+        template?.category
+      ),
+    },
+    {
+      keys: ["valor", "value", "price"],
+      value: firstText(
+        lead?.value,
+        lead?.valor,
+        lead?.price
+      ),
+    },
+    {
+      keys: ["desconto", "discount"],
+      value: firstText(lead?.discount, lead?.desconto),
+    },
+    {
+      keys: ["forma_pagamento", "pagamento"],
+      value: firstText(
+        lead?.payment_method,
+        lead?.forma_pagamento
+      ),
+    },
+    {
+      keys: ["data_entrega", "entrega"],
+      value: firstText(
+        lead?.delivery_date,
+        lead?.data_entrega
+      ),
+    },
+    {
+      keys: ["pedido", "order"],
+      value: firstText(
+        lead?.order_number,
+        lead?.pedido
+      ),
+    },
+    {
+      keys: ["cotacao", "orcamento", "quote"],
+      value: firstText(
+        lead?.quote_number,
+        lead?.cotacao,
+        lead?.orcamento
+      ),
+    },
+    {
+      keys: ["ticket_medio"],
+      value: firstText(
+        lead?.average_ticket,
+        lead?.ticket_medio
+      ),
+    },
+    {
+      keys: ["ultima_compra"],
+      value: firstText(
+        lead?.last_purchase,
+        lead?.ultima_compra
+      ),
+    },
+    {
+      keys: ["ultima_mensagem"],
+      value: firstText(
+        lead?.last_message,
+        lead?.ultima_mensagem
+      ),
+    },
+    {
+      keys: ["link_whatsapp"],
+      value: phone
+        ? `https://wa.me/${phone}`
+        : "",
+    },
+  ];
+
+  let result = clean(text);
+
+  for (const entry of values) {
+    result = replaceVariable(
+      result,
+      entry.keys,
+      entry.value
+    );
+  }
+
+  /*
+   * Evita que placeholders não preenchidos sejam enviados literalmente.
+   * Mantém o texto limpo sem deixar "{campo}" visível para o cliente.
+   */
+  return result
+    .replace(/{{\s*[^{}]+\s*}}/g, "")
+    .replace(/{\s*[^{}]+\s*}/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\s+([,.;!?])/g, "$1")
+    .trim();
+}
+
+function normalizeKanbanStatus(value: unknown) {
+  const raw = clean(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\s-]+/g, "_");
+
+  const aliases: Record<string, string> = {
+    new: "novo",
+    novo_lead: "novo",
+    respondido: "respondeu",
+    cliente_respondeu: "respondeu",
+    primeiro_contato: "respondeu",
+    interesse: "em_negociacao",
+    negociacao: "em_negociacao",
+    quer_cotacao: "em_negociacao",
+    proposta: "cotacao_enviada",
+    cotacao: "cotacao_enviada",
+    orcamento_enviado: "cotacao_enviada",
+    aprovado: "pedido_fechado",
+    finalizado: "pedido_fechado",
+    cliente_ativo: "pedido_fechado",
+    pos_venda: "pedido_fechado",
+    reativar_futuro: "cliente_inativo",
+    descartado: "perdido",
+  };
+
+  const normalized = aliases[raw] || raw;
+
+  const allowed = new Set([
+    "novo",
+    "campanha",
+    "enviado",
+    "respondeu",
+    "em_negociacao",
+    "cotacao_enviada",
+    "pedido_fechado",
+    "cliente_inativo",
+    "sem_interesse",
+    "perdido",
+  ]);
+
+  return allowed.has(normalized)
+    ? normalized
+    : null;
+}
+
+async function loadTemplateVariations(
+  supabase: ReturnType<typeof getSupabase>,
+  companyId: string,
+  templateId: string
+) {
+  const { data, error } = await supabase
+    .from("message_variations")
+    .select("*")
+    .eq("company_id", companyId)
+    .eq("template_id", templateId)
+    .eq("active", true)
+    .order("sort_order", { ascending: true })
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw new Error(
+      `Erro ao carregar variações da mensagem: ${error.message}`
+    );
+  }
+
+  return data || [];
+}
+
 async function requireQueueAccess(
   req: NextRequest
 ): Promise<AccessContext> {
@@ -200,9 +528,7 @@ async function getConfiguredTemplate(
 ) {
   let query = supabase
     .from("message_templates")
-    .select(
-      "id, company_id, owner_user_id, name, title, type, intent, base_message, kanban_status, active"
-    )
+    .select("*")
     .eq("id", templateId)
     .eq("company_id", access.companyId)
     .eq("active", true);
@@ -413,9 +739,10 @@ export async function POST(req: NextRequest) {
         "campaign"
     ).trim();
 
-    const targetKanbanStatus = String(
-      configuredTemplate.kanban_status || ""
-    ).trim();
+    const targetKanbanStatus =
+      normalizeKanbanStatus(
+        configuredTemplate.kanban_status
+      );
 
     const leadId = String(
       body?.lead_id || body?.leadId || ""
@@ -435,9 +762,7 @@ export async function POST(req: NextRequest) {
 
     let leadQuery = supabase
       .from("leads")
-      .select(
-        "id, company_id, branch_id, owner_user_id, phone, session_id, status, name"
-      )
+      .select("*")
       .eq("id", leadId)
       .eq("company_id", access.companyId);
 
@@ -498,6 +823,81 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    /*
+     * A mensagem é resolvida ANTES de entrar na fila.
+     *
+     * Isso torna a fila compatível com qualquer worker já existente:
+     * o item passa a carregar o texto final, com variável e variação
+     * aplicadas, em vez de depender do worker para reconstruir o template.
+     */
+    const variations = await loadTemplateVariations(
+      supabase,
+      access.companyId,
+      configuredTemplate.id
+    );
+
+    const messagePool = uniqueTexts([
+      configuredMessage,
+      ...variations.map((variation: any) =>
+        getVariationText(variation)
+      ),
+    ]);
+
+    if (!messagePool.length) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "A mensagem selecionada não possui conteúdo válido.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const rawSequenceIndex = Number(
+      body?.sequence_index ??
+        body?.sequenceIndex ??
+        body?.variation_index ??
+        body?.variationIndex ??
+        0
+    );
+
+    const sequenceIndex =
+      Number.isFinite(rawSequenceIndex) &&
+      rawSequenceIndex >= 0
+        ? Math.trunc(rawSequenceIndex)
+        : 0;
+
+    const selectedIndex =
+      sequenceIndex % messagePool.length;
+
+    const selectedSource =
+      selectedIndex === 0
+        ? "base"
+        : "variation";
+
+    const resolvedMessage =
+      applyCommercialVariables(
+        messagePool[selectedIndex],
+        lead,
+        configuredTemplate
+      );
+
+    if (!resolvedMessage) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "A mensagem ficou vazia após aplicar as variáveis.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
     const now = new Date().toISOString();
 
     const queueOwnerUserId =
@@ -507,41 +907,124 @@ export async function POST(req: NextRequest) {
           ? lead.owner_user_id
           : access.userId;
 
-    const { data: queueItem, error: queueError } =
-      await supabase
+    const queuePayload: Record<string, unknown> = {
+      company_id: access.companyId,
+      branch_id:
+        lead?.branch_id ||
+        access.branchId ||
+        null,
+
+      /*
+       * Campo essencial do isolamento multiusuário.
+       * O worker usa este UUID para montar:
+       * company_id + owner_user_id + session_id.
+       */
+      owner_user_id: queueOwnerUserId,
+
+      lead_id: lead.id,
+      phone,
+      session_id: sessionId,
+      type: configuredIntent,
+
+      /*
+       * Neste fluxo o campaign_id guarda o ID do template comercial.
+       * O processador atual já aceita essa compatibilidade.
+       */
+      campaign_id: configuredTemplate.id,
+
+      status: "pending",
+      scheduled_at: now,
+      created_at: now,
+      attempts: 0,
+      message: resolvedMessage,
+      error: null,
+      last_error: null,
+      next_attempt_at: null,
+    };
+
+    let queueResult = await supabase
+      .from("automation_queue")
+      .insert(queuePayload)
+      .select("*")
+      .single();
+
+    /*
+     * Compatibilidade com bancos antigos em que campaign_id possua uma
+     * restrição externa diferente. A mensagem final continua funcionando
+     * mesmo sem o vínculo explícito do template.
+     */
+    if (
+      queueResult.error &&
+      /campaign_id|foreign key|violates/i.test(
+        queueResult.error.message || ""
+      )
+    ) {
+      const fallbackPayload = {
+        ...queuePayload,
+        campaign_id: null,
+      };
+
+      queueResult = await supabase
         .from("automation_queue")
-        .insert({
-          company_id: access.companyId,
-          branch_id:
-            lead?.branch_id ||
-            access.branchId ||
-            null,
-
-          /*
-           * Campo essencial do isolamento multiusuário.
-           * O worker usa este UUID para montar:
-           * company_id + owner_user_id + session_id.
-           */
-          owner_user_id: queueOwnerUserId,
-
-          lead_id: lead.id,
-          phone,
-          session_id: sessionId,
-          type: configuredIntent,
-          status: "pending",
-          scheduled_at: now,
-          created_at: now,
-          attempts: 0,
-          message: configuredMessage,
-          error: null,
-          last_error: null,
-          next_attempt_at: null,
-        })
+        .insert(fallbackPayload)
         .select("*")
         .single();
+    }
 
-    if (queueError) {
-      throw new Error(queueError.message);
+    const queueItem = queueResult.data;
+    const queueError = queueResult.error;
+
+    if (queueError || !queueItem) {
+      throw new Error(
+        queueError?.message ||
+          "A fila não retornou o item criado."
+      );
+    }
+
+    /*
+     * Registra a saída imediatamente no Inbox com status "queued".
+     * O processador V2 atualiza este mesmo registro para "sent".
+     * Workers legados que apenas enviam a fila não deixam mais o Inbox vazio.
+     */
+    const { error: historyError } = await supabase
+      .from("messages")
+      .insert({
+        company_id: access.companyId,
+        branch_id:
+          lead?.branch_id ||
+          access.branchId ||
+          null,
+        lead_id: lead.id,
+        owner_user_id: queueOwnerUserId,
+        direction: "sent",
+        topic: "whatsapp",
+        extension: "text",
+        event: "message_queued",
+        content: resolvedMessage,
+        status: "queued",
+        payload: {
+          source: "crm_queue",
+          queue_id: queueItem.id,
+          template_id: configuredTemplate.id,
+          template_name:
+            configuredTemplate.name ||
+            configuredTemplate.title ||
+            null,
+          sequence_index: sequenceIndex,
+          variation_index: selectedIndex,
+          variation_total: messagePool.length,
+          variation_source: selectedSource,
+          session_id: sessionId,
+        },
+        created_at: now,
+        updated_at: now,
+      });
+
+    if (historyError) {
+      console.error(
+        "CRM_QUEUE_HISTORY_WARNING",
+        historyError
+      );
     }
 
     /*
@@ -549,12 +1032,21 @@ export async function POST(req: NextRequest) {
      * Não deve desfazer a fila se algum campo legado não existir.
      */
     const leadUpdate: Record<string, unknown> = {
+      /*
+       * O card precisa sair de "Novo lead" assim que o disparo entra
+       * na operação. Se o template definiu uma coluna específica,
+       * ela tem prioridade; caso contrário usamos "Mensagem enviada".
+       *
+       * O worker real ainda poderá confirmar o envio depois.
+       */
+      status: targetKanbanStatus || "enviado",
+      campaign_status: "queued",
+      last_message: resolvedMessage,
+      last_message_at: now,
+      last_campaign_at: now,
+      opening_sent: true,
       updated_at: now,
     };
-
-    if (targetKanbanStatus) {
-      leadUpdate.status = targetKanbanStatus;
-    }
 
     if (
       isUuid(body?.job_id || body?.jobId)
@@ -607,6 +1099,15 @@ export async function POST(req: NextRequest) {
         kanban_status: targetKanbanStatus || null,
       },
       owner_user_id: queueOwnerUserId,
+      resolved_message: resolvedMessage,
+      variation: {
+        sequence_index: sequenceIndex,
+        selected_index: selectedIndex,
+        total: messagePool.length,
+        source: selectedSource,
+      },
+      kanban_status:
+        targetKanbanStatus || "enviado",
     });
   } catch (error: any) {
     console.error("CRM_QUEUE_POST_ERROR", error);
