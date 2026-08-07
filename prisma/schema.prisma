@@ -725,6 +725,8 @@ model companies {
   pushSubscriptions         PushSubscription[]
   pushDeliveries            PushDelivery[]
   customerPromotionAccesses CustomerPromotionAccess[]
+  promotionAudienceLists    PromotionAudienceList[]
+  promotionAudienceMembers  PromotionAudienceMember[]
 }
 
 model branches {
@@ -1325,10 +1327,11 @@ model SalesCustomer {
   activities SalesCustomerActivity[]
   SalesOrder SalesOrder[]
 
-  webPromotionAccess      WebPromotionAccess?
-  pushSubscriptions       PushSubscription[]
-  promotionDeliveries     PushDelivery[]
-  customerPromotionAccess CustomerPromotionAccess?
+  webPromotionAccess       WebPromotionAccess?
+  pushSubscriptions        PushSubscription[]
+  promotionDeliveries      PushDelivery[]
+  customerPromotionAccess  CustomerPromotionAccess?
+  promotionAudienceMembers PromotionAudienceMember[]
 
   price_table Int?
   distance_km Decimal? @db.Decimal(10, 2)
@@ -1714,6 +1717,10 @@ model WebPromotion {
   company_id String  @db.Uuid
   seller_id  String? @db.Uuid
 
+  // table = seleção automática por tabela; campaign = lista personalizada.
+  audience_mode    String  @default("table")
+  audience_list_id String? @db.Uuid
+
   // Nome da campanha visível somente no CRM.
   internal_title String?
 
@@ -1761,10 +1768,11 @@ model WebPromotion {
   created_at DateTime @default(now()) @db.Timestamptz(6)
   updated_at DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
-  company    companies            @relation(fields: [company_id], references: [id], onDelete: Cascade)
-  targets    WebPromotionTarget[]
-  images     WebPromotionImage[]
-  deliveries PushDelivery[]
+  company      companies              @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  audienceList PromotionAudienceList? @relation(fields: [audience_list_id], references: [id], onDelete: SetNull)
+  targets      WebPromotionTarget[]
+  images       WebPromotionImage[]
+  deliveries   PushDelivery[]
 
   @@index([company_id])
   @@index([seller_id])
@@ -1774,6 +1782,8 @@ model WebPromotion {
   @@index([valid_from])
   @@index([valid_until])
   @@index([company_id, seller_id, status])
+  @@index([audience_mode])
+  @@index([audience_list_id])
   @@map("web_promotions")
 }
 
@@ -1794,6 +1804,48 @@ model WebPromotionImage {
   @@index([promotion_id])
   @@index([promotion_id, sort_order])
   @@map("web_promotion_images")
+}
+
+model PromotionAudienceList {
+  id         String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id String @db.Uuid
+  seller_id  String @db.Uuid
+
+  name        String
+  description String?
+  status      String  @default("active")
+
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  company    companies                 @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  members    PromotionAudienceMember[]
+  promotions WebPromotion[]
+
+  @@index([company_id])
+  @@index([seller_id])
+  @@index([company_id, seller_id, status])
+  @@map("promotion_audience_lists")
+}
+
+model PromotionAudienceMember {
+  id               String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id       String  @db.Uuid
+  audience_list_id String  @db.Uuid
+  customer_id      String  @db.Uuid
+  added_by         String? @db.Uuid
+
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  company      companies             @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  audienceList PromotionAudienceList @relation(fields: [audience_list_id], references: [id], onDelete: Cascade)
+  customer     SalesCustomer         @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+
+  @@unique([audience_list_id, customer_id])
+  @@index([company_id])
+  @@index([audience_list_id])
+  @@index([customer_id])
+  @@map("promotion_audience_members")
 }
 
 model WebPromotionTarget {

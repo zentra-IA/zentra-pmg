@@ -32,20 +32,6 @@ export async function generateMetadata({
   };
 }
 
-function tableFromDistance(value: unknown): number | null {
-  if (value === null || value === undefined || value === "") return null;
-
-  const distance = Number(value);
-  if (!Number.isFinite(distance) || distance < 0) return null;
-
-  if (distance < 100) return 0;
-  if (distance < 200) return 1;
-  if (distance < 300) return 2;
-  if (distance < 400) return 3;
-  if (distance < 500) return 4;
-  return 5;
-}
-
 export default async function CustomerOffersPage({
   params,
 }: PageProps) {
@@ -55,58 +41,63 @@ export default async function CustomerOffersPage({
   if (!access) notFound();
 
   const customer = access.customer;
-  const table =
-    tableFromDistance(customer.distance_km) ??
-    customer.price_table ??
-    access.price_table;
-
   const now = new Date();
 
-  const promotions =
-    table === null || table === undefined
-      ? []
-      : await prisma.webPromotion.findMany({
-          where: {
-            company_id: access.company_id,
-            status: "published",
-            targets: {
-              some: { price_table: Number(table) },
-            },
-            AND: [
-              {
-                OR: [
-                  { valid_from: null },
-                  { valid_from: { lte: now } },
-                ],
-              },
-              {
-                OR: [
-                  { valid_until: null },
-                  { valid_until: { gte: now } },
-                ],
-              },
-            ],
-          },
-          include: {
-            images: {
-              orderBy: { sort_order: "asc" },
-            },
-            deliveries: {
-              where: {
-                customer_id: customer.id,
-              },
-              select: {
-                id: true,
-              },
-              take: 1,
-            },
-          },
-          orderBy: [
-            { published_at: "desc" },
-            { created_at: "desc" },
+  /*
+   * A entrega é a autorização definitiva para visualizar a promoção.
+   * Assim, o portal funciona igualmente para:
+   * - seleção automática por tabela;
+   * - campanha personalizada por clientes.
+   *
+   * Também impede que um cliente veja uma promoção apenas por compartilhar
+   * a mesma tabela comercial com outro destinatário.
+   */
+  const promotions = await prisma.webPromotion.findMany({
+    where: {
+      company_id: access.company_id,
+      status: "published",
+      deliveries: {
+        some: {
+          company_id: access.company_id,
+          customer_id: customer.id,
+        },
+      },
+      AND: [
+        {
+          OR: [
+            { valid_from: null },
+            { valid_from: { lte: now } },
           ],
-          take: 30,
-        });
+        },
+        {
+          OR: [
+            { valid_until: null },
+            { valid_until: { gte: now } },
+          ],
+        },
+      ],
+    },
+    include: {
+      images: {
+        orderBy: { sort_order: "asc" },
+      },
+      deliveries: {
+        where: {
+          company_id: access.company_id,
+          customer_id: customer.id,
+        },
+        select: {
+          id: true,
+        },
+        take: 1,
+      },
+    },
+    orderBy: [
+      { published_at: "desc" },
+      { created_at: "desc" },
+    ],
+    take: 30,
+  });
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6">
@@ -120,7 +111,7 @@ export default async function CustomerOffersPage({
         </h1>
 
         <p className="mt-2 text-slate-500">
-          Ofertas da Tabela {table ?? "não definida"}.
+          Ofertas selecionadas para você.
         </p>
 
         <div className="mt-8 grid gap-5">
@@ -130,7 +121,7 @@ export default async function CustomerOffersPage({
                 Promoções em breve
               </h2>
               <p className="mt-2 text-slate-500">
-                Não há promoção ativa para sua tabela neste momento.
+                Não há promoção ativa direcionada para você neste momento.
               </p>
             </div>
           ) : (
