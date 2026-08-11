@@ -31,6 +31,8 @@ type Customer = {
   status: string;
   customer_score?: number;
   risk_level?: string;
+  price_table?: number | null;
+  distance_km?: string | number | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -49,6 +51,19 @@ type CustomerActivity = {
 type PromotionLinkResponse = {
   success?: boolean;
   promotion_url?: string;
+  error?: string;
+};
+
+type DistanceCalculationResponse = {
+  success?: boolean;
+  customer?: Customer;
+  distance_calculation?: {
+    distance_km: number;
+    price_table: number;
+    geocoded_address?: string;
+    source?: "osrm" | "haversine";
+  } | null;
+  warning?: string | null;
   error?: string;
 };
 
@@ -114,6 +129,29 @@ function money(value: unknown) {
   });
 }
 
+function formatDistance(value: unknown) {
+  const distance = Number(value);
+
+  if (!Number.isFinite(distance) || distance < 0) {
+    return "Distância não calculada";
+  }
+
+  return `${distance.toLocaleString("pt-BR", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  })} km`;
+}
+
+function priceTableLabel(value: unknown) {
+  const table = Number(value);
+
+  if (!Number.isInteger(table) || table < 0 || table > 5) {
+    return "Tabela pendente";
+  }
+
+  return `Tabela ${table}`;
+}
+
 function normalizePhone(value?: string | null) {
   const digits = String(value || "").replace(/\D/g, "");
 
@@ -163,6 +201,12 @@ export default function CustomersPage() {
     useState<string | null>(null);
   const [promotionLinks, setPromotionLinks] =
     useState<Record<string, string>>({});
+  const [recalculatingDistances, setRecalculatingDistances] =
+    useState(false);
+  const [recalculateProgress, setRecalculateProgress] = useState({
+    completed: 0,
+    total: 0,
+  });
 
   const [filters, setFilters] = useState({
     q: "",
@@ -330,13 +374,160 @@ export default function CustomersPage() {
       resetForm();
       await loadCustomers();
 
-      alert(
-        editingId
-          ? "Cliente atualizado com sucesso."
-          : "Cliente cadastrado com sucesso."
-      );
+      const result = data as DistanceCalculationResponse;
+      const calculation = result.distance_calculation;
+
+      if (calculation) {
+        alert(
+          `${
+            editingId
+              ? "Cliente atualizado"
+              : "Cliente cadastrado"
+          } com sucesso.\n\n${priceTableLabel(
+            calculation.price_table
+          )} · ${formatDistance(calculation.distance_km)}`
+        );
+      } else {
+        alert(
+          `${
+            editingId
+              ? "Cliente atualizado"
+              : "Cliente cadastrado"
+          } com sucesso.\n\nA tabela de preço ainda não foi calculada.${
+            result.warning ? `\n${result.warning}` : ""
+          }`
+        );
+      }
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function recalculateCustomerDistance(
+    customer: Customer
+  ) {
+    const res = await fetch("/api/crm/customers", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({
+        customer_id: customer.id,
+      }),
+    });
+
+    const data =
+      (await res
+        .json()
+        .catch(() => ({}))) as DistanceCalculationResponse;
+
+    if (!res.ok || !data.customer) {
+      throw new Error(
+        data.error ||
+          `Não foi possível calcular a distância de ${
+            customer.trade_name || customer.legal_name
+          }.`
+      );
+    }
+
+    setCustomers((current) =>
+      current.map((item) =>
+        item.id === data.customer!.id ? data.customer! : item
+      )
+    );
+
+    setSelected((current) =>
+      current?.id === data.customer!.id
+        ? data.customer!
+        : current
+    );
+
+    return data;
+  }
+
+  async function recalculateAllDistances() {
+    if (recalculatingDistances) return;
+
+    const eligibleCustomers = customers.filter((customer) =>
+      Boolean(
+        customer.cep ||
+          customer.address ||
+          customer.city
+      )
+    );
+
+    if (!eligibleCustomers.length) {
+      alert(
+        "Nenhum cliente possui CEP ou endereço suficiente para o cálculo."
+      );
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Recalcular distância e tabela de ${eligibleCustomers.length} cliente(s)?\n\nO cálculo considera a rota rodoviária a partir da PMG em Itapecerica da Serra.`
+    );
+
+    if (!confirmed) return;
+
+    setRecalculatingDistances(true);
+    setRecalculateProgress({
+      completed: 0,
+      total: eligibleCustomers.length,
+    });
+
+    let successCount = 0;
+    const failures: string[] = [];
+
+    try {
+      for (
+        let index = 0;
+        index < eligibleCustomers.length;
+        index += 1
+      ) {
+        const customer = eligibleCustomers[index];
+
+        try {
+          await recalculateCustomerDistance(customer);
+          successCount += 1;
+        } catch (error) {
+          failures.push(
+            `${
+              customer.trade_name || customer.legal_name
+            }: ${
+              error instanceof Error
+                ? error.message
+                : "erro desconhecido"
+            }`
+          );
+        }
+
+        setRecalculateProgress({
+          completed: index + 1,
+          total: eligibleCustomers.length,
+        });
+
+        if (index < eligibleCustomers.length - 1) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, 1100)
+          );
+        }
+      }
+
+      await loadCustomers();
+
+      alert(
+        [
+          `Cálculo concluído: ${successCount} cliente(s) atualizado(s).`,
+          failures.length
+            ? `${failures.length} falha(s):\n${failures
+                .slice(0, 8)
+                .join("\n")}`
+            : "Todos os clientes foram classificados.",
+        ].join("\n\n")
+      );
+    } finally {
+      setRecalculatingDistances(false);
     }
   }
 
@@ -743,17 +934,31 @@ export default function CustomersPage() {
           </p>
         </div>
 
-        <button
-          className="primary-button"
-          onClick={() =>
-            window.scrollTo({
-              top: 320,
-              behavior: "smooth",
-            })
-          }
-        >
-          Novo cliente
-        </button>
+        <div className="hero-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={recalculatingDistances}
+            onClick={recalculateAllDistances}
+          >
+            {recalculatingDistances
+              ? `Calculando ${recalculateProgress.completed}/${recalculateProgress.total}`
+              : "Recalcular tabelas"}
+          </button>
+
+          <button
+            type="button"
+            className="primary-button"
+            onClick={() =>
+              window.scrollTo({
+                top: 320,
+                behavior: "smooth",
+              })
+            }
+          >
+            Novo cliente
+          </button>
+        </div>
       </section>
 
       <section className="stats-grid">
@@ -1266,6 +1471,11 @@ export default function CustomersPage() {
                       CEP: {customer.cep || "Não informado"}
                     </span>
 
+                    <span className="distance-preview">
+                      {priceTableLabel(customer.price_table)} ·{" "}
+                      {formatDistance(customer.distance_km)}
+                    </span>
+
                     <span className="address-preview">
                       {formatAddress(customer)}
                     </span>
@@ -1434,6 +1644,20 @@ export default function CustomersPage() {
               <small>CEP</small>
               <strong>
                 {selected.cep || "Não informado"}
+              </strong>
+            </div>
+
+            <div>
+              <small>Tabela de preço</small>
+              <strong>
+                {priceTableLabel(selected.price_table)}
+              </strong>
+            </div>
+
+            <div>
+              <small>Distância da PMG</small>
+              <strong>
+                {formatDistance(selected.distance_km)}
               </strong>
             </div>
 
@@ -1706,6 +1930,19 @@ export default function CustomersPage() {
           justify-content: space-between;
           gap: 18px;
           padding: 28px;
+        }
+
+        .hero-actions {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+
+        .hero-actions button:disabled {
+          cursor: wait;
+          opacity: 0.7;
         }
 
         .hero span,
@@ -2016,6 +2253,17 @@ export default function CustomersPage() {
           margin-top: 14px;
         }
 
+        .distance-preview {
+          width: fit-content;
+          border: 1px solid #bbf7d0;
+          border-radius: 999px;
+          background: #f0fdf4;
+          color: #166534 !important;
+          padding: 5px 9px;
+          font-size: 11px !important;
+          font-weight: 950 !important;
+        }
+
         .address-preview {
           min-height: 32px;
           line-height: 1.4;
@@ -2274,6 +2522,14 @@ export default function CustomersPage() {
           .hero {
             align-items: stretch;
             flex-direction: column;
+          }
+
+          .hero-actions {
+            justify-content: stretch;
+          }
+
+          .hero-actions button {
+            flex: 1;
           }
 
           .stats-grid {
