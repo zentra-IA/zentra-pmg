@@ -16,6 +16,7 @@ type Prospect = {
   phone2?: string | null;
   contactMasked?: string | null;
   emailMasked?: string | null;
+  createdAt?: string | null;
   lastTransferAt?: string | null;
   lastActivationAt?: string | null;
   lastOrderAt?: string | null;
@@ -176,7 +177,7 @@ const styles = {
     width: "100%",
     borderCollapse: "separate" as const,
     borderSpacing: 0,
-    minWidth: 1280,
+    minWidth: 1900,
   },
   th: {
     textAlign: "left" as const,
@@ -318,6 +319,22 @@ export default function RadarPage() {
   const [category, setCategory] = useState("");
   const [product, setProduct] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("");
+  const [contact, setContact] = useState("");
+  const [contactStatus, setContactStatus] = useState("ALL");
+  const [orderStatus, setOrderStatus] = useState("ALL");
+
+  const [createdFrom, setCreatedFrom] = useState("");
+  const [createdTo, setCreatedTo] = useState("");
+  const [lastTransferFrom, setLastTransferFrom] = useState("");
+  const [lastTransferTo, setLastTransferTo] = useState("");
+  const [lastActivationFrom, setLastActivationFrom] = useState("");
+  const [lastActivationTo, setLastActivationTo] = useState("");
+  const [lastOrderFrom, setLastOrderFrom] = useState("");
+  const [lastOrderTo, setLastOrderTo] = useState("");
+  const [creditMin, setCreditMin] = useState("");
+  const [creditMax, setCreditMax] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
   const [view, setView] = useState("NEW");
   const [limit, setLimit] = useState(100);
   const [sortBy, setSortBy] = useState("createdAt");
@@ -339,16 +356,30 @@ export default function RadarPage() {
   const visualized = prospects.filter((p) => p.revealed).length;
   const notVisualized = prospects.filter((p) => !p.revealed).length;
 
-  const activeFilterCount = [
-    externalId,
-    name,
-    city,
-    state,
-    segment,
-    category,
-    product,
-    paymentMethod,
-  ].filter((value) => value.trim().length > 0).length;
+  const activeFilterCount =
+    [
+      externalId,
+      name,
+      city,
+      state,
+      segment,
+      category,
+      product,
+      paymentMethod,
+      contact,
+      createdFrom,
+      createdTo,
+      lastTransferFrom,
+      lastTransferTo,
+      lastActivationFrom,
+      lastActivationTo,
+      lastOrderFrom,
+      lastOrderTo,
+      creditMin,
+      creditMax,
+    ].filter((value) => value.trim().length > 0).length +
+    (contactStatus !== "ALL" ? 1 : 0) +
+    (orderStatus !== "ALL" ? 1 : 0);
 
   function clearFilters() {
     setCity("");
@@ -359,6 +390,19 @@ export default function RadarPage() {
     setCategory("");
     setProduct("");
     setPaymentMethod("");
+    setContact("");
+    setContactStatus("ALL");
+    setOrderStatus("ALL");
+    setCreatedFrom("");
+    setCreatedTo("");
+    setLastTransferFrom("");
+    setLastTransferTo("");
+    setLastActivationFrom("");
+    setLastActivationTo("");
+    setLastOrderFrom("");
+    setLastOrderTo("");
+    setCreditMin("");
+    setCreditMax("");
     setView("NEW");
     setLimit(100);
     setSortBy("createdAt");
@@ -377,6 +421,28 @@ export default function RadarPage() {
     setSortDir("asc");
   }
 
+  function dateDaysAgo(days: number) {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() - days);
+    return date.toISOString().slice(0, 10);
+  }
+
+  function applyStalePreset(days: number) {
+    setOrderStatus("ALL");
+    setLastOrderFrom("");
+    setLastOrderTo(dateDaysAgo(days));
+    setAdvancedOpen(true);
+    setMessage(`Filtro preparado: clientes sem comprar há pelo menos ${days} dias. Clique em Buscar.`);
+  }
+
+  function applyCreditPreset(minimum: number) {
+    setCreditMin(String(minimum));
+    setCreditMax("");
+    setAdvancedOpen(true);
+    setMessage(`Filtro preparado: limite de crédito a partir de ${formatMoney(minimum)}. Clique em Buscar.`);
+  }
+
   async function search() {
     setLoading(true);
     setMessage("");
@@ -391,6 +457,19 @@ export default function RadarPage() {
         category,
         product,
         paymentMethod,
+        contact,
+        contactStatus,
+        orderStatus,
+        createdFrom,
+        createdTo,
+        lastTransferFrom,
+        lastTransferTo,
+        lastActivationFrom,
+        lastActivationTo,
+        lastOrderFrom,
+        lastOrderTo,
+        creditMin,
+        creditMax,
         view,
         limit: String(limit),
         sortBy,
@@ -557,6 +636,9 @@ export default function RadarPage() {
       "Segmento",
       "Contato",
       "E-mail",
+      "Data Cadastro",
+      "Última Transferência",
+      "Última Ativação",
       "Último Pedido",
       "Limite Prazo",
       "Forma Pagamento",
@@ -570,6 +652,9 @@ export default function RadarPage() {
       p.segment || "",
       p.revealed ? p.phone1 || "" : "Oculto",
       p.revealed ? p.email || "" : "Oculto",
+      formatDate(p.createdAt),
+      formatDate(p.lastTransferAt),
+      formatDate(p.lastActivationAt),
       formatDate(p.lastOrderAt),
       p.creditLimit ?? "",
       p.paymentMethod || "",
@@ -666,7 +751,7 @@ export default function RadarPage() {
             <h2 style={{ ...styles.sectionTitle, marginBottom: 4 }}>Filtros comerciais</h2>
             <div style={{ color: "#64748b", fontSize: 13, fontWeight: 700 }}>
               {activeFilterCount
-                ? `${activeFilterCount} filtro(s) de texto ativo(s)`
+                ? `${activeFilterCount} filtro(s) ativo(s)`
                 : "Use filtros combinados para encontrar oportunidades com precisão."}
             </div>
           </div>
@@ -765,6 +850,17 @@ export default function RadarPage() {
           </div>
 
           <div>
+            <label style={styles.label}>Contato / DDD</label>
+            <input
+              style={styles.input}
+              value={contact}
+              onChange={(e) => setContact(e.target.value)}
+              placeholder="11, 5511 ou telefone"
+              inputMode="numeric"
+            />
+          </div>
+
+          <div>
             <label style={styles.label}>Status</label>
             <select
               style={styles.input}
@@ -799,11 +895,15 @@ export default function RadarPage() {
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value)}
             >
-              <option value="createdAt">Mais recentes</option>
-              <option value="name">Nome da empresa</option>
-              <option value="city">Cidade</option>
+              <option value="createdAt">Data de cadastro</option>
+              <option value="name">Nome do cliente</option>
+              <option value="city">Cidade / Zona</option>
+              <option value="state">Estado</option>
               <option value="externalId">ID do cliente</option>
+              <option value="lastTransferAt">Última transferência</option>
+              <option value="lastActivationAt">Última ativação</option>
               <option value="lastOrderAt">Último pedido</option>
+              <option value="phone1">Contato</option>
               <option value="creditLimit">Limite de crédito</option>
               <option value="paymentMethod">Forma de pagamento</option>
             </select>
@@ -821,6 +921,165 @@ export default function RadarPage() {
             </select>
           </div>
         </div>
+
+        <div style={{ marginTop: 14 }}>
+          <button
+            type="button"
+            style={styles.ghostButton}
+            onClick={() => setAdvancedOpen((current) => !current)}
+          >
+            {advancedOpen ? "▲ Ocultar filtros avançados" : "⚙️ Filtros avançados"}
+          </button>
+        </div>
+
+        {advancedOpen ? (
+          <div
+            style={{
+              marginTop: 12,
+              padding: 16,
+              borderRadius: 16,
+              background: "#f8fbf9",
+              border: "1px solid rgba(22,163,74,.14)",
+            }}
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))",
+                gap: 12,
+              }}
+            >
+              <div>
+                <label style={styles.label}>Data cadastro — de</label>
+                <input type="date" style={styles.input} value={createdFrom} onChange={(e) => setCreatedFrom(e.target.value)} />
+              </div>
+              <div>
+                <label style={styles.label}>Data cadastro — até</label>
+                <input type="date" style={styles.input} value={createdTo} onChange={(e) => setCreatedTo(e.target.value)} />
+              </div>
+
+              <div>
+                <label style={styles.label}>Última transferência — de</label>
+                <input type="date" style={styles.input} value={lastTransferFrom} onChange={(e) => setLastTransferFrom(e.target.value)} />
+              </div>
+              <div>
+                <label style={styles.label}>Última transferência — até</label>
+                <input type="date" style={styles.input} value={lastTransferTo} onChange={(e) => setLastTransferTo(e.target.value)} />
+              </div>
+
+              <div>
+                <label style={styles.label}>Última ativação — de</label>
+                <input type="date" style={styles.input} value={lastActivationFrom} onChange={(e) => setLastActivationFrom(e.target.value)} />
+              </div>
+              <div>
+                <label style={styles.label}>Última ativação — até</label>
+                <input type="date" style={styles.input} value={lastActivationTo} onChange={(e) => setLastActivationTo(e.target.value)} />
+              </div>
+
+              <div>
+                <label style={styles.label}>Último pedido — de</label>
+                <input type="date" style={styles.input} value={lastOrderFrom} onChange={(e) => setLastOrderFrom(e.target.value)} />
+              </div>
+              <div>
+                <label style={styles.label}>Último pedido — até</label>
+                <input type="date" style={styles.input} value={lastOrderTo} onChange={(e) => setLastOrderTo(e.target.value)} />
+              </div>
+
+              <div>
+                <label style={styles.label}>Situação de compra</label>
+                <select style={styles.input} value={orderStatus} onChange={(e) => setOrderStatus(e.target.value)}>
+                  <option value="ALL">Todos</option>
+                  <option value="WITH_ORDER">Com pedido registrado</option>
+                  <option value="NO_ORDER">Nunca comprou / sem pedido</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={styles.label}>Disponibilidade de telefone</label>
+                <select style={styles.input} value={contactStatus} onChange={(e) => setContactStatus(e.target.value)}>
+                  <option value="ALL">Todos</option>
+                  <option value="WITH">Com telefone</option>
+                  <option value="WITHOUT">Sem telefone</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={styles.label}>Limite de crédito mínimo</label>
+                <input
+                  style={styles.input}
+                  value={creditMin}
+                  onChange={(e) => setCreditMin(e.target.value)}
+                  placeholder="3000"
+                  inputMode="decimal"
+                />
+              </div>
+
+              <div>
+                <label style={styles.label}>Limite de crédito máximo</label>
+                <input
+                  style={styles.input}
+                  value={creditMax}
+                  onChange={(e) => setCreditMax(e.target.value)}
+                  placeholder="10000"
+                  inputMode="decimal"
+                />
+              </div>
+            </div>
+
+            <div style={{ marginTop: 16 }}>
+              <div style={{ ...styles.label, marginBottom: 8 }}>Atalhos comerciais inteligentes</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {[30, 60, 90, 180, 365].map((days) => (
+                  <button
+                    key={days}
+                    type="button"
+                    style={{ ...styles.ghostButton, padding: "8px 11px" }}
+                    onClick={() => applyStalePreset(days)}
+                  >
+                    Sem comprar há {days === 365 ? "1 ano" : `${days} dias`}
+                  </button>
+                ))}
+
+                {[3000, 5000, 10000].map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    style={{ ...styles.ghostButton, padding: "8px 11px" }}
+                    onClick={() => applyCreditPreset(value)}
+                  >
+                    Limite ≥ {formatMoney(value)}
+                  </button>
+                ))}
+
+                <button
+                  type="button"
+                  style={{ ...styles.ghostButton, padding: "8px 11px" }}
+                  onClick={() => {
+                    setContactStatus("WITH");
+                    setAdvancedOpen(true);
+                    setMessage("Filtro preparado: somente clientes com telefone. Clique em Buscar.");
+                  }}
+                >
+                  Com telefone
+                </button>
+
+                <button
+                  type="button"
+                  style={{ ...styles.ghostButton, padding: "8px 11px" }}
+                  onClick={() => {
+                    setOrderStatus("NO_ORDER");
+                    setLastOrderFrom("");
+                    setLastOrderTo("");
+                    setAdvancedOpen(true);
+                    setMessage("Filtro preparado: clientes sem pedido registrado. Clique em Buscar.");
+                  }}
+                >
+                  Nunca compraram
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap", alignItems: "center" }}>
           <span style={{ color: "#64748b", fontSize: 12, fontWeight: 900 }}>
@@ -949,8 +1208,46 @@ export default function RadarPage() {
               </th>
 
               <th style={styles.th}>Segmento</th>
-              <th style={styles.th}>Contato</th>
+              <th style={styles.th}>
+                <SortButton
+                  label="Contato"
+                  field="phone1"
+                  sortBy={sortBy}
+                  sortDir={sortDir}
+                  onSort={toggleSort}
+                />
+              </th>
               <th style={styles.th}>E-mail</th>
+
+              <th style={styles.th}>
+                <SortButton
+                  label="Data cadastro"
+                  field="createdAt"
+                  sortBy={sortBy}
+                  sortDir={sortDir}
+                  onSort={toggleSort}
+                />
+              </th>
+
+              <th style={styles.th}>
+                <SortButton
+                  label="Última transferência"
+                  field="lastTransferAt"
+                  sortBy={sortBy}
+                  sortDir={sortDir}
+                  onSort={toggleSort}
+                />
+              </th>
+
+              <th style={styles.th}>
+                <SortButton
+                  label="Última ativação"
+                  field="lastActivationAt"
+                  sortBy={sortBy}
+                  sortDir={sortDir}
+                  onSort={toggleSort}
+                />
+              </th>
 
               <th style={styles.th}>
                 <SortButton
@@ -990,7 +1287,7 @@ export default function RadarPage() {
           <tbody>
             {!prospects.length ? (
               <tr>
-                <td style={styles.td} colSpan={12}>
+                <td style={styles.td} colSpan={15}>
                   Nenhuma oportunidade encontrada com os filtros atuais.
                 </td>
               </tr>
@@ -1022,6 +1319,9 @@ export default function RadarPage() {
                   <td style={styles.td}>{p.segment || "-"}</td>
                   <td style={styles.td}>{getContact(p)}</td>
                   <td style={styles.td}>{getEmail(p)}</td>
+                  <td style={styles.td}>{formatDate(p.createdAt)}</td>
+                  <td style={styles.td}>{formatDate(p.lastTransferAt)}</td>
+                  <td style={styles.td}>{formatDate(p.lastActivationAt)}</td>
                   <td style={styles.td}>{formatDate(p.lastOrderAt)}</td>
                   <td style={styles.td}>{formatMoney(p.creditLimit)}</td>
                   <td style={styles.td}>{p.paymentMethod || "-"}</td>

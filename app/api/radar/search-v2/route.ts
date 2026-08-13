@@ -37,17 +37,47 @@ function formatDate(date?: Date | null) {
   return date.toISOString();
 }
 
+function parseDateBoundary(value: string, endOfDay = false) {
+  if (!value) return undefined;
+
+  const suffix = endOfDay
+    ? "T23:59:59.999Z"
+    : "T00:00:00.000Z";
+
+  const date = new Date(`${value}${suffix}`);
+
+  return Number.isNaN(date.getTime())
+    ? undefined
+    : date;
+}
+
+function dateRangeFilter(from: string, to: string) {
+  const gte = parseDateBoundary(from, false);
+  const lte = parseDateBoundary(to, true);
+
+  if (!gte && !lte) return undefined;
+
+  return {
+    ...(gte ? { gte } : {}),
+    ...(lte ? { lte } : {}),
+  };
+}
+
 function getSort(sortBy: string, sortDir: string) {
   const direction = sortDir === "asc" ? "asc" : "desc";
 
   const allowed: Record<string, any> = {
     name: { name: direction },
     city: { city: direction },
+    state: { state: direction },
     externalId: { externalId: direction },
+    createdAt: { createdAt: direction },
+    lastTransferAt: { lastTransferAt: direction },
+    lastActivationAt: { lastActivationAt: direction },
     lastOrderAt: { lastOrderAt: direction },
+    phone1: { phone1: direction },
     creditLimit: { creditLimit: direction },
     paymentMethod: { paymentMethod: direction },
-    createdAt: { createdAt: direction },
   };
 
   return allowed[sortBy] || { createdAt: "desc" };
@@ -132,6 +162,29 @@ export async function GET(req: NextRequest) {
     const product = searchParams.get("product") || "";
     const paymentMethod = searchParams.get("paymentMethod") || "";
     const externalId = searchParams.get("externalId") || "";
+    const contact = digits(searchParams.get("contact") || "");
+    const contactStatus = (searchParams.get("contactStatus") || "ALL").toUpperCase();
+    const orderStatus = (searchParams.get("orderStatus") || "ALL").toUpperCase();
+
+    const createdFrom = searchParams.get("createdFrom") || "";
+    const createdTo = searchParams.get("createdTo") || "";
+    const lastTransferFrom = searchParams.get("lastTransferFrom") || "";
+    const lastTransferTo = searchParams.get("lastTransferTo") || "";
+    const lastActivationFrom = searchParams.get("lastActivationFrom") || "";
+    const lastActivationTo = searchParams.get("lastActivationTo") || "";
+    const lastOrderFrom = searchParams.get("lastOrderFrom") || "";
+    const lastOrderTo = searchParams.get("lastOrderTo") || "";
+
+    const creditMinRaw = searchParams.get("creditMin");
+    const creditMaxRaw = searchParams.get("creditMax");
+    const creditMin =
+      creditMinRaw !== null && creditMinRaw !== ""
+        ? Number(creditMinRaw.replace(",", "."))
+        : undefined;
+    const creditMax =
+      creditMaxRaw !== null && creditMaxRaw !== ""
+        ? Number(creditMaxRaw.replace(",", "."))
+        : undefined;
 
     const requestedLimit = Number(searchParams.get("limit") || 100);
     const requestedPage = Number(searchParams.get("page") || 1);
@@ -196,6 +249,56 @@ export async function GET(req: NextRequest) {
         }
       : {};
 
+    const createdAtFilter = dateRangeFilter(createdFrom, createdTo);
+    const lastTransferAtFilter = dateRangeFilter(lastTransferFrom, lastTransferTo);
+    const lastActivationAtFilter = dateRangeFilter(lastActivationFrom, lastActivationTo);
+    const lastOrderAtRange = dateRangeFilter(lastOrderFrom, lastOrderTo);
+
+    const creditLimitFilter =
+      (Number.isFinite(creditMin) || Number.isFinite(creditMax))
+        ? {
+            ...(Number.isFinite(creditMin) ? { gte: creditMin } : {}),
+            ...(Number.isFinite(creditMax) ? { lte: creditMax } : {}),
+          }
+        : undefined;
+
+    const extraAnd: any[] = [];
+
+    if (contact) {
+      extraAnd.push({
+        OR: [
+          { phone1: { contains: contact } },
+          { phone2: { contains: contact } },
+        ],
+      });
+    }
+
+    if (contactStatus === "WITH") {
+      extraAnd.push({
+        OR: [
+          { phone1: { not: null } },
+          { phone2: { not: null } },
+        ],
+      });
+    } else if (contactStatus === "WITHOUT") {
+      extraAnd.push({
+        AND: [
+          { OR: [{ phone1: null }, { phone1: "" }] },
+          { OR: [{ phone2: null }, { phone2: "" }] },
+        ],
+      });
+    }
+
+    if (orderStatus === "WITH_ORDER") {
+      extraAnd.push({
+        lastOrderAt: { not: null },
+      });
+    } else if (orderStatus === "NO_ORDER") {
+      extraAnd.push({
+        lastOrderAt: null,
+      });
+    }
+
     const prospectWhere = {
       company_id: companyId,
       active: true,
@@ -233,6 +336,17 @@ export async function GET(req: NextRequest) {
         ? { contains: paymentMethod, mode: "insensitive" }
         : undefined,
 
+      createdAt: createdAtFilter,
+      lastTransferAt: lastTransferAtFilter,
+      lastActivationAt: lastActivationAtFilter,
+
+      lastOrderAt:
+        orderStatus === "ALL"
+          ? lastOrderAtRange
+          : undefined,
+
+      creditLimit: creditLimitFilter,
+
       id:
         view === "NEW"
           ? exportedIds.length
@@ -241,6 +355,8 @@ export async function GET(req: NextRequest) {
           : view === "REVEALED"
             ? { in: exportedIds.length ? exportedIds : ["__none__"] }
             : undefined,
+
+      ...(extraAnd.length ? { AND: extraAnd } : {}),
     } as any;
 
     const [prospectsRaw, totalFound] = await Promise.all([
@@ -278,6 +394,7 @@ export async function GET(req: NextRequest) {
         emailMasked: revealed
           ? prospect.email || null
           : mask(prospect.email),
+        createdAt: formatDate(prospect.createdAt),
         lastTransferAt: formatDate(prospect.lastTransferAt),
         lastActivationAt: formatDate(prospect.lastActivationAt),
         lastOrderAt: formatDate(prospect.lastOrderAt),
