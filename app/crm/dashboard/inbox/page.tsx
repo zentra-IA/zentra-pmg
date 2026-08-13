@@ -189,6 +189,7 @@ function formatDate(value: unknown) {
 
 function displayName(lead: any) {
   return (
+    lead?.custom_name ||
     lead?.name ||
     lead?.nome ||
     lead?.company_name ||
@@ -317,6 +318,23 @@ export default function InboxPage() {
 
   const [aiUpdating, setAiUpdating] =
     useState(false);
+
+  const [
+    conversationAction,
+    setConversationAction,
+  ] = useState<
+    "rename" | "delete" | null
+  >(null);
+
+  const [
+    nameDraft,
+    setNameDraft,
+  ] = useState("");
+
+  const [
+    actionSaving,
+    setActionSaving,
+  ] = useState(false);
 
   const [
     mediaDraft,
@@ -656,6 +674,188 @@ export default function InboxPage() {
     );
   }
 
+  function openRenameContact() {
+    if (!selectedLead) return;
+
+    setNameDraft(
+      displayName(selectedLead)
+    );
+    setConversationAction(
+      "rename"
+    );
+  }
+
+  async function saveCustomName() {
+    if (
+      !selectedLead ||
+      actionSaving
+    ) {
+      return;
+    }
+
+    const customName =
+      nameDraft.trim();
+
+    if (!customName) {
+      alert(
+        "Digite um nome para o contato."
+      );
+      return;
+    }
+
+    setActionSaving(true);
+
+    try {
+      const response = await fetch(
+        "/api/crm/inbox",
+        {
+          method: "PATCH",
+          credentials: "include",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            leadId:
+              selectedLead.id,
+            custom_name:
+              customName,
+          }),
+        }
+      );
+
+      const data = await response
+        .json()
+        .catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "Erro ao salvar o nome."
+        );
+      }
+
+      const updatedLead =
+        data?.lead || {
+          ...selectedLead,
+          custom_name:
+            customName,
+        };
+
+      setSelectedLead(
+        (current: any) => ({
+          ...current,
+          ...updatedLead,
+          custom_name:
+            updatedLead.custom_name ||
+            customName,
+        })
+      );
+
+      setLeads((current) =>
+        current.map((lead) =>
+          String(lead.id) ===
+          String(
+            selectedLead.id
+          )
+            ? {
+                ...lead,
+                ...updatedLead,
+                custom_name:
+                  updatedLead.custom_name ||
+                  customName,
+              }
+            : lead
+        )
+      );
+
+      setConversationAction(
+        null
+      );
+    } catch (error: any) {
+      alert(
+        error?.message ||
+          "Erro ao salvar o nome."
+      );
+    } finally {
+      setActionSaving(false);
+    }
+  }
+
+  async function deleteConversation() {
+    if (
+      !selectedLead ||
+      actionSaving
+    ) {
+      return;
+    }
+
+    const deletingId =
+      String(selectedLead.id);
+
+    setActionSaving(true);
+
+    try {
+      const response = await fetch(
+        "/api/crm/inbox",
+        {
+          method: "DELETE",
+          credentials: "include",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            leadId: deletingId,
+          }),
+        }
+      );
+
+      const data = await response
+        .json()
+        .catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "Erro ao excluir a conversa."
+        );
+      }
+
+      const remaining =
+        leads.filter(
+          (lead) =>
+            String(lead.id) !==
+            deletingId
+        );
+
+      const nextLead =
+        remaining[0] || null;
+
+      setLeads(remaining);
+      setSelectedLead(nextLead);
+      setMessages([]);
+      setConversationAction(
+        null
+      );
+      setMobileChatOpen(false);
+
+      if (nextLead?.id) {
+        await loadInbox(
+          nextLead.id,
+          true
+        );
+      }
+    } catch (error: any) {
+      alert(
+        error?.message ||
+          "Erro ao excluir a conversa."
+      );
+    } finally {
+      setActionSaving(false);
+    }
+  }
+
   async function handleFile(
     event: ChangeEvent<HTMLInputElement>
   ) {
@@ -954,11 +1154,41 @@ export default function InboxPage() {
                 </div>
 
                 <div className="chat-person">
-                  <h2>
-                    {displayName(
-                      selectedLead
-                    )}
-                  </h2>
+                  <div className="chat-person-title-row">
+                    <h2>
+                      {displayName(
+                        selectedLead
+                      )}
+                    </h2>
+
+                    <div className="contact-actions">
+                      <button
+                        type="button"
+                        className="contact-action"
+                        onClick={
+                          openRenameContact
+                        }
+                        title="Editar nome do contato"
+                        aria-label="Editar nome do contato"
+                      >
+                        ✏️
+                      </button>
+
+                      <button
+                        type="button"
+                        className="contact-action danger"
+                        onClick={() =>
+                          setConversationAction(
+                            "delete"
+                          )
+                        }
+                        title="Excluir conversa"
+                        aria-label="Excluir conversa"
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
 
                   <span>
                     {selectedLead.phone ||
@@ -1233,6 +1463,176 @@ export default function InboxPage() {
         </section>
       </section>
 
+      {conversationAction &&
+        selectedLead && (
+          <div
+            className="modal-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (
+                event.target ===
+                  event.currentTarget &&
+                !actionSaving
+              ) {
+                setConversationAction(
+                  null
+                );
+              }
+            }}
+          >
+            <div
+              className="conversation-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="conversation-modal-title"
+            >
+              {conversationAction ===
+              "rename" ? (
+                <>
+                  <div className="modal-icon rename">
+                    ✏️
+                  </div>
+
+                  <h3 id="conversation-modal-title">
+                    Editar nome do contato
+                  </h3>
+
+                  <p>
+                    Este nome ficará salvo
+                    para você no Zentra e
+                    terá prioridade sobre o
+                    nome recebido do WhatsApp.
+                  </p>
+
+                  <label className="modal-field">
+                    <span>
+                      Nome do contato
+                    </span>
+
+                    <input
+                      autoFocus
+                      maxLength={120}
+                      value={nameDraft}
+                      onChange={(event) =>
+                        setNameDraft(
+                          event.target
+                            .value
+                        )
+                      }
+                      onKeyDown={(
+                        event
+                      ) => {
+                        if (
+                          event.key ===
+                          "Enter"
+                        ) {
+                          event.preventDefault();
+                          void saveCustomName();
+                        }
+                      }}
+                      placeholder="Ex.: João - Padaria Central"
+                    />
+
+                    <small>
+                      {nameDraft.length}/120
+                    </small>
+                  </label>
+
+                  <div className="modal-actions">
+                    <button
+                      type="button"
+                      className="modal-button secondary-modal"
+                      disabled={
+                        actionSaving
+                      }
+                      onClick={() =>
+                        setConversationAction(
+                          null
+                        )
+                      }
+                    >
+                      Cancelar
+                    </button>
+
+                    <button
+                      type="button"
+                      className="modal-button primary-modal"
+                      disabled={
+                        actionSaving ||
+                        !nameDraft.trim()
+                      }
+                      onClick={
+                        saveCustomName
+                      }
+                    >
+                      {actionSaving
+                        ? "Salvando..."
+                        : "Salvar nome"}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="modal-icon delete">
+                    🗑️
+                  </div>
+
+                  <h3 id="conversation-modal-title">
+                    Excluir conversa?
+                  </h3>
+
+                  <p>
+                    A conversa será removida
+                    do seu Inbox. As
+                    mensagens, o cliente e
+                    os dados comerciais não
+                    serão apagados do
+                    sistema.
+                  </p>
+
+                  <div className="delete-contact-name">
+                    {displayName(
+                      selectedLead
+                    )}
+                  </div>
+
+                  <div className="modal-actions">
+                    <button
+                      type="button"
+                      className="modal-button secondary-modal"
+                      disabled={
+                        actionSaving
+                      }
+                      onClick={() =>
+                        setConversationAction(
+                          null
+                        )
+                      }
+                    >
+                      Cancelar
+                    </button>
+
+                    <button
+                      type="button"
+                      className="modal-button danger-modal"
+                      disabled={
+                        actionSaving
+                      }
+                      onClick={
+                        deleteConversation
+                      }
+                    >
+                      {actionSaving
+                        ? "Excluindo..."
+                        : "Excluir conversa"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
       <style jsx>{`
         * {
           box-sizing: border-box;
@@ -1504,6 +1904,53 @@ export default function InboxPage() {
 
         .chat-person {
           min-width: 0;
+        }
+
+        .chat-person-title-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+        }
+
+        .chat-person-title-row h2 {
+          min-width: 0;
+          flex: 1;
+        }
+
+        .contact-actions {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          flex: 0 0 auto;
+        }
+
+        .contact-action {
+          display: grid;
+          place-items: center;
+          width: 30px;
+          height: 30px;
+          border: 1px solid #dbe3ef;
+          border-radius: 9px;
+          padding: 0;
+          color: #475569;
+          background: #fff;
+          cursor: pointer;
+          transition:
+            transform 0.15s ease,
+            background 0.15s ease,
+            border-color 0.15s ease;
+        }
+
+        .contact-action:hover {
+          transform: translateY(-1px);
+          border-color: #86efac;
+          background: #f0fdf4;
+        }
+
+        .contact-action.danger:hover {
+          border-color: #fecaca;
+          background: #fef2f2;
         }
 
         .chat-person h2 {
@@ -1849,6 +2296,149 @@ export default function InboxPage() {
           flex: 1;
           color: #64748b;
           font-weight: 900;
+        }
+
+        .modal-backdrop {
+          position: fixed;
+          z-index: 9999;
+          inset: 0;
+          display: grid;
+          place-items: center;
+          padding: 18px;
+          background: rgba(
+            15,
+            23,
+            42,
+            0.52
+          );
+          backdrop-filter: blur(4px);
+        }
+
+        .conversation-modal {
+          width: min(
+            100%,
+            460px
+          );
+          border: 1px solid
+            rgba(
+              148,
+              163,
+              184,
+              0.28
+            );
+          border-radius: 24px;
+          padding: 22px;
+          background: #fff;
+          box-shadow: 0 28px 80px
+            rgba(15, 23, 42, 0.24);
+        }
+
+        .modal-icon {
+          display: grid;
+          place-items: center;
+          width: 46px;
+          height: 46px;
+          margin-bottom: 14px;
+          border-radius: 14px;
+          font-size: 21px;
+        }
+
+        .modal-icon.rename {
+          background: #f0fdf4;
+        }
+
+        .modal-icon.delete {
+          background: #fef2f2;
+        }
+
+        .conversation-modal h3 {
+          margin: 0;
+          color: #0f172a;
+          font-size: 21px;
+          letter-spacing: -0.025em;
+        }
+
+        .conversation-modal > p {
+          margin: 8px 0 18px;
+          color: #64748b;
+          font-size: 13px;
+          font-weight: 650;
+          line-height: 1.55;
+        }
+
+        .modal-field {
+          display: grid;
+          gap: 7px;
+        }
+
+        .modal-field > span {
+          color: #334155;
+          font-size: 12px;
+          font-weight: 900;
+        }
+
+        .modal-field small {
+          color: #94a3b8;
+          font-size: 10px;
+          font-weight: 800;
+          text-align: right;
+        }
+
+        .delete-contact-name {
+          border: 1px solid #fecaca;
+          border-radius: 14px;
+          padding: 12px 14px;
+          color: #991b1b;
+          background: #fff7f7;
+          font-weight: 900;
+        }
+
+        .modal-actions {
+          display: grid;
+          grid-template-columns:
+            1fr 1fr;
+          gap: 10px;
+          margin-top: 20px;
+        }
+
+        .modal-button {
+          min-height: 44px;
+          border-radius: 13px;
+          padding: 10px 14px;
+          font: inherit;
+          font-weight: 950;
+          cursor: pointer;
+        }
+
+        .modal-button:disabled {
+          opacity: 0.55;
+          cursor: not-allowed;
+        }
+
+        .secondary-modal {
+          border: 1px solid #dbe3ef;
+          color: #475569;
+          background: #fff;
+        }
+
+        .primary-modal {
+          border: 0;
+          color: #fff;
+          background: linear-gradient(
+            135deg,
+            #16a34a,
+            #15803d
+          );
+        }
+
+        .danger-modal {
+          border: 0;
+          color: #fff;
+          background: linear-gradient(
+            135deg,
+            #dc2626,
+            #b91c1c
+          );
         }
 
         @media (max-width: 900px) {

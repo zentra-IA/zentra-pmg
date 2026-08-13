@@ -7,6 +7,7 @@ export const runtime = "nodejs";
 
 const MAX_CONVERSATIONS = 300;
 const MAX_MESSAGES_PER_CONVERSATION = 1000;
+const MAX_CUSTOM_NAME_LENGTH = 120;
 
 const COMMERCIAL_STATUSES = [
   "novo",
@@ -333,6 +334,72 @@ async function getOwnedLeadIds(
   return ids;
 }
 
+
+async function getConversationPreferences(
+  supabase: ReturnType<typeof getSupabase>,
+  companyId: string,
+  userId: string,
+  leadIds: string[]
+) {
+  const preferences = new Map<string, any>();
+
+  if (!leadIds.length) {
+    return preferences;
+  }
+
+  const {
+    data,
+    error,
+  } = await supabase
+    .from("inbox_user_conversations")
+    .select(
+      "lead_id, custom_name, hidden_at, updated_at"
+    )
+    .eq("company_id", companyId)
+    .eq("user_id", userId)
+    .in("lead_id", leadIds);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  for (const item of data || []) {
+    const leadId = clean(item?.lead_id);
+
+    if (leadId) {
+      preferences.set(leadId, item);
+    }
+  }
+
+  return preferences;
+}
+
+async function getConversationPreference(
+  supabase: ReturnType<typeof getSupabase>,
+  companyId: string,
+  userId: string,
+  leadId: string
+) {
+  const {
+    data,
+    error,
+  } = await supabase
+    .from("inbox_user_conversations")
+    .select(
+      "lead_id, custom_name, hidden_at, updated_at"
+    )
+    .eq("company_id", companyId)
+    .eq("user_id", userId)
+    .eq("lead_id", leadId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data || null;
+}
+
 async function getLeadById(
   supabase: ReturnType<typeof getSupabase>,
   companyId: string,
@@ -558,6 +625,16 @@ async function listConversations(
       )
     );
 
+  const preferences =
+    await getConversationPreferences(
+      supabase,
+      access.companyId,
+      access.userId,
+      leads.map((lead) =>
+        String(lead.id)
+      )
+    );
+
   let conversations = leads.map(
     (lead) => {
       const latest =
@@ -565,10 +642,22 @@ async function listConversations(
           String(lead.id)
         ) || null;
 
+      const preference =
+        preferences.get(
+          String(lead.id)
+        ) || null;
+
       return {
         ...lead,
         owner_user_id:
           access.userId,
+        custom_name:
+          clean(
+            preference?.custom_name
+          ) || null,
+        hidden_at:
+          preference?.hidden_at ||
+          null,
         last_message:
           latest?.content ||
           null,
@@ -587,6 +676,12 @@ async function listConversations(
       };
     }
   );
+
+  conversations =
+    conversations.filter(
+      (lead) =>
+        !lead.hidden_at
+    );
 
   if (statusFilter) {
     conversations =
@@ -617,6 +712,7 @@ async function listConversations(
       conversations.filter(
         (lead) => {
           const haystack = [
+            lead.custom_name,
             lead.name,
             lead.nome,
             lead.company_name,
@@ -879,13 +975,79 @@ export async function PATCH(
       );
     }
 
+    /*
+     * Nome personalizado:
+     * - fica salvo por empresa + usuário + lead;
+     * - não altera leads.name;
+     * - portanto uma nova sincronização do WhatsApp não sobrescreve
+     *   o nome escolhido pelo vendedor;
+     * - outro usuário pode escolher outro nome para o mesmo contato.
+     */
+    const customNameRequested =
+      Object.prototype.hasOwnProperty.call(
+        body,
+        "custom_name"
+      ) ||
+      Object.prototype.hasOwnProperty.call(
+        body,
+        "customName"
+      );
+
+    if (customNameRequested) {
+      const customName = clean(
+        body?.custom_name ??
+          body?.customName
+      );
+
+      if (
+        customName.length >
+        MAX_CUSTOM_NAME_LENGTH
+      ) {
+        return NextResponse.json(
+          {
+            error: `O nome pode ter no máximo ${MAX_CUSTOM_NAME_LENGTH} caracteres.`,
+          },
+          {
+            status: 400,
+          }
+        );
+      }
+
+      const {
+        error: preferenceError,
+      } = await supabase
+        .from(
+          "inbox_user_conversations"
+        )
+        .upsert(
+          {
+            company_id:
+              access.companyId,
+            user_id:
+              access.userId,
+            lead_id: leadId,
+            custom_name:
+              customName || null,
+            updated_at:
+              new Date().toISOString(),
+          },
+          {
+            onConflict:
+              "company_id,user_id,lead_id",
+          }
+        );
+
+      if (preferenceError) {
+        throw new Error(
+          preferenceError.message
+        );
+      }
+    }
+
     const update: Record<
       string,
       unknown
-    > = {
-      updated_at:
-        new Date().toISOString(),
-    };
+    > = {};
 
     if (
       body.ai_paused !== undefined ||
@@ -947,25 +1109,44 @@ export async function PATCH(
       }
     }
 
-    const {
-      data,
-      error,
-    } = await supabase
-      .from("leads")
-      .update(update)
-      .eq("id", leadId)
-      .eq(
-        "company_id",
-        access.companyId
-      )
-      .select("*")
-      .maybeSingle();
+    let lead: any = null;
 
-    if (error) {
-      throw new Error(error.message);
+    if (
+      Object.keys(update).length
+    ) {
+      update.updated_at =
+        new Date().toISOString();
+
+      const {
+        data,
+        error,
+      } = await supabase
+        .from("leads")
+        .update(update)
+        .eq("id", leadId)
+        .eq(
+          "company_id",
+          access.companyId
+        )
+        .select("*")
+        .maybeSingle();
+
+      if (error) {
+        throw new Error(
+          error.message
+        );
+      }
+
+      lead = data || null;
+    } else {
+      lead = await getLeadById(
+        supabase,
+        access.companyId,
+        leadId
+      );
     }
 
-    if (!data) {
+    if (!lead) {
       return NextResponse.json(
         {
           error:
@@ -977,12 +1158,27 @@ export async function PATCH(
       );
     }
 
+    const preference =
+      await getConversationPreference(
+        supabase,
+        access.companyId,
+        access.userId,
+        leadId
+      );
+
     return NextResponse.json({
       success: true,
       lead: {
-        ...normalizeLead(data),
+        ...normalizeLead(lead),
         owner_user_id:
           access.userId,
+        custom_name:
+          clean(
+            preference?.custom_name
+          ) || null,
+        hidden_at:
+          preference?.hidden_at ||
+          null,
       },
     });
   } catch (error: any) {
@@ -1010,3 +1206,122 @@ export async function PATCH(
     );
   }
 }
+
+export async function DELETE(
+  req: NextRequest
+) {
+  try {
+    const supabase =
+      getSupabase();
+
+    const access =
+      await requireInboxAccess(req);
+
+    const body = await req
+      .json()
+      .catch(() => ({}));
+
+    const leadId = clean(
+      body?.leadId ||
+        body?.lead_id ||
+        body?.id
+    );
+
+    if (!leadId) {
+      return NextResponse.json(
+        {
+          error:
+            "ID do contato obrigatório.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const ownedLeadIds =
+      await getOwnedLeadIds(
+        supabase,
+        access.companyId,
+        access.userId
+      );
+
+    if (
+      !ownedLeadIds.has(leadId)
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Você não tem acesso a esta conversa.",
+        },
+        {
+          status: 403,
+        }
+      );
+    }
+
+    /*
+     * Exclusão segura:
+     * não apagamos lead, mensagens ou automações.
+     * Apenas ocultamos a conversa deste usuário.
+     */
+    const now =
+      new Date().toISOString();
+
+    const {
+      error,
+    } = await supabase
+      .from(
+        "inbox_user_conversations"
+      )
+      .upsert(
+        {
+          company_id:
+            access.companyId,
+          user_id:
+            access.userId,
+          lead_id: leadId,
+          hidden_at: now,
+          updated_at: now,
+        },
+        {
+          onConflict:
+            "company_id,user_id,lead_id",
+        }
+      );
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return NextResponse.json({
+      success: true,
+      hidden: true,
+      leadId,
+    });
+  } catch (error: any) {
+    console.error(
+      "DELETE /api/crm/inbox:",
+      error
+    );
+
+    const message =
+      error?.message ||
+      "Erro ao excluir conversa.";
+
+    return NextResponse.json(
+      {
+        error: message,
+      },
+      {
+        status:
+          message.includes(
+            "não identificad"
+          )
+            ? 401
+            : 500,
+      }
+    );
+  }
+}
+
