@@ -69,6 +69,31 @@ async function getAuthorizedCustomer(
   return customer;
 }
 
+function assertCustomerClassification(customer: {
+  price_table: number | null;
+  distance_km: unknown;
+}) {
+  if (
+    customer.price_table === null ||
+    customer.price_table === undefined ||
+    customer.distance_km === null ||
+    customer.distance_km === undefined
+  ) {
+    throw new Error("CUSTOMER_DISTANCE_NOT_CALCULATED");
+  }
+}
+
+function numericValuesDiffer(left: unknown, right: unknown) {
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+
+  if (!Number.isFinite(leftNumber) || !Number.isFinite(rightNumber)) {
+    return String(left ?? "") !== String(right ?? "");
+  }
+
+  return Math.abs(leftNumber - rightNumber) > 0.01;
+}
+
 function responseError(error: unknown) {
   const message = error instanceof Error ? error.message : "UNKNOWN";
 
@@ -89,6 +114,16 @@ function responseError(error: unknown) {
   if (message === "CUSTOMER_INACTIVE") {
     return NextResponse.json(
       { error: "O cliente está inativo." },
+      { status: 409 }
+    );
+  }
+
+  if (message === "CUSTOMER_DISTANCE_NOT_CALCULATED") {
+    return NextResponse.json(
+      {
+        error:
+          "Calcule a distância e a tabela de preço do cliente antes de gerar o portal.",
+      },
       { status: 409 }
     );
   }
@@ -121,11 +156,15 @@ export async function GET(
     const { customerId } = await context.params;
     const customer = await getAuthorizedCustomer(request, customerId);
 
+    assertCustomerClassification(customer);
+
     const access = await prisma.webPromotionAccess.findUnique({
       where: { customer_id: customer.id },
       select: {
         active: true,
         token_value: true,
+        price_table: true,
+        distance_km: true,
       },
     });
 
@@ -138,6 +177,19 @@ export async function GET(
         },
         { status: 200 }
       );
+    }
+
+    if (
+      access.price_table !== customer.price_table ||
+      numericValuesDiffer(access.distance_km, customer.distance_km)
+    ) {
+      await prisma.webPromotionAccess.update({
+        where: { customer_id: customer.id },
+        data: {
+          price_table: customer.price_table,
+          distance_km: customer.distance_km,
+        },
+      });
     }
 
     return NextResponse.json(
@@ -156,6 +208,8 @@ export async function POST(
     const { customerId } = await context.params;
     const customer = await getAuthorizedCustomer(request, customerId);
 
+    assertCustomerClassification(customer);
+
     const body = await request.json().catch(() => ({}));
     const regenerate = body?.regenerate === true;
 
@@ -164,10 +218,25 @@ export async function POST(
       select: {
         active: true,
         token_value: true,
+        price_table: true,
+        distance_km: true,
       },
     });
 
     if (existing?.active && existing.token_value && !regenerate) {
+      if (
+        existing.price_table !== customer.price_table ||
+        numericValuesDiffer(existing.distance_km, customer.distance_km)
+      ) {
+        await prisma.webPromotionAccess.update({
+          where: { customer_id: customer.id },
+          data: {
+            price_table: customer.price_table,
+            distance_km: customer.distance_km,
+          },
+        });
+      }
+
       return NextResponse.json(
         buildResponse(request, customer, existing.token_value)
       );

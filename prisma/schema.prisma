@@ -559,6 +559,7 @@ model Prospect {
   companies                companies                  @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "prospect_company_fk")
   exports                  ProspectExport[]
   radar_snapshot_prospects radar_snapshot_prospects[]
+  dialerContacts           DialerCampaignContact[]
 
   @@index([email])
   @@index([phone1])
@@ -725,6 +726,8 @@ model companies {
   pushSubscriptions         PushSubscription[]
   pushDeliveries            PushDelivery[]
   customerPromotionAccesses CustomerPromotionAccess[]
+  dialerCampaigns           DialerCampaign[]
+  dialerCalls               DialerCall[]
   promotionAudienceLists    PromotionAudienceList[]
   promotionAudienceMembers  PromotionAudienceMember[]
 }
@@ -1983,4 +1986,78 @@ enum PaymentMethod {
   DINHEIRO
   DEBITO
   CREDITO
+}
+
+model DialerCampaign {
+  id          String   @id @default(cuid())
+  company_id  String   @db.Uuid
+  branch_id   String?  @db.Uuid
+  user_id     String   @db.Uuid
+  name        String
+  status      String   @default("READY")
+  total       Int      @default(0)
+  processed   Int      @default(0)
+  answered    Int      @default(0)
+  sales       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  startedAt   DateTime?
+  finishedAt  DateTime?
+
+  companies   companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  contacts    DialerCampaignContact[]
+  calls       DialerCall[]
+
+  @@index([company_id])
+  @@index([company_id, user_id])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model DialerCampaignContact {
+  id          String   @id @default(cuid())
+  campaignId  String
+  prospectId  String
+  position    Int
+  status      String   @default("PENDING")
+  attempts    Int      @default(0)
+  lastCallAt  DateTime?
+  nextCallAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  campaign    DialerCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  prospect    Prospect       @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  calls       DialerCall[]
+
+  @@unique([campaignId, prospectId])
+  @@index([campaignId, position])
+  @@index([prospectId])
+  @@index([status])
+  @@index([nextCallAt])
+}
+
+model DialerCall {
+  id                String   @id @default(cuid())
+  company_id        String   @db.Uuid
+  campaignId        String
+  campaignContactId String
+  user_id           String   @db.Uuid
+  phone             String
+  result            String
+  notes             String?
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  createdAt         DateTime @default(now())
+
+  campaign          DialerCampaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaignContact   DialerCampaignContact @relation(fields: [campaignContactId], references: [id], onDelete: Cascade)
+  companies         companies             @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id])
+  @@index([company_id, user_id])
+  @@index([campaignId])
+  @@index([campaignContactId])
+  @@index([result])
+  @@index([createdAt])
 }

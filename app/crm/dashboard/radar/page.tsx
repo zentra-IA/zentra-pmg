@@ -325,6 +325,7 @@ export default function RadarPage() {
 
   const [loading, setLoading] = useState(false);
   const [revealing, setRevealing] = useState(false);
+  const [creatingDialer, setCreatingDialer] = useState(false);
   const [prospects, setProspects] = useState<Prospect[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [usage, setUsage] = useState<Usage>({ used: 0, limit: 0, remaining: 0 });
@@ -457,6 +458,66 @@ export default function RadarPage() {
       setMessage(error?.message || "Erro ao visualizar contatos.");
     } finally {
       setRevealing(false);
+    }
+  }
+
+
+  async function sendSelectedToDialer() {
+    if (!selected.length || creatingDialer) return;
+
+    const defaultName = `Radar - ${new Date().toLocaleDateString("pt-BR")}`;
+    const campaignName = window.prompt("Nome da campanha de ligações:", defaultName);
+
+    if (!campaignName?.trim()) return;
+
+    setCreatingDialer(true);
+    setMessage("");
+
+    try {
+      // Reutiliza o reveal-v2 existente para manter exatamente
+      // a mesma regra de cota, empresa, usuário e snapshot do Radar.
+      const revealResponse = await fetch("/api/radar/reveal-v2", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ ids: selected }),
+      });
+
+      const revealData = await revealResponse.json();
+
+      if (!revealResponse.ok || !revealData.success) {
+        throw new Error(revealData.error || "Erro ao liberar os contatos para o discador.");
+      }
+
+      const available = (revealData.revealed || []).filter(
+        (item: Prospect) => Boolean(item.phone1)
+      );
+
+      if (!available.length) {
+        throw new Error("Nenhum dos contatos selecionados possui telefone disponível.");
+      }
+
+      const response = await fetch("/api/crm/dialer/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          name: campaignName.trim(),
+          prospectIds: available.map((item: Prospect) => item.id),
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Erro ao criar a campanha de ligações.");
+      }
+
+      window.location.href = `/crm/dashboard/dialer/${data.campaign.id}`;
+    } catch (error: any) {
+      setMessage(error?.message || "Erro ao enviar contatos para o discador.");
+    } finally {
+      setCreatingDialer(false);
     }
   }
 
@@ -808,6 +869,21 @@ export default function RadarPage() {
 
           <button style={styles.secondary} onClick={exportCsv}>
             Exportar CSV
+          </button>
+
+          <button
+            type="button"
+            style={{
+              ...styles.primary,
+              opacity: !selected.length || creatingDialer ? 0.6 : 1,
+              cursor: !selected.length || creatingDialer ? "not-allowed" : "pointer",
+            }}
+            onClick={sendSelectedToDialer}
+            disabled={!selected.length || creatingDialer}
+          >
+            {creatingDialer
+              ? "Preparando discador..."
+              : `📞 Enviar para Discador (${selected.length})`}
           </button>
         </div>
 

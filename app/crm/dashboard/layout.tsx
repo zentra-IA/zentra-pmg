@@ -41,6 +41,7 @@ const FULL_MENU: MenuItem[] = [
   { label: "Disparo de Mensagens", href: "/crm/dashboard/contacts", icon: "megaphone", description: "Importação e envios" },
   { label: "Clientes", href: "/crm/dashboard/customers", icon: "users", description: "Carteira comercial" },
   { label: "Radar Comercial", href: "/crm/dashboard/radar", icon: "target", description: "Prospecção inteligente" },
+  { label: "Discador", href: "/crm/dashboard/dialer", icon: "phone", description: "Ligações comerciais" },
   { label: "Inbox WhatsApp", href: "/crm/dashboard/inbox", icon: "message", description: "Atendimento" },
   { label: "Campanhas", href: "/crm/dashboard/campaigns", icon: "megaphone", description: "Disparos e automações" },
 {
@@ -71,6 +72,7 @@ const SELLER_MENU: MenuItem[] = [
   description: "Portal e Push",
 },
   { label: "Radar Comercial", href: "/crm/dashboard/radar", icon: "target", description: "Prospecção inteligente" },
+  { label: "Discador", href: "/crm/dashboard/dialer", icon: "phone", description: "Ligações comerciais" },
   { label: "Inbox WhatsApp", href: "/crm/dashboard/inbox", icon: "message", description: "Atendimento" },
   { label: "Campanhas", href: "/crm/dashboard/campaigns", icon: "megaphone", description: "Disparos e automações" },
   { label: "Mensagens IA", href: "/crm/dashboard/messages", icon: "mail", description: "Templates comerciais" },
