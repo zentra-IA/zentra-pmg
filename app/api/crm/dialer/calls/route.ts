@@ -12,6 +12,10 @@ const ALLOWED_RESULTS = new Set([
   "CALLBACK",
   "SALE",
   "INVALID_NUMBER",
+  "HAS_PMG_SELLER",
+  "NO_INTEREST",
+  "BUSINESS_CLOSED",
+  "WHATSAPP_REQUEST",
 ]);
 
 export async function POST(req: NextRequest) {
@@ -96,7 +100,14 @@ export async function POST(req: NextRequest) {
       startedAt && !Number.isNaN(startedAt.getTime()) ? startedAt : null;
 
     const wasProcessed = !["PENDING", "CALLBACK"].includes(campaignContact.status);
-    const isAnswered = result === "ANSWERED" || result === "SALE";
+    const isAnswered = [
+      "ANSWERED",
+      "SALE",
+      "HAS_PMG_SELLER",
+      "NO_INTEREST",
+      "BUSINESS_CLOSED",
+      "WHATSAPP_REQUEST",
+    ].includes(result);
     const isSale = result === "SALE";
     const finalStatus = result === "CALLBACK" ? "CALLBACK" : "DONE";
 

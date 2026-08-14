@@ -14,6 +14,23 @@ type Campaign = {
   createdAt: string;
 };
 
+type DueCallback = {
+  id: string;
+  campaignId: string;
+  nextCallAt: string | null;
+  prospect: {
+    id: string;
+    name: string;
+    phone1?: string | null;
+    city?: string | null;
+    state?: string | null;
+  };
+  campaign: {
+    id: string;
+    name: string;
+  };
+};
+
 function statusLabel(status: string) {
   const labels: Record<string, string> = {
     READY: "Pronta",
@@ -28,6 +45,76 @@ export default function DialerPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [dueCallbacks, setDueCallbacks] = useState<DueCallback[]>([]);
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >(
+    typeof window !== "undefined" && "Notification" in window
+      ? Notification.permission
+      : "unsupported"
+  );
+
+  async function enableNotifications() {
+    if (!("Notification" in window)) {
+      setNotificationPermission("unsupported");
+      setMessage("Este navegador não oferece notificações web neste modo.");
+      return;
+    }
+
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+
+    if (permission === "granted") {
+      setMessage("Avisos de retorno ativados neste aparelho.");
+    }
+  }
+
+  function notifyDue(callback: DueCallback) {
+    if ("vibrate" in navigator) {
+      try {
+        navigator.vibrate([180, 80, 180]);
+      } catch {}
+    }
+
+    if (
+      "Notification" in window &&
+      Notification.permission === "granted"
+    ) {
+      try {
+        new Notification("Retorno de ligação agora", {
+          body: `${callback.prospect.name} • ${callback.campaign.name}`,
+          tag: `dialer-callback-${callback.id}`,
+        });
+      } catch {}
+    }
+  }
+
+  async function loadCallbacks() {
+    try {
+      const response = await fetch("/api/crm/dialer/callbacks", {
+        cache: "no-store",
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Erro ao carregar retornos.");
+      }
+
+      const nextDue: DueCallback[] = data.due || [];
+
+      setDueCallbacks((previous) => {
+        const previousIds = new Set(previous.map((item) => item.id));
+        const newlyDue = nextDue.filter((item) => !previousIds.has(item.id));
+
+        if (newlyDue[0]) {
+          notifyDue(newlyDue[0]);
+        }
+
+        return nextDue;
+      });
+    } catch {}
+  }
 
   async function loadCampaigns() {
     setLoading(true);
@@ -54,6 +141,13 @@ export default function DialerPage() {
 
   useEffect(() => {
     void loadCampaigns();
+    void loadCallbacks();
+
+    const timer = window.setInterval(() => {
+      void loadCallbacks();
+    }, 30000);
+
+    return () => window.clearInterval(timer);
   }, []);
 
   return (
@@ -73,6 +167,38 @@ export default function DialerPage() {
       </section>
 
       {message ? <div style={styles.message}>{message}</div> : null}
+
+      {dueCallbacks.length ? (
+        <section style={styles.duePanel}>
+          <div>
+            <div style={styles.dueKicker}>⏰ RETORNOS PARA AGORA</div>
+            <h2 style={styles.dueTitle}>
+              {dueCallbacks.length} retorno{dueCallbacks.length === 1 ? "" : "s"} aguardando
+            </h2>
+            <p style={styles.dueText}>
+              {dueCallbacks[0].prospect.name} • {dueCallbacks[0].campaign.name}
+            </p>
+          </div>
+
+          <Link
+            href={`/crm/dashboard/dialer/${dueCallbacks[0].campaignId}`}
+            style={styles.dueLink}
+          >
+            Abrir retorno
+          </Link>
+        </section>
+      ) : null}
+
+      {notificationPermission !== "granted" &&
+      notificationPermission !== "unsupported" ? (
+        <button
+          type="button"
+          style={styles.notificationButton}
+          onClick={enableNotifications}
+        >
+          🔔 Ativar avisos de retorno
+        </button>
+      ) : null}
 
       <section style={styles.card}>
         <div style={styles.sectionHeader}>
@@ -231,6 +357,55 @@ const styles: Record<string, any> = {
     color: "#991b1b",
     border: "1px solid #fecaca",
     fontWeight: 800,
+  },
+  duePanel: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 14,
+    flexWrap: "wrap",
+    marginBottom: 14,
+    padding: 18,
+    borderRadius: 18,
+    background: "linear-gradient(135deg,#fef3c7,#fff7ed)",
+    border: "2px solid #f59e0b",
+    boxShadow: "0 14px 30px rgba(245,158,11,.16)",
+  },
+  dueKicker: {
+    color: "#b45309",
+    fontSize: 11,
+    fontWeight: 950,
+    letterSpacing: ".08em",
+  },
+  dueTitle: {
+    margin: "5px 0 3px",
+    color: "#7c2d12",
+    fontSize: 20,
+    fontWeight: 950,
+  },
+  dueText: {
+    margin: 0,
+    color: "#92400e",
+    fontWeight: 800,
+  },
+  dueLink: {
+    textDecoration: "none",
+    borderRadius: 13,
+    padding: "11px 15px",
+    background: "#d97706",
+    color: "#fff",
+    fontWeight: 950,
+  },
+  notificationButton: {
+    width: "100%",
+    marginBottom: 14,
+    border: "1px solid #bbf7d0",
+    borderRadius: 14,
+    padding: "11px 14px",
+    background: "#f0fdf4",
+    color: "#166534",
+    fontWeight: 950,
+    cursor: "pointer",
   },
   grid: {
     display: "grid",

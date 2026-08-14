@@ -39,6 +39,24 @@ type CampaignData = {
   nextCallbackAt?: string | null;
 };
 
+type DueCallback = {
+  id: string;
+  campaignId: string;
+  position: number;
+  nextCallAt: string | null;
+  prospect: {
+    id: string;
+    name: string;
+    phone1?: string | null;
+    city?: string | null;
+    state?: string | null;
+  };
+  campaign: {
+    id: string;
+    name: string;
+  };
+};
+
 const resultOptions = [
   { value: "ANSWERED", label: "Atendeu", icon: "✅" },
   { value: "NO_ANSWER", label: "Não atendeu", icon: "❌" },
@@ -46,6 +64,10 @@ const resultOptions = [
   { value: "VOICEMAIL", label: "Caixa postal", icon: "📭" },
   { value: "CALLBACK", label: "Retornar", icon: "🕐" },
   { value: "SALE", label: "Venda", icon: "💰" },
+  { value: "HAS_PMG_SELLER", label: "Já tem vendedor PMG", icon: "👤" },
+  { value: "NO_INTEREST", label: "Sem interesse / desligou", icon: "🚫" },
+  { value: "BUSINESS_CLOSED", label: "Comércio encerrado", icon: "🏚️" },
+  { value: "WHATSAPP_REQUEST", label: "Pediu WhatsApp", icon: "💬" },
   { value: "INVALID_NUMBER", label: "Número inválido", icon: "⚠️" },
 ];
 
@@ -96,6 +118,83 @@ export default function DialerCampaignPage() {
   const [notes, setNotes] = useState("");
   const [nextCallAt, setNextCallAt] = useState("");
   const [callStartedAt, setCallStartedAt] = useState<string | null>(null);
+  const [dueCallbacks, setDueCallbacks] = useState<DueCallback[]>([]);
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >(
+    typeof window !== "undefined" && "Notification" in window
+      ? Notification.permission
+      : "unsupported"
+  );
+
+  async function enableNotifications() {
+    if (!("Notification" in window)) {
+      setNotificationPermission("unsupported");
+      setMessage("Este navegador não oferece notificações web neste modo.");
+      return;
+    }
+
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+
+    if (permission === "granted") {
+      setMessage("Avisos de retorno ativados neste aparelho.");
+    }
+  }
+
+  function notifyDue(callback: DueCallback) {
+    if ("vibrate" in navigator) {
+      try {
+        navigator.vibrate([180, 80, 180]);
+      } catch {}
+    }
+
+    if (
+      "Notification" in window &&
+      Notification.permission === "granted"
+    ) {
+      try {
+        new Notification("Retorno de ligação agora", {
+          body: `${callback.prospect.name} • ${callback.campaign.name}`,
+          tag: `dialer-callback-${callback.id}`,
+        });
+      } catch {}
+    }
+  }
+
+  async function loadDueCallbacks(silent = true) {
+    if (!campaignId) return;
+
+    try {
+      const response = await fetch(
+        `/api/crm/dialer/callbacks?campaignId=${encodeURIComponent(campaignId)}`,
+        { cache: "no-store" }
+      );
+
+      const json = await response.json();
+
+      if (!response.ok || !json.success) {
+        throw new Error(json.error || "Erro ao carregar retornos.");
+      }
+
+      const nextDue: DueCallback[] = json.due || [];
+
+      setDueCallbacks((previous) => {
+        const previousIds = new Set(previous.map((item) => item.id));
+        const newlyDue = nextDue.filter((item) => !previousIds.has(item.id));
+
+        if (newlyDue[0]) {
+          notifyDue(newlyDue[0]);
+        }
+
+        return nextDue;
+      });
+    } catch (error: any) {
+      if (!silent) {
+        setMessage(error?.message || "Erro ao carregar retornos.");
+      }
+    }
+  }
 
   async function loadCampaign() {
     if (!campaignId) return;
@@ -128,6 +227,13 @@ export default function DialerCampaignPage() {
 
   useEffect(() => {
     void loadCampaign();
+    void loadDueCallbacks();
+
+    const timer = window.setInterval(() => {
+      void loadDueCallbacks();
+    }, 30000);
+
+    return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [campaignId]);
 
@@ -180,7 +286,10 @@ export default function DialerCampaignPage() {
         throw new Error(json.error || "Erro ao salvar resultado da ligação.");
       }
 
-      await loadCampaign();
+      await Promise.all([
+        loadCampaign(),
+        loadDueCallbacks(),
+      ]);
     } catch (error: any) {
       setMessage(error?.message || "Erro ao salvar resultado da ligação.");
     } finally {
@@ -211,6 +320,45 @@ export default function DialerCampaignPage() {
         </header>
 
         {message ? <div style={styles.message}>{message}</div> : null}
+
+        {dueCallbacks.length ? (
+          <section style={styles.callbackAlert}>
+            <div style={styles.callbackAlertIcon}>⏰</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={styles.callbackAlertKicker}>RETORNO AGENDADO AGORA</div>
+              <strong style={styles.callbackAlertName}>
+                {dueCallbacks[0].prospect.name}
+              </strong>
+              <div style={styles.callbackAlertMeta}>
+                {dueCallbacks[0].nextCallAt
+                  ? new Date(dueCallbacks[0].nextCallAt).toLocaleString("pt-BR")
+                  : "Horário agendado atingido"}
+              </div>
+            </div>
+            <button
+              type="button"
+              style={styles.callbackOpenButton}
+              onClick={async () => {
+                await loadCampaign();
+                await loadDueCallbacks();
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+            >
+              Abrir retorno
+            </button>
+          </section>
+        ) : null}
+
+        {notificationPermission !== "granted" &&
+        notificationPermission !== "unsupported" ? (
+          <button
+            type="button"
+            style={styles.notificationButton}
+            onClick={enableNotifications}
+          >
+            🔔 Ativar avisos de retorno
+          </button>
+        ) : null}
 
         {!data?.current ? (
           <section style={styles.finished}>
@@ -537,6 +685,61 @@ const styles: Record<string, any> = {
     border: "1px solid #fed7aa",
     color: "#9a3412",
     fontWeight: 800,
+  },
+  callbackAlert: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 12,
+    padding: 15,
+    borderRadius: 18,
+    background: "linear-gradient(135deg,#fef3c7,#fff7ed)",
+    border: "2px solid #f59e0b",
+    boxShadow: "0 14px 30px rgba(245,158,11,.18)",
+  },
+  callbackAlertIcon: {
+    fontSize: 30,
+    flex: "0 0 auto",
+  },
+  callbackAlertKicker: {
+    color: "#b45309",
+    fontSize: 10,
+    fontWeight: 950,
+    letterSpacing: ".08em",
+  },
+  callbackAlertName: {
+    display: "block",
+    marginTop: 3,
+    color: "#7c2d12",
+    fontSize: 16,
+    fontWeight: 950,
+  },
+  callbackAlertMeta: {
+    marginTop: 2,
+    color: "#92400e",
+    fontSize: 11,
+    fontWeight: 800,
+  },
+  callbackOpenButton: {
+    flex: "0 0 auto",
+    border: 0,
+    borderRadius: 12,
+    padding: "10px 12px",
+    background: "#d97706",
+    color: "#fff",
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  notificationButton: {
+    width: "100%",
+    marginBottom: 12,
+    border: "1px solid #bbf7d0",
+    borderRadius: 14,
+    padding: "11px 14px",
+    background: "#f0fdf4",
+    color: "#166534",
+    fontWeight: 950,
+    cursor: "pointer",
   },
   finished: {
     background: "#fff",
