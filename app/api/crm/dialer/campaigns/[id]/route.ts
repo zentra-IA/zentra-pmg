@@ -4,76 +4,130 @@ import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
 
+async function getOwnedCampaign(
+  req: NextRequest,
+  id: string
+) {
+  const access = await requireCompanyAccess(req);
+  const { companyId, userId } = access;
+
+  if (!companyId || !userId) {
+    return {
+      access,
+      campaign: null,
+      error: NextResponse.json(
+        { success: false, error: "Empresa ou usuário não identificado." },
+        { status: 401 }
+      ),
+    };
+  }
+
+  const campaign = await prisma.dialerCampaign.findFirst({
+    where: {
+      id,
+      company_id: companyId,
+      user_id: userId,
+    },
+    select: {
+      id: true,
+      name: true,
+      status: true,
+      total: true,
+      processed: true,
+      answered: true,
+      sales: true,
+      createdAt: true,
+      startedAt: true,
+      finishedAt: true,
+    },
+  });
+
+  if (!campaign) {
+    return {
+      access,
+      campaign: null,
+      error: NextResponse.json(
+        { success: false, error: "Campanha não encontrada." },
+        { status: 404 }
+      ),
+    };
+  }
+
+  return {
+    access,
+    campaign,
+    error: null,
+  };
+}
+
 export async function GET(
   req: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
   try {
-    const access = await requireCompanyAccess(req);
-    const { companyId, userId } = access;
     const { id } = await context.params;
+    const { searchParams } = new URL(req.url);
+    const requestedContactId = String(
+      searchParams.get("contactId") || ""
+    ).trim();
 
-    if (!companyId || !userId) {
-      return NextResponse.json(
-        { success: false, error: "Empresa ou usuário não identificado." },
-        { status: 401 }
-      );
+    const owned = await getOwnedCampaign(req, id);
+
+    if (owned.error) {
+      return owned.error;
     }
 
-    const campaign = await prisma.dialerCampaign.findFirst({
-      where: {
-        id,
-        company_id: companyId,
-        user_id: userId,
-      },
-      select: {
-        id: true,
-        name: true,
-        status: true,
-        total: true,
-        processed: true,
-        answered: true,
-        sales: true,
-        createdAt: true,
-        startedAt: true,
-        finishedAt: true,
-      },
-    });
-
-    if (!campaign) {
-      return NextResponse.json(
-        { success: false, error: "Campanha não encontrada." },
-        { status: 404 }
-      );
-    }
-
+    const { campaign } = owned;
     const now = new Date();
 
-    // Primeiro prioriza retornos que já venceram; depois segue a fila normal.
-    let current = await prisma.dialerCampaignContact.findFirst({
-      where: {
-        campaignId: id,
-        status: "CALLBACK",
-        nextCallAt: { lte: now },
-        campaign: {
-          company_id: companyId,
-          user_id: userId,
-        },
-      },
-      orderBy: [{ nextCallAt: "asc" }, { position: "asc" }],
-      include: {
-        prospect: true,
-      },
-    });
+    let current: any = null;
 
-    if (!current) {
+    // Quando contactId é informado, permite revisar um cliente anterior
+    // sem alterar a fila nem o status dele.
+    if (requestedContactId) {
+      current = await prisma.dialerCampaignContact.findFirst({
+        where: {
+          id: requestedContactId,
+          campaignId: id,
+          campaign: {
+            company_id: owned.access.companyId,
+            user_id: owned.access.userId,
+          },
+        },
+        include: {
+          prospect: true,
+        },
+      });
+    }
+
+    // Operação normal: callback vencido tem prioridade.
+    if (!current && !requestedContactId) {
+      current = await prisma.dialerCampaignContact.findFirst({
+        where: {
+          campaignId: id,
+          status: "CALLBACK",
+          nextCallAt: { lte: now },
+          campaign: {
+            company_id: owned.access.companyId,
+            user_id: owned.access.userId,
+          },
+        },
+        orderBy: [{ nextCallAt: "asc" }, { position: "asc" }],
+        include: {
+          prospect: true,
+        },
+      });
+    }
+
+    // Depois segue a fila normal.
+    if (!current && !requestedContactId) {
       current = await prisma.dialerCampaignContact.findFirst({
         where: {
           campaignId: id,
           status: "PENDING",
           campaign: {
-            company_id: companyId,
-            user_id: userId,
+            company_id: owned.access.companyId,
+            user_id: owned.access.userId,
           },
         },
         orderBy: {
@@ -91,8 +145,8 @@ export async function GET(
         status: "CALLBACK",
         nextCallAt: { gt: now },
         campaign: {
-          company_id: companyId,
-          user_id: userId,
+          company_id: owned.access.companyId,
+          user_id: owned.access.userId,
         },
       },
       orderBy: {
@@ -103,6 +157,80 @@ export async function GET(
       },
     });
 
+    let navigation = {
+      previousContactId: null as string | null,
+      nextContactId: null as string | null,
+      isReviewing: false,
+    };
+
+    let history: any[] = [];
+
+    if (current) {
+      const [previous, next, callHistory] = await Promise.all([
+        prisma.dialerCampaignContact.findFirst({
+          where: {
+            campaignId: id,
+            position: { lt: current.position },
+            campaign: {
+              company_id: owned.access.companyId,
+              user_id: owned.access.userId,
+            },
+          },
+          orderBy: {
+            position: "desc",
+          },
+          select: {
+            id: true,
+          },
+        }),
+        prisma.dialerCampaignContact.findFirst({
+          where: {
+            campaignId: id,
+            position: { gt: current.position },
+            campaign: {
+              company_id: owned.access.companyId,
+              user_id: owned.access.userId,
+            },
+          },
+          orderBy: {
+            position: "asc",
+          },
+          select: {
+            id: true,
+          },
+        }),
+        prisma.dialerCall.findMany({
+          where: {
+            campaignId: id,
+            campaignContactId: current.id,
+            company_id: owned.access.companyId,
+            user_id: owned.access.userId,
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+          take: 20,
+          select: {
+            id: true,
+            result: true,
+            notes: true,
+            phone: true,
+            startedAt: true,
+            finishedAt: true,
+            createdAt: true,
+          },
+        }),
+      ]);
+
+      navigation = {
+        previousContactId: previous?.id || null,
+        nextContactId: next?.id || null,
+        isReviewing: !["PENDING", "CALLBACK"].includes(current.status),
+      };
+
+      history = callHistory;
+    }
+
     return NextResponse.json({
       success: true,
       campaign,
@@ -112,6 +240,7 @@ export async function GET(
             position: current.position,
             status: current.status,
             attempts: current.attempts,
+            lastCallAt: current.lastCallAt,
             nextCallAt: current.nextCallAt,
             prospect: {
               id: current.prospect.id,
@@ -130,6 +259,8 @@ export async function GET(
             },
           }
         : null,
+      navigation,
+      history,
       nextCallbackAt: nextCallback?.nextCallAt || null,
     });
   } catch (error: any) {
@@ -137,6 +268,102 @@ export async function GET(
 
     return NextResponse.json(
       { success: false, error: error?.message || "Erro ao carregar campanha." },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PATCH(
+  req: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await context.params;
+    const owned = await getOwnedCampaign(req, id);
+
+    if (owned.error) {
+      return owned.error;
+    }
+
+    const body = await req.json().catch(() => ({}));
+    const name = String(body?.name || "").trim();
+
+    if (!name) {
+      return NextResponse.json(
+        { success: false, error: "Informe o nome da campanha." },
+        { status: 400 }
+      );
+    }
+
+    if (name.length > 120) {
+      return NextResponse.json(
+        { success: false, error: "O nome pode ter no máximo 120 caracteres." },
+        { status: 400 }
+      );
+    }
+
+    const updated = await prisma.dialerCampaign.update({
+      where: {
+        id,
+      },
+      data: {
+        name,
+      },
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        total: true,
+        processed: true,
+        answered: true,
+        sales: true,
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      campaign: updated,
+    });
+  } catch (error: any) {
+    console.error("[DIALER_CAMPAIGN_PATCH_ERROR]", error);
+
+    return NextResponse.json(
+      { success: false, error: error?.message || "Erro ao editar campanha." },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(
+  req: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await context.params;
+    const owned = await getOwnedCampaign(req, id);
+
+    if (owned.error) {
+      return owned.error;
+    }
+
+    // Remove somente registros do Discador.
+    // Prospect/cliente permanece intacto.
+    await prisma.dialerCampaign.delete({
+      where: {
+        id,
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      deleted: true,
+      id,
+    });
+  } catch (error: any) {
+    console.error("[DIALER_CAMPAIGN_DELETE_ERROR]", error);
+
+    return NextResponse.json(
+      { success: false, error: error?.message || "Erro ao excluir campanha." },
       { status: 500 }
     );
   }

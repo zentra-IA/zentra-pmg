@@ -46,6 +46,13 @@ export default function DialerPage() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [dueCallbacks, setDueCallbacks] = useState<DueCallback[]>([]);
+  const [campaignAction, setCampaignAction] = useState<{
+    type: "edit" | "delete";
+    campaign: Campaign;
+  } | null>(null);
+  const [campaignNameDraft, setCampaignNameDraft] = useState("");
+  const [campaignSaving, setCampaignSaving] = useState(false);
+
   const [notificationPermission, setNotificationPermission] = useState<
     NotificationPermission | "unsupported"
   >(
@@ -114,6 +121,86 @@ export default function DialerPage() {
         return nextDue;
       });
     } catch {}
+  }
+
+  function openEditCampaign(campaign: Campaign) {
+    setCampaignNameDraft(campaign.name);
+    setCampaignAction({
+      type: "edit",
+      campaign,
+    });
+  }
+
+  async function saveCampaignName() {
+    if (!campaignAction || campaignAction.type !== "edit" || campaignSaving) return;
+
+    const name = campaignNameDraft.trim();
+
+    if (!name) {
+      setMessage("Informe o nome da campanha.");
+      return;
+    }
+
+    setCampaignSaving(true);
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `/api/crm/dialer/campaigns/${campaignAction.campaign.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          body: JSON.stringify({ name }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Erro ao editar campanha.");
+      }
+
+      setCampaignAction(null);
+      await loadCampaigns();
+    } catch (error: any) {
+      setMessage(error?.message || "Erro ao editar campanha.");
+    } finally {
+      setCampaignSaving(false);
+    }
+  }
+
+  async function deleteCampaign() {
+    if (!campaignAction || campaignAction.type !== "delete" || campaignSaving) return;
+
+    setCampaignSaving(true);
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `/api/crm/dialer/campaigns/${campaignAction.campaign.id}`,
+        {
+          method: "DELETE",
+          cache: "no-store",
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Erro ao excluir campanha.");
+      }
+
+      setCampaignAction(null);
+      await Promise.all([
+        loadCampaigns(),
+        loadCallbacks(),
+      ]);
+    } catch (error: any) {
+      setMessage(error?.message || "Erro ao excluir campanha.");
+    } finally {
+      setCampaignSaving(false);
+    }
   }
 
   async function loadCampaigns() {
@@ -252,6 +339,29 @@ export default function DialerPage() {
                     <div><strong>{campaign.sales}</strong><span>Vendas</span></div>
                   </div>
 
+                  <div style={styles.campaignActions}>
+                    <button
+                      type="button"
+                      style={styles.smallAction}
+                      onClick={() => openEditCampaign(campaign)}
+                    >
+                      ✏️ Editar
+                    </button>
+
+                    <button
+                      type="button"
+                      style={styles.smallDangerAction}
+                      onClick={() =>
+                        setCampaignAction({
+                          type: "delete",
+                          campaign,
+                        })
+                      }
+                    >
+                      🗑️ Excluir
+                    </button>
+                  </div>
+
                   <Link
                     href={`/crm/dashboard/dialer/${campaign.id}`}
                     style={styles.openLink}
@@ -264,6 +374,86 @@ export default function DialerPage() {
           </div>
         )}
       </section>
+      {campaignAction ? (
+        <div
+          style={styles.modalBackdrop}
+          onMouseDown={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              !campaignSaving
+            ) {
+              setCampaignAction(null);
+            }
+          }}
+        >
+          <div style={styles.modalCard}>
+            {campaignAction.type === "edit" ? (
+              <>
+                <h3 style={styles.modalTitle}>Editar campanha</h3>
+                <p style={styles.modalText}>
+                  Altere somente o nome. Contatos, histórico e resultados permanecem intactos.
+                </p>
+
+                <input
+                  autoFocus
+                  maxLength={120}
+                  value={campaignNameDraft}
+                  onChange={(event) => setCampaignNameDraft(event.target.value)}
+                  style={styles.modalInput}
+                />
+
+                <div style={styles.modalActions}>
+                  <button
+                    type="button"
+                    style={styles.modalSecondary}
+                    disabled={campaignSaving}
+                    onClick={() => setCampaignAction(null)}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    style={styles.modalPrimary}
+                    disabled={campaignSaving || !campaignNameDraft.trim()}
+                    onClick={saveCampaignName}
+                  >
+                    {campaignSaving ? "Salvando..." : "Salvar"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3 style={styles.modalTitle}>Excluir campanha?</h3>
+                <p style={styles.modalText}>
+                  A campanha e o histórico do Discador dela serão excluídos. O cliente/Prospect do Radar não será apagado.
+                </p>
+
+                <div style={styles.deleteName}>{campaignAction.campaign.name}</div>
+
+                <div style={styles.modalActions}>
+                  <button
+                    type="button"
+                    style={styles.modalSecondary}
+                    disabled={campaignSaving}
+                    onClick={() => setCampaignAction(null)}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    style={styles.modalDanger}
+                    disabled={campaignSaving}
+                    onClick={deleteCampaign}
+                  >
+                    {campaignSaving ? "Excluindo..." : "Excluir campanha"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      ) : null}
+
     </main>
   );
 }
@@ -460,6 +650,112 @@ const styles: Record<string, any> = {
     gridTemplateColumns: "repeat(4,1fr)",
     gap: 8,
     marginBottom: 14,
+  },
+  campaignActions: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 8,
+    marginBottom: 8,
+  },
+  smallAction: {
+    border: "1px solid #dbe3ef",
+    borderRadius: 10,
+    padding: "8px 10px",
+    background: "#fff",
+    color: "#334155",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  smallDangerAction: {
+    border: "1px solid #fecaca",
+    borderRadius: 10,
+    padding: "8px 10px",
+    background: "#fff7f7",
+    color: "#b91c1c",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  modalBackdrop: {
+    position: "fixed",
+    zIndex: 9999,
+    inset: 0,
+    display: "grid",
+    placeItems: "center",
+    padding: 18,
+    background: "rgba(15,23,42,.5)",
+    backdropFilter: "blur(4px)",
+  },
+  modalCard: {
+    width: "min(100%,460px)",
+    borderRadius: 22,
+    padding: 22,
+    background: "#fff",
+    border: "1px solid #e2e8f0",
+    boxShadow: "0 28px 80px rgba(15,23,42,.24)",
+  },
+  modalTitle: {
+    margin: 0,
+    fontSize: 21,
+    fontWeight: 950,
+    color: "#0f172a",
+  },
+  modalText: {
+    margin: "8px 0 16px",
+    color: "#64748b",
+    fontSize: 13,
+    lineHeight: 1.5,
+    fontWeight: 700,
+  },
+  modalInput: {
+    width: "100%",
+    boxSizing: "border-box",
+    border: "1px solid #dbe3ef",
+    borderRadius: 13,
+    padding: "12px 13px",
+    outline: "none",
+    font: "inherit",
+    fontWeight: 800,
+  },
+  modalActions: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 9,
+    marginTop: 16,
+  },
+  modalSecondary: {
+    border: "1px solid #dbe3ef",
+    borderRadius: 12,
+    padding: "10px 12px",
+    background: "#fff",
+    color: "#475569",
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  modalPrimary: {
+    border: 0,
+    borderRadius: 12,
+    padding: "10px 12px",
+    background: "#14843f",
+    color: "#fff",
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  modalDanger: {
+    border: 0,
+    borderRadius: 12,
+    padding: "10px 12px",
+    background: "#b91c1c",
+    color: "#fff",
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  deleteName: {
+    padding: 12,
+    borderRadius: 12,
+    background: "#fef2f2",
+    border: "1px solid #fecaca",
+    color: "#991b1b",
+    fontWeight: 950,
   },
   openLink: {
     display: "block",

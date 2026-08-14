@@ -19,6 +19,7 @@ type CampaignData = {
     position: number;
     status: string;
     attempts: number;
+    lastCallAt?: string | null;
     nextCallAt?: string | null;
     prospect: {
       id: string;
@@ -36,6 +37,20 @@ type CampaignData = {
       paymentMethod?: string | null;
     };
   };
+  navigation: {
+    previousContactId: string | null;
+    nextContactId: string | null;
+    isReviewing: boolean;
+  };
+  history: Array<{
+    id: string;
+    result: string;
+    notes?: string | null;
+    phone: string;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    createdAt: string;
+  }>;
   nextCallbackAt?: string | null;
 };
 
@@ -70,6 +85,21 @@ const resultOptions = [
   { value: "WHATSAPP_REQUEST", label: "Pediu WhatsApp", icon: "💬" },
   { value: "INVALID_NUMBER", label: "Número inválido", icon: "⚠️" },
 ];
+
+const resultLabels: Record<string, string> = {
+  ANSWERED: "Atendeu",
+  NO_ANSWER: "Não atendeu",
+  BUSY: "Ocupado",
+  VOICEMAIL: "Caixa postal",
+  CALLBACK: "Retornar",
+  SALE: "Venda",
+  INVALID_NUMBER: "Número inválido",
+  HAS_PMG_SELLER: "Já tem vendedor PMG",
+  NO_INTEREST: "Sem interesse / desligou",
+  BUSINESS_CLOSED: "Comércio encerrado",
+  WHATSAPP_REQUEST: "Pediu WhatsApp",
+};
+
 
 function formatDate(value?: string | null) {
   if (!value) return "-";
@@ -118,6 +148,11 @@ export default function DialerCampaignPage() {
   const [notes, setNotes] = useState("");
   const [nextCallAt, setNextCallAt] = useState("");
   const [callStartedAt, setCallStartedAt] = useState<string | null>(null);
+  const [viewContactId, setViewContactId] = useState<string | null>(null);
+  const [retryOpen, setRetryOpen] = useState(false);
+  const [retryAt, setRetryAt] = useState("");
+  const [retrySaving, setRetrySaving] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [dueCallbacks, setDueCallbacks] = useState<DueCallback[]>([]);
   const [notificationPermission, setNotificationPermission] = useState<
     NotificationPermission | "unsupported"
@@ -196,14 +231,18 @@ export default function DialerCampaignPage() {
     }
   }
 
-  async function loadCampaign() {
+  async function loadCampaign(contactId?: string | null) {
     if (!campaignId) return;
 
     setLoading(true);
     setMessage("");
 
     try {
-      const response = await fetch(`/api/crm/dialer/campaigns/${campaignId}`, {
+      const query = contactId
+        ? `?contactId=${encodeURIComponent(contactId)}`
+        : "";
+
+      const response = await fetch(`/api/crm/dialer/campaigns/${campaignId}${query}`, {
         cache: "no-store",
       });
 
@@ -214,10 +253,14 @@ export default function DialerCampaignPage() {
       }
 
       setData(json);
+      setViewContactId(contactId || null);
       setResult("");
       setNotes("");
       setNextCallAt("");
       setCallStartedAt(null);
+      setRetryOpen(false);
+      setRetryAt("");
+      setHistoryOpen(false);
     } catch (error: any) {
       setMessage(error?.message || "Erro ao carregar campanha.");
     } finally {
@@ -254,6 +297,56 @@ export default function DialerCampaignPage() {
     window.location.href = uri;
   }
 
+  async function scheduleRetry() {
+    if (!data?.current || retrySaving) return;
+
+    setRetrySaving(true);
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `/api/crm/dialer/contacts/${data.current.id}/retry`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          body: JSON.stringify({
+            campaignId,
+            nextCallAt: retryAt
+              ? new Date(retryAt).toISOString()
+              : null,
+          }),
+        }
+      );
+
+      const json = await response.json();
+
+      if (!response.ok || !json.success) {
+        throw new Error(
+          json.error || "Erro ao recolocar contato na fila."
+        );
+      }
+
+      setMessage(
+        retryAt
+          ? "Nova tentativa agendada com sucesso."
+          : "Contato recolocado na fila."
+      );
+
+      setViewContactId(null);
+      await Promise.all([
+        loadCampaign(null),
+        loadDueCallbacks(),
+      ]);
+    } catch (error: any) {
+      setMessage(
+        error?.message || "Erro ao recolocar contato na fila."
+      );
+    } finally {
+      setRetrySaving(false);
+    }
+  }
+
   async function saveAndNext() {
     if (!data?.current || !result || saving) return;
 
@@ -286,8 +379,10 @@ export default function DialerCampaignPage() {
         throw new Error(json.error || "Erro ao salvar resultado da ligação.");
       }
 
+      setViewContactId(null);
+
       await Promise.all([
-        loadCampaign(),
+        loadCampaign(null),
         loadDueCallbacks(),
       ]);
     } catch (error: any) {
@@ -371,12 +466,50 @@ export default function DialerCampaignPage() {
                 ? `O próximo retorno está agendado para ${new Date(data.nextCallbackAt).toLocaleString("pt-BR")}.`
                 : "Todos os contatos disponíveis desta campanha foram processados."}
             </p>
-            <button type="button" style={styles.secondaryButton} onClick={loadCampaign}>Atualizar</button>
+            <button
+              type="button"
+              style={styles.secondaryButton}
+              onClick={() => loadCampaign(null)}
+            >
+              Atualizar
+            </button>
           </section>
         ) : (
           <>
+            <div style={styles.navigationRow}>
+              <button
+                type="button"
+                style={{
+                  ...styles.navButton,
+                  opacity: data.navigation?.previousContactId ? 1 : 0.45,
+                }}
+                disabled={!data.navigation?.previousContactId}
+                onClick={() =>
+                  data.navigation?.previousContactId &&
+                  loadCampaign(data.navigation.previousContactId)
+                }
+              >
+                ← Cliente anterior
+              </button>
+
+              {viewContactId ? (
+                <button
+                  type="button"
+                  style={styles.navPrimaryButton}
+                  onClick={() => loadCampaign(null)}
+                >
+                  Voltar para fila atual →
+                </button>
+              ) : null}
+            </div>
+
             <section style={styles.contactCard}>
               <div style={styles.position}>Contato {data.current.position} de {data.campaign.total}</div>
+
+              <div style={styles.clientIdBadge}>
+                ID Cliente: {data.current.prospect.externalId || "Não informado"}
+              </div>
+
               <h2 style={styles.customerName}>{data.current.prospect.name}</h2>
 
               <div style={styles.location}>
@@ -415,64 +548,145 @@ export default function DialerCampaignPage() {
             </section>
 
             <section style={styles.resultCard}>
-              <h3 style={styles.resultTitle}>Resultado da ligação</h3>
+              {data.navigation?.isReviewing ? (
+                <>
+                  <div style={styles.reviewBadge}>HISTÓRICO / CLIENTE ANTERIOR</div>
+                  <h3 style={styles.resultTitle}>Este contato já foi processado</h3>
+                  <p style={styles.reviewText}>
+                    Você pode consultar o histórico abaixo ou recolocar este cliente na fila para uma nova tentativa.
+                  </p>
 
-              <div style={styles.resultGrid}>
-                {resultOptions.map((option) => {
-                  const active = result === option.value;
+                  <button
+                    type="button"
+                    style={styles.retryToggle}
+                    onClick={() => setRetryOpen((current) => !current)}
+                  >
+                    🔁 Recolocar na fila / agendar nova tentativa
+                  </button>
 
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => setResult(option.value)}
-                      style={{
-                        ...styles.resultButton,
-                        ...(active ? styles.resultButtonActive : {}),
-                      }}
-                    >
-                      <span style={{ fontSize: 20 }}>{option.icon}</span>
-                      <span>{option.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
+                  {retryOpen ? (
+                    <div style={styles.retryPanel}>
+                      <label style={styles.field}>
+                        <span>Data e hora (opcional)</span>
+                        <input
+                          type="datetime-local"
+                          value={retryAt}
+                          onChange={(event) => setRetryAt(event.target.value)}
+                          style={styles.input}
+                        />
+                      </label>
 
-              {result === "CALLBACK" ? (
-                <label style={styles.field}>
-                  <span>Data e hora do retorno</span>
-                  <input
-                    type="datetime-local"
-                    value={nextCallAt}
-                    onChange={(event) => setNextCallAt(event.target.value)}
-                    style={styles.input}
-                  />
-                </label>
-              ) : null}
+                      <div style={styles.retryHint}>
+                        Sem data: volta para a fila normal. Com data: vira um retorno agendado.
+                      </div>
 
-              <label style={styles.field}>
-                <span>Observações</span>
-                <textarea
-                  value={notes}
-                  onChange={(event) => setNotes(event.target.value)}
-                  placeholder="Ex.: pediu tabela de preços, ligar após as 16h..."
-                  rows={4}
-                  style={{ ...styles.input, resize: "vertical" }}
-                />
-              </label>
+                      <button
+                        type="button"
+                        style={{
+                          ...styles.nextButton,
+                          opacity: retrySaving ? 0.55 : 1,
+                        }}
+                        disabled={retrySaving}
+                        onClick={scheduleRetry}
+                      >
+                        {retrySaving ? "Salvando..." : "CONFIRMAR NOVA TENTATIVA"}
+                      </button>
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <h3 style={styles.resultTitle}>Resultado da ligação</h3>
+
+                  <div style={styles.resultGrid}>
+                    {resultOptions.map((option) => {
+                      const active = result === option.value;
+
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => setResult(option.value)}
+                          style={{
+                            ...styles.resultButton,
+                            ...(active ? styles.resultButtonActive : {}),
+                          }}
+                        >
+                          <span style={{ fontSize: 20 }}>{option.icon}</span>
+                          <span>{option.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {result === "CALLBACK" ? (
+                    <label style={styles.field}>
+                      <span>Data e hora do retorno</span>
+                      <input
+                        type="datetime-local"
+                        value={nextCallAt}
+                        onChange={(event) => setNextCallAt(event.target.value)}
+                        style={styles.input}
+                      />
+                    </label>
+                  ) : null}
+
+                  <label style={styles.field}>
+                    <span>Observações</span>
+                    <textarea
+                      value={notes}
+                      onChange={(event) => setNotes(event.target.value)}
+                      placeholder="Ex.: pediu tabela de preços, ligar após as 16h..."
+                      rows={4}
+                      style={{ ...styles.input, resize: "vertical" }}
+                    />
+                  </label>
+
+                  <button
+                    type="button"
+                    onClick={saveAndNext}
+                    disabled={!result || saving}
+                    style={{
+                      ...styles.nextButton,
+                      opacity: !result || saving ? 0.55 : 1,
+                      cursor: !result || saving ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {saving ? "Salvando..." : "SALVAR E PRÓXIMO →"}
+                  </button>
+                </>
+              )}
+
+              <div style={styles.historyDivider} />
 
               <button
                 type="button"
-                onClick={saveAndNext}
-                disabled={!result || saving}
-                style={{
-                  ...styles.nextButton,
-                  opacity: !result || saving ? 0.55 : 1,
-                  cursor: !result || saving ? "not-allowed" : "pointer",
-                }}
+                style={styles.historyToggle}
+                onClick={() => setHistoryOpen((current) => !current)}
               >
-                {saving ? "Salvando..." : "SALVAR E PRÓXIMO →"}
+                {historyOpen ? "▲ Ocultar histórico" : `🧾 Histórico deste cliente (${data.history?.length || 0})`}
               </button>
+
+              {historyOpen ? (
+                <div style={styles.historyList}>
+                  {!data.history?.length ? (
+                    <div style={styles.historyEmpty}>Nenhuma ligação registrada ainda.</div>
+                  ) : (
+                    data.history.map((item) => (
+                      <article key={item.id} style={styles.historyItem}>
+                        <div style={styles.historyTop}>
+                          <strong>{resultLabels[item.result] || item.result}</strong>
+                          <span>{new Date(item.createdAt).toLocaleString("pt-BR")}</span>
+                        </div>
+
+                        {item.notes ? (
+                          <div style={styles.historyNotes}>{item.notes}</div>
+                        ) : null}
+                      </article>
+                    ))
+                  )}
+                </div>
+              ) : null}
             </section>
           </>
         )}
@@ -554,6 +768,41 @@ const styles: Record<string, any> = {
     color: "#64748b",
     fontSize: 12,
     fontWeight: 900,
+  },
+  clientIdBadge: {
+    display: "inline-flex",
+    marginTop: 8,
+    borderRadius: 999,
+    padding: "6px 10px",
+    background: "#eff6ff",
+    border: "1px solid #bfdbfe",
+    color: "#1d4ed8",
+    fontSize: 11,
+    fontWeight: 950,
+  },
+  navigationRow: {
+    display: "flex",
+    gap: 8,
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  navButton: {
+    border: "1px solid #dbe3ef",
+    borderRadius: 12,
+    padding: "9px 11px",
+    background: "#fff",
+    color: "#334155",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  navPrimaryButton: {
+    border: 0,
+    borderRadius: 12,
+    padding: "9px 11px",
+    background: "#14843f",
+    color: "#fff",
+    fontWeight: 950,
+    cursor: "pointer",
   },
   customerName: {
     margin: "9px 0 4px",
@@ -758,6 +1007,95 @@ const styles: Record<string, any> = {
     borderRadius: 14,
     fontWeight: 950,
     cursor: "pointer",
+  },
+  reviewBadge: {
+    display: "inline-flex",
+    borderRadius: 999,
+    padding: "5px 9px",
+    background: "#fff7ed",
+    border: "1px solid #fed7aa",
+    color: "#9a3412",
+    fontSize: 10,
+    fontWeight: 950,
+    letterSpacing: ".06em",
+  },
+  reviewText: {
+    margin: "-5px 0 14px",
+    color: "#64748b",
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1.5,
+  },
+  retryToggle: {
+    width: "100%",
+    border: "1px solid #bbf7d0",
+    borderRadius: 13,
+    padding: "11px 12px",
+    background: "#f0fdf4",
+    color: "#166534",
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  retryPanel: {
+    marginTop: 10,
+    padding: 12,
+    borderRadius: 14,
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+  },
+  retryHint: {
+    marginTop: 7,
+    color: "#64748b",
+    fontSize: 10,
+    fontWeight: 700,
+  },
+  historyDivider: {
+    height: 1,
+    margin: "18px 0 12px",
+    background: "#e2e8f0",
+  },
+  historyToggle: {
+    width: "100%",
+    border: 0,
+    padding: "10px 0",
+    background: "transparent",
+    color: "#334155",
+    textAlign: "left",
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  historyList: {
+    display: "grid",
+    gap: 8,
+    marginTop: 8,
+  },
+  historyItem: {
+    border: "1px solid #e2e8f0",
+    borderRadius: 12,
+    padding: 10,
+    background: "#f8fafc",
+  },
+  historyTop: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 8,
+    color: "#334155",
+    fontSize: 11,
+    fontWeight: 850,
+  },
+  historyNotes: {
+    marginTop: 6,
+    color: "#64748b",
+    fontSize: 11,
+    lineHeight: 1.45,
+  },
+  historyEmpty: {
+    padding: 12,
+    borderRadius: 12,
+    background: "#f8fafc",
+    color: "#64748b",
+    fontSize: 11,
+    fontWeight: 700,
   },
   loading: {
     minHeight: 220,
