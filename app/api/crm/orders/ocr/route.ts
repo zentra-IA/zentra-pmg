@@ -608,6 +608,352 @@ async function decorateWithCatalog(
   });
 }
 
+
+function extractResponsesText(payload: any): string {
+  if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
+    return payload.output_text.trim();
+  }
+
+  const parts: string[] = [];
+
+  for (const output of Array.isArray(payload?.output) ? payload.output : []) {
+    for (const content of Array.isArray(output?.content) ? output.content : []) {
+      if (
+        (content?.type === "output_text" || content?.type === "text") &&
+        typeof content?.text === "string"
+      ) {
+        parts.push(content.text);
+      }
+    }
+  }
+
+  return parts.join("\n").trim();
+}
+
+async function callOpenAiPdf(params: {
+  pdf: Buffer;
+  filename: string;
+  prompt: string;
+}) {
+  const apiKey = process.env.OPENAI_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY não configurada no .env.");
+  }
+
+  const model =
+    process.env.OPENAI_PDF_OCR_MODEL ||
+    process.env.OPENAI_OCR_MODEL ||
+    "gpt-4o";
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0,
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_file",
+              filename: params.filename || "pedido-pmg.pdf",
+              file_data: `data:application/pdf;base64,${params.pdf.toString("base64")}`,
+              detail: "high",
+            },
+            {
+              type: "input_text",
+              text: params.prompt,
+            },
+          ],
+        },
+      ],
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const apiMessage =
+      payload?.error?.message ||
+      payload?.message ||
+      `OpenAI retornou HTTP ${response.status}.`;
+
+    throw new Error(`Falha ao ler PDF PMG: ${apiMessage}`);
+  }
+
+  const text = extractResponsesText(payload);
+
+  if (!text) {
+    throw new Error("A IA não retornou conteúdo ao ler o PDF PMG.");
+  }
+
+  return safeJsonParse(text);
+}
+
+async function readPmgPdf(pdf: Buffer, filename: string) {
+  const prompt = `
+Você é um TRANSCRITOR DOCUMENTAL especializado no PDF de Venda/Entrega da PMG Comércio de Frios e Laticínios.
+
+IMPORTANTE:
+Este PDF é um formato DIFERENTE do espelho de pedido em imagem, mas a saída precisa ser EXATAMENTE compatível com o sistema que já processa o espelho.
+
+OBJETIVO:
+Extrair literalmente os dados impressos no PDF e devolver o MESMO contrato JSON utilizado pelo leitor atual.
+
+REGRAS ABSOLUTAS:
+- Não invente dados.
+- Não corrija nomes de produtos por conhecimento externo.
+- Não consulte catálogo.
+- Preserve o código do produto exatamente como aparece.
+- O catálogo PMG será validado DEPOIS por outra etapa do sistema.
+- Use "Venda - Nº" como order_number.
+- Em "Cliente: 10393 - GRAN LUCCA PIZZARIA", customer_id = "10393" e customer_name = "GRAN LUCCA PIZZARIA".
+- Em "Vendedor: CLAYTON LIMA-5086", seller_name = "CLAYTON LIMA" e seller_code = "5086".
+- document deve receber o CPF/CNPJ impresso no documento, mesmo quando o rótulo do relatório vier como "CPF".
+- payment_terms deve receber o texto de "Forma de Pagto.".
+- delivery_date deve vir de "Data de entrega" e ser retornada no formato YYYY-MM-DD quando legível.
+- address deve receber o endereço de entrega completo impresso no topo do documento.
+- discount_total deve usar o Desconto R$ do resumo. Se não existir, use 0.
+- tax_total: se não houver imposto explicitamente impresso, use 0.
+- total deve usar "Valor Total R$".
+- raw_text deve resumir fielmente o texto documental relevante, sem inventar.
+- ai_summary deve ser curto e factual.
+
+TABELA DE PRODUTOS:
+O PDF costuma ter:
+Item | Código | Produto | Unidade | Peso | Valor Unitário | Valor Total R$
+
+Para cada item:
+- row_index = ordem visual da linha.
+- code = Código.
+- name = descrição literal do Produto.
+- discount = 0 quando não existir desconto por linha.
+- unit_price = Valor Unitário.
+- total = Valor Total da linha.
+- quantity deve ser a QUANTIDADE FATURADA que fecha matematicamente com o valor unitário e o total.
+- Quando a linha mostrar quantidade de peças E peso em KG, e o preço for por KG, use o PESO como quantity.
+  Exemplo: "5 Pç. 19,750 KG 41,18 813,31" -> quantity = 19.75.
+  A validação esperada é 19.75 × 41.18 ≈ 813.31.
+- Quando não houver peso faturável separado, use a quantidade impressa.
+  Exemplo: "4 LATA 30,03 120,12" -> quantity = 4.
+- "48,000 KG" vira 48.
+- "1.594,56" vira 1594.56.
+- Se uma linha não fechar, NÃO pegue números de outra linha. Deixe o campo duvidoso como null.
+
+RETORNE SOMENTE JSON VÁLIDO:
+{
+  "order_number": string | null,
+  "customer_id": string | null,
+  "customer_name": string | null,
+  "document": string | null,
+  "seller_name": string | null,
+  "seller_code": string | null,
+  "payment_terms": string | null,
+  "installments": number | null,
+  "delivery_date": string | null,
+  "address": string | null,
+  "items": [
+    {
+      "row_index": number,
+      "code": string | null,
+      "name": string | null,
+      "quantity": number | null,
+      "unit_price": number | null,
+      "discount": number | null,
+      "total": number | null
+    }
+  ],
+  "discount_total": number | null,
+  "tax_total": number | null,
+  "total": number | null,
+  "raw_text": string,
+  "ai_summary": string
+}
+`;
+
+  return callOpenAiPdf({
+    pdf,
+    filename,
+    prompt,
+  });
+}
+
+async function repairInvalidPdfRows(params: {
+  pdf: Buffer;
+  filename: string;
+  header: AnyItem;
+  rows: LiteralRow[];
+}) {
+  const invalidRows = params.rows
+    .map((row) => ({
+      ...row,
+      validation: rowMath(row),
+    }))
+    .filter((row) => !row.validation.valid);
+
+  if (!invalidRows.length) {
+    return params.rows;
+  }
+
+  const prompt = `
+Você é um REVISOR NUMÉRICO do PDF de Venda/Entrega PMG.
+
+O PDF original está anexado.
+As linhas abaixo foram extraídas, mas a conta quantity × unit_price ≈ total não fechou:
+
+${JSON.stringify(invalidRows)}
+
+REGRAS:
+- Releia SOMENTE essas linhas no PDF.
+- Preserve row_index, code e name.
+- Corrija apenas quantity, unit_price, discount e total.
+- Em linhas vendidas por peso, use o peso em KG como quantity quando ele for a base do valor faturado.
+- Em linhas vendidas por unidade/pacote/lata/fardo sem peso faturável separado, use a quantidade impressa.
+- Nunca mova números de uma linha para outra.
+- Se não der para confirmar, mantenha null.
+- Retorne somente JSON válido.
+
+Formato:
+{
+  "items": [
+    {
+      "row_index": number,
+      "quantity": number | null,
+      "unit_price": number | null,
+      "discount": number | null,
+      "total": number | null
+    }
+  ]
+}
+`;
+
+  const parsed = await callOpenAiPdf({
+    pdf: params.pdf,
+    filename: params.filename,
+    prompt,
+  });
+
+  const repairs = normalizeRows(
+    (parsed?.items || []).map((item: AnyItem) => {
+      const original = params.rows.find(
+        (row) => row.row_index === Number(item?.row_index)
+      );
+
+      return {
+        ...original,
+        ...item,
+        code: original?.code,
+        name: original?.name,
+      };
+    })
+  );
+
+  const repairMap = new Map(
+    repairs.map((row) => [row.row_index, row])
+  );
+
+  return params.rows.map((row) => {
+    const repair = repairMap.get(row.row_index);
+
+    if (!repair) return row;
+
+    const oldValid = rowMath(row).valid;
+    const newValid = rowMath(repair).valid;
+
+    if (!oldValid && newValid) {
+      return repair;
+    }
+
+    return row;
+  });
+}
+
+async function processPmgPdf(params: {
+  companyId: string;
+  original: Buffer;
+  filename: string;
+}) {
+  const first = await readPmgPdf(
+    params.original,
+    params.filename
+  );
+
+  let rows = normalizeRows(first?.items);
+
+  if (!rows.length) {
+    throw new Error(
+      "Nenhuma linha de produto foi identificada no PDF PMG."
+    );
+  }
+
+  const originalScore = extractionScore(rows);
+
+  rows = await repairInvalidPdfRows({
+    pdf: params.original,
+    filename: params.filename,
+    header: first,
+    rows,
+  });
+
+  const repairedScore = extractionScore(rows);
+
+  const items = await decorateWithCatalog(
+    params.companyId,
+    rows
+  );
+
+  const validation =
+    summarizeCatalogValidation(items);
+
+  const invalidRows = items.filter(
+    (item: AnyItem) =>
+      !item?.row_validation?.valid
+  ).length;
+
+  const extracted = {
+    ...first,
+    items,
+    document_items: rows,
+
+    extraction_mode:
+      "pmg_pdf_native_file_input",
+    source_format: "pdf_pmg",
+    literal_document_preserved: true,
+    conversions_applied: false,
+
+    pdf_analysis: {
+      filename: params.filename,
+      original_score: originalScore,
+      final_score: repairedScore,
+    },
+
+    catalog_validation: validation,
+
+    row_validation_summary: {
+      total: items.length,
+      valid:
+        items.length - invalidRows,
+      review: invalidRows,
+    },
+
+    ai_summary:
+      invalidRows > 0
+        ? `PDF PMG transcrito. ${invalidRows} linha(s) precisam de revisão numérica. A validação de catálogo foi aplicada no mesmo fluxo do espelho.`
+        : "PDF PMG transcrito. Todas as linhas fecharam matematicamente e passaram pelo mesmo fluxo de validação de catálogo do espelho.",
+  };
+
+  return {
+    extracted,
+    validation,
+  };
+}
+
+
 export async function POST(req: NextRequest) {
   try {
     const access =
@@ -621,7 +967,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Envie uma imagem do espelho do pedido.",
+            "Envie uma imagem do espelho ou um PDF do pedido PMG.",
         },
         { status: 400 }
       );
@@ -642,6 +988,7 @@ export async function POST(req: NextRequest) {
       "image/jpeg",
       "image/jpg",
       "image/webp",
+      "application/pdf",
     ]);
 
     if (
@@ -651,7 +998,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Formato inválido. Envie PNG, JPG, JPEG ou WEBP.",
+            "Formato inválido. Envie PNG, JPG, JPEG, WEBP ou PDF.",
         },
         { status: 400 }
       );
@@ -661,7 +1008,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "A imagem deve ter no máximo 12 MB.",
+            "O arquivo deve ter no máximo 12 MB.",
         },
         { status: 400 }
       );
@@ -670,6 +1017,40 @@ export async function POST(req: NextRequest) {
     const original = Buffer.from(
       await file.arrayBuffer()
     );
+
+    const isPdf =
+      file.type === "application/pdf" ||
+      file.name.toLowerCase().endsWith(".pdf");
+
+    if (isPdf) {
+      const pdfResult =
+        await processPmgPdf({
+          companyId,
+          original,
+          filename:
+            file.name || "pedido-pmg.pdf",
+        });
+
+      return NextResponse.json({
+        ok: true,
+        extracted:
+          pdfResult.extracted,
+        provider: "openai",
+        imageStored: false,
+        catalogValidation:
+          pdfResult.validation,
+        literalDocumentPreserved:
+          true,
+        conversionsApplied: false,
+        sourceFormat: "pdf_pmg",
+      });
+    }
+
+    /*
+     * IMPORTANTE:
+     * A partir daqui permanece o fluxo ORIGINAL de imagem.
+     * PDF entra por um caminho paralelo e não altera o OCR que já funcionava.
+     */
     const prepared =
       await prepareImages(original);
 
@@ -769,7 +1150,7 @@ export async function POST(req: NextRequest) {
     const message =
       error instanceof Error
         ? error.message
-        : "Erro ao ler imagem do pedido.";
+        : "Erro ao ler o pedido.";
 
     const status =
       message.includes("não identificado") ||

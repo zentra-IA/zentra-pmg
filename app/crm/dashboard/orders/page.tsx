@@ -70,6 +70,25 @@ function formatDate(value?: string | Date | null) {
   return d.toLocaleDateString("pt-BR");
 }
 
+function formatExtractedDeliveryDate(value?: string | null) {
+  if (!value) return "-";
+
+  const text = String(value).trim();
+
+  // PDF PMG retorna YYYY-MM-DD. Exibimos no padrão brasileiro
+  // sem converter por timezone e sem alterar o valor salvo.
+  const isoDate = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+
+  if (isoDate) {
+    const [, year, month, day] = isoDate;
+    return `${day}/${month}/${year}`;
+  }
+
+  // O espelho em imagem já pode retornar DD/MM/YYYY.
+  // Nesse caso preservamos exatamente como veio.
+  return text;
+}
+
 function catalogBadge(item: OrderItem) {
   const match = item.catalog_match;
 
@@ -182,7 +201,7 @@ export default function OrdersPage() {
 
   async function analyzeOcr() {
     if (!file) {
-      alert("Selecione a imagem do espelho do pedido.");
+      alert("Selecione a imagem do espelho ou o PDF do pedido PMG.");
       return;
     }
 
@@ -640,19 +659,19 @@ export default function OrdersPage() {
           <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
             <h2 className="text-lg font-black text-slate-950">Ler espelho com IA</h2>
             <p className="mt-1 text-sm font-medium text-slate-500">
-              Envie a imagem do espelho. O sistema valida produtos pelo catálogo PMG antes de salvar.
+              Envie a imagem do espelho ou o PDF completo do pedido PMG. O sistema mantém o mesmo fluxo e valida os produtos pelo catálogo PMG antes de salvar.
             </p>
 
             <label className="mt-5 flex cursor-pointer flex-col items-center justify-center rounded-3xl border-2 border-dashed border-slate-200 bg-slate-50 p-6 text-center transition hover:border-emerald-300 hover:bg-emerald-50/40">
               <span className="text-sm font-black text-slate-900">
-                {file ? file.name : "Clique para selecionar a imagem"}
+                {file ? file.name : "Clique para selecionar a imagem ou PDF"}
               </span>
               <span className="mt-1 text-xs font-bold text-slate-500">
-                PNG, JPG ou JPEG do espelho do pedido
+                PNG, JPG, JPEG, WEBP ou PDF do pedido PMG
               </span>
               <input
                 type="file"
-                accept="image/*"
+                accept="image/png,image/jpeg,image/jpg,image/webp,application/pdf,.pdf"
                 className="hidden"
                 onChange={(e) => setFile(e.target.files?.[0] || null)}
               />
@@ -663,7 +682,7 @@ export default function OrdersPage() {
               disabled={loadingOcr}
               className="mt-4 w-full rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-black text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-60"
             >
-              {loadingOcr ? "Lendo espelho..." : "Ler espelho com IA"}
+              {loadingOcr ? "Lendo pedido..." : "Ler pedido com IA"}
             </button>
 
             <textarea
@@ -711,7 +730,7 @@ export default function OrdersPage() {
                   <Info label="Cliente" value={extracted.customer_name || "-"} />
                   <Info label="Total" value={money(extracted.total)} />
                   <Info label="ID Cliente" value={extracted.customer_id || "-"} />
-                  <Info label="Entrega" value={extracted.delivery_date || "-"} />
+                  <Info label="Entrega" value={formatExtractedDeliveryDate(extracted.delivery_date)} />
                   <Info label="Pagamento" value={extracted.payment_terms || "-"} />
                 </div>
 
