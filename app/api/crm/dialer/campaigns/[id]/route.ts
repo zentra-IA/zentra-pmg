@@ -2,7 +2,27 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireCompanyAccess } from "@/lib/server-company";
 
+
 export const dynamic = "force-dynamic";
+
+function getManualData(sourcePayload: unknown) {
+  const payload =
+    sourcePayload &&
+    typeof sourcePayload === "object" &&
+    !Array.isArray(sourcePayload)
+      ? (sourcePayload as Record<string, any>)
+      : {};
+
+  return {
+    source: String(payload.source || "") === "DIALER_MANUAL"
+      ? "DIALER_MANUAL"
+      : "RADAR",
+    responsibleName: String(payload.responsibleName || "").trim() || null,
+    responsibleRole: String(payload.responsibleRole || "").trim() || null,
+    whatsapp: String(payload.whatsapp || "").trim() || null,
+    manualNotes: String(payload.manualNotes || "").trim() || null,
+  };
+}
 
 async function getOwnedCampaign(
   req: NextRequest,
@@ -231,6 +251,10 @@ export async function GET(
       history = callHistory;
     }
 
+    const manualData = current
+      ? getManualData(current.prospect.sourcePayload)
+      : null;
+
     return NextResponse.json({
       success: true,
       campaign,
@@ -256,6 +280,11 @@ export async function GET(
               lastOrderAt: current.prospect.lastOrderAt || null,
               creditLimit: current.prospect.creditLimit ?? null,
               paymentMethod: current.prospect.paymentMethod || null,
+              source: manualData?.source || "RADAR",
+              responsibleName: manualData?.responsibleName || null,
+              responsibleRole: manualData?.responsibleRole || null,
+              whatsapp: manualData?.whatsapp || current.prospect.phone2 || null,
+              manualNotes: manualData?.manualNotes || null,
             },
           }
         : null,

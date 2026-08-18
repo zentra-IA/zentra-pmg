@@ -31,6 +31,73 @@ type DueCallback = {
   };
 };
 
+type ManualContactPreview = {
+  line: number;
+  name: string;
+  phone: string;
+  valid: boolean;
+  duplicate: boolean;
+  reason?: string;
+};
+
+
+function normalizeManualPhone(value: string) {
+  let digits = String(value || "").replace(/\D/g, "");
+
+  if (digits.startsWith("55") && digits.length >= 12) {
+    digits = digits.slice(2);
+  }
+
+  return digits;
+}
+
+function parseManualList(text: string): ManualContactPreview[] {
+  const seen = new Set<string>();
+
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((raw, index) => {
+      const line = raw.trim();
+
+      if (!line) {
+        return null;
+      }
+
+      let parts = line.split(/\t/);
+
+      if (parts.length < 2) {
+        parts = line.includes(";")
+          ? line.split(";")
+          : line.split(",");
+      }
+
+      const name = String(parts[0] || "").trim();
+      const phone = normalizeManualPhone(parts.slice(1).join(" "));
+      const validPhone = phone.length === 10 || phone.length === 11;
+      const duplicate = validPhone && seen.has(phone);
+
+      if (validPhone && !duplicate) {
+        seen.add(phone);
+      }
+
+      return {
+        line: index + 1,
+        name,
+        phone,
+        valid: Boolean(name) && validPhone && !duplicate,
+        duplicate,
+        reason: !name
+          ? "Nome ausente"
+          : !validPhone
+            ? "Telefone inválido"
+            : duplicate
+              ? "Duplicado"
+              : undefined,
+      };
+    })
+    .filter(Boolean) as ManualContactPreview[];
+}
+
 function statusLabel(status: string) {
   const labels: Record<string, string> = {
     READY: "Pronta",
@@ -53,6 +120,13 @@ export default function DialerPage() {
   const [campaignNameDraft, setCampaignNameDraft] = useState("");
   const [campaignSaving, setCampaignSaving] = useState(false);
 
+  const [manualCampaignOpen, setManualCampaignOpen] = useState(false);
+  const [manualCampaignName, setManualCampaignName] = useState("");
+  const [manualListText, setManualListText] = useState("");
+  const [manualPreview, setManualPreview] = useState<ManualContactPreview[]>([]);
+  const [manualAnalyzed, setManualAnalyzed] = useState(false);
+  const [manualCreating, setManualCreating] = useState(false);
+
   const [notificationPermission, setNotificationPermission] = useState<
     NotificationPermission | "unsupported"
   >(
@@ -60,6 +134,75 @@ export default function DialerPage() {
       ? Notification.permission
       : "unsupported"
   );
+
+  function resetManualCampaign() {
+    setManualCampaignOpen(false);
+    setManualCampaignName("");
+    setManualListText("");
+    setManualPreview([]);
+    setManualAnalyzed(false);
+    setManualCreating(false);
+  }
+
+  function analyzeManualContacts() {
+    const preview = parseManualList(manualListText);
+    setManualPreview(preview);
+    setManualAnalyzed(true);
+  }
+
+  async function createManualCampaign() {
+    if (manualCreating) return;
+
+    const name = manualCampaignName.trim();
+    const validContacts = manualPreview.filter((item) => item.valid);
+
+    if (!name) {
+      setMessage("Informe o nome da campanha manual.");
+      return;
+    }
+
+    if (!manualAnalyzed) {
+      setMessage("Analise a lista de contatos antes de criar a campanha.");
+      return;
+    }
+
+    if (!validContacts.length) {
+      setMessage("Nenhum contato válido foi encontrado.");
+      return;
+    }
+
+    setManualCreating(true);
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/crm/dialer/campaigns", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        cache: "no-store",
+        body: JSON.stringify({
+          name,
+          manualContacts: validContacts.map((item) => ({
+            name: item.name,
+            phone: item.phone,
+          })),
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Erro ao criar campanha manual.");
+      }
+
+      resetManualCampaign();
+      window.location.href = `/crm/dashboard/dialer/${data.campaign.id}`;
+    } catch (error: any) {
+      setMessage(error?.message || "Erro ao criar campanha manual.");
+      setManualCreating(false);
+    }
+  }
 
   async function enableNotifications() {
     if (!("Notification" in window)) {
@@ -248,9 +391,19 @@ export default function DialerPage() {
           </p>
         </div>
 
-        <Link href="/crm/dashboard/radar" style={styles.primaryLink}>
-          + Criar pelo Radar
-        </Link>
+        <div style={styles.heroActions}>
+          <Link href="/crm/dashboard/radar" style={styles.primaryLink}>
+            + Criar pelo Radar
+          </Link>
+
+          <button
+            type="button"
+            style={styles.manualCampaignButton}
+            onClick={() => setManualCampaignOpen(true)}
+          >
+            + Nova campanha
+          </button>
+        </div>
       </section>
 
       {message ? <div style={styles.message}>{message}</div> : null}
@@ -291,7 +444,7 @@ export default function DialerPage() {
         <div style={styles.sectionHeader}>
           <div>
             <h2 style={styles.sectionTitle}>Minhas campanhas</h2>
-            <p style={styles.sectionText}>Continue de onde parou ou crie uma nova campanha pelo Radar Comercial.</p>
+            <p style={styles.sectionText}>Continue de onde parou, use o Radar ou crie uma campanha manual de prospecção.</p>
           </div>
 
           <button type="button" style={styles.secondaryButton} onClick={loadCampaigns}>
@@ -304,7 +457,7 @@ export default function DialerPage() {
         ) : !campaigns.length ? (
           <div style={styles.empty}>
             <strong>Nenhuma campanha criada ainda.</strong>
-            <span>Abra o Radar, selecione os clientes e clique em “Enviar para Discador”.</span>
+            <span>Crie pelo Radar ou use “Nova campanha” para colar uma lista de Nome, Telefone.</span>
           </div>
         ) : (
           <div style={styles.grid}>
@@ -374,6 +527,159 @@ export default function DialerPage() {
           </div>
         )}
       </section>
+      {manualCampaignOpen ? (
+        <div
+          style={styles.modalBackdrop}
+          onMouseDown={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              !manualCreating
+            ) {
+              resetManualCampaign();
+            }
+          }}
+        >
+          <div style={styles.manualModalCard}>
+            <div style={styles.manualModalTop}>
+              <div>
+                <div style={styles.manualKicker}>PROSPECÇÃO EXTERNA</div>
+                <h3 style={styles.modalTitle}>Nova campanha manual</h3>
+              </div>
+
+              <button
+                type="button"
+                style={styles.closeButton}
+                disabled={manualCreating}
+                onClick={resetManualCampaign}
+              >
+                ×
+              </button>
+            </div>
+
+            <p style={styles.modalText}>
+              Cole uma linha por contato. O mínimo necessário é Nome, Telefone.
+              Esses leads ficam separados do fluxo do Radar.
+            </p>
+
+            <label style={styles.manualField}>
+              <span>Nome da campanha</span>
+              <input
+                value={manualCampaignName}
+                onChange={(event) => setManualCampaignName(event.target.value)}
+                maxLength={120}
+                placeholder="Ex.: Prospecção Pizzarias Guarulhos"
+                style={styles.modalInput}
+              />
+            </label>
+
+            <label style={styles.manualField}>
+              <span>Adicionar em massa</span>
+              <small style={styles.manualHelp}>
+                Aceita vírgula, ponto e vírgula ou TAB. Ex.: Mercado Central,11999999999
+              </small>
+              <textarea
+                rows={9}
+                value={manualListText}
+                onChange={(event) => {
+                  setManualListText(event.target.value);
+                  setManualAnalyzed(false);
+                  setManualPreview([]);
+                }}
+                placeholder={"Mercado Central,11999999999\nLoja Primavera,11988888888"}
+                style={{
+                  ...styles.modalInput,
+                  resize: "vertical",
+                  minHeight: 170,
+                }}
+              />
+            </label>
+
+            <button
+              type="button"
+              style={styles.analyzeButton}
+              onClick={analyzeManualContacts}
+              disabled={!manualListText.trim() || manualCreating}
+            >
+              Analisar lista
+            </button>
+
+            {manualAnalyzed ? (
+              <div style={styles.previewBox}>
+                <div style={styles.previewMetrics}>
+                  <div>
+                    <strong>{manualPreview.length}</strong>
+                    <span>Linhas</span>
+                  </div>
+                  <div>
+                    <strong>{manualPreview.filter((item) => item.valid).length}</strong>
+                    <span>Válidos</span>
+                  </div>
+                  <div>
+                    <strong>{manualPreview.filter((item) => item.duplicate).length}</strong>
+                    <span>Duplicados</span>
+                  </div>
+                  <div>
+                    <strong>{manualPreview.filter((item) => !item.valid && !item.duplicate).length}</strong>
+                    <span>Inválidos</span>
+                  </div>
+                </div>
+
+                <div style={styles.previewList}>
+                  {manualPreview.slice(0, 12).map((item) => (
+                    <div
+                      key={`${item.line}-${item.phone}-${item.name}`}
+                      style={{
+                        ...styles.previewRow,
+                        ...(item.valid ? styles.previewRowValid : styles.previewRowInvalid),
+                      }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <strong>{item.name || `Linha ${item.line}`}</strong>
+                        <span>{item.phone || "Sem telefone"}</span>
+                      </div>
+                      <b>{item.valid ? "✓ Válido" : item.reason}</b>
+                    </div>
+                  ))}
+
+                  {manualPreview.length > 12 ? (
+                    <div style={styles.previewMore}>
+                      + {manualPreview.length - 12} linha(s) na lista
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+
+            <div style={styles.modalActions}>
+              <button
+                type="button"
+                style={styles.modalSecondary}
+                disabled={manualCreating}
+                onClick={resetManualCampaign}
+              >
+                Cancelar
+              </button>
+
+              <button
+                type="button"
+                style={styles.modalPrimary}
+                disabled={
+                  manualCreating ||
+                  !manualCampaignName.trim() ||
+                  !manualAnalyzed ||
+                  !manualPreview.some((item) => item.valid)
+                }
+                onClick={createManualCampaign}
+              >
+                {manualCreating
+                  ? "Criando..."
+                  : `Criar e começar a ligar (${manualPreview.filter((item) => item.valid).length})`}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {campaignAction ? (
         <div
           style={styles.modalBackdrop}
@@ -495,6 +801,20 @@ const styles: Record<string, any> = {
     lineHeight: 1.55,
     fontWeight: 650,
     maxWidth: 760,
+  },
+  heroActions: {
+    display: "flex",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  manualCampaignButton: {
+    border: "1px solid rgba(22,163,74,.25)",
+    background: "#fff",
+    color: "#14843f",
+    borderRadius: 14,
+    padding: "12px 18px",
+    fontWeight: 950,
+    cursor: "pointer",
   },
   primaryLink: {
     textDecoration: "none",
@@ -684,6 +1004,104 @@ const styles: Record<string, any> = {
     padding: 18,
     background: "rgba(15,23,42,.5)",
     backdropFilter: "blur(4px)",
+  },
+  manualModalCard: {
+    width: "min(100%,680px)",
+    maxHeight: "90vh",
+    overflowY: "auto",
+    borderRadius: 22,
+    padding: 22,
+    background: "#fff",
+    border: "1px solid #e2e8f0",
+    boxShadow: "0 28px 80px rgba(15,23,42,.24)",
+  },
+  manualModalTop: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  manualKicker: {
+    color: "#14843f",
+    fontSize: 10,
+    fontWeight: 950,
+    letterSpacing: ".12em",
+    marginBottom: 5,
+  },
+  closeButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    border: "1px solid #e2e8f0",
+    background: "#fff",
+    color: "#475569",
+    fontSize: 22,
+    cursor: "pointer",
+  },
+  manualField: {
+    display: "grid",
+    gap: 7,
+    marginTop: 14,
+    color: "#334155",
+    fontSize: 12,
+    fontWeight: 950,
+  },
+  manualHelp: {
+    color: "#64748b",
+    fontSize: 11,
+    fontWeight: 650,
+  },
+  analyzeButton: {
+    width: "100%",
+    marginTop: 14,
+    border: "1px solid #bbf7d0",
+    borderRadius: 12,
+    padding: "11px 14px",
+    background: "#f0fdf4",
+    color: "#166534",
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  previewBox: {
+    marginTop: 14,
+    padding: 12,
+    borderRadius: 14,
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+  },
+  previewMetrics: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4,1fr)",
+    gap: 8,
+    marginBottom: 10,
+  },
+  previewList: {
+    display: "grid",
+    gap: 6,
+  },
+  previewRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    borderRadius: 10,
+    padding: "9px 10px",
+    fontSize: 11,
+  },
+  previewRowValid: {
+    background: "#f0fdf4",
+    color: "#166534",
+  },
+  previewRowInvalid: {
+    background: "#fff7ed",
+    color: "#9a3412",
+  },
+  previewMore: {
+    textAlign: "center",
+    padding: 8,
+    color: "#64748b",
+    fontSize: 11,
+    fontWeight: 800,
   },
   modalCard: {
     width: "min(100%,460px)",

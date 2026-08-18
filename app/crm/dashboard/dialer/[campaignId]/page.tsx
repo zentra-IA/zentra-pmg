@@ -35,6 +35,11 @@ type CampaignData = {
       lastOrderAt?: string | null;
       creditLimit?: number | null;
       paymentMethod?: string | null;
+      source?: "RADAR" | "DIALER_MANUAL";
+      responsibleName?: string | null;
+      responsibleRole?: string | null;
+      whatsapp?: string | null;
+      manualNotes?: string | null;
     };
   };
   navigation: {
@@ -52,6 +57,37 @@ type CampaignData = {
     createdAt: string;
   }>;
   nextCallbackAt?: string | null;
+};
+
+type CampaignReport = {
+  summary: {
+    total: number;
+    called: number;
+    answered: number;
+    sales: number;
+    noAnswer: number;
+    busy: number;
+    voicemail: number;
+    callback: number;
+    invalid: number;
+  };
+  items: Array<{
+    campaignContactId: string;
+    position: number | null;
+    attempts: number;
+    result: string;
+    resultLabel: string;
+    notes?: string | null;
+    lastCallAt: string;
+    prospect: {
+      id: string;
+      externalId?: string | null;
+      name: string;
+      phone1?: string | null;
+      city?: string | null;
+      state?: string | null;
+    } | null;
+  }>;
 };
 
 type DueCallback = {
@@ -153,7 +189,23 @@ export default function DialerCampaignPage() {
   const [retryAt, setRetryAt] = useState("");
   const [retrySaving, setRetrySaving] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [manualEditOpen, setManualEditOpen] = useState(false);
+  const [manualEditSaving, setManualEditSaving] = useState(false);
+  const [manualDraft, setManualDraft] = useState({
+    name: "",
+    responsibleName: "",
+    responsibleRole: "",
+    phone1: "",
+    whatsapp: "",
+    city: "",
+    segment: "",
+    manualNotes: "",
+  });
   const [dueCallbacks, setDueCallbacks] = useState<DueCallback[]>([]);
+  const [report, setReport] = useState<CampaignReport | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [requeueingNoAnswer, setRequeueingNoAnswer] = useState(false);
   const [notificationPermission, setNotificationPermission] = useState<
     NotificationPermission | "unsupported"
   >(
@@ -194,6 +246,85 @@ export default function DialerCampaignPage() {
           tag: `dialer-callback-${callback.id}`,
         });
       } catch {}
+    }
+  }
+
+  async function loadReport(silent = true) {
+    if (!campaignId) return;
+
+    if (!silent) {
+      setReportLoading(true);
+    }
+
+    try {
+      const response = await fetch(
+        `/api/crm/dialer/campaigns/${campaignId}/report`,
+        { cache: "no-store" }
+      );
+
+      const json = await response.json();
+
+      if (!response.ok || !json.success) {
+        throw new Error(json.error || "Erro ao carregar relatório.");
+      }
+
+      setReport({
+        summary: json.summary,
+        items: json.items || [],
+      });
+    } catch (error: any) {
+      if (!silent) {
+        setMessage(error?.message || "Erro ao carregar relatório.");
+      }
+    } finally {
+      if (!silent) {
+        setReportLoading(false);
+      }
+    }
+  }
+
+  async function requeueNoAnswer() {
+    if (requeueingNoAnswer) return;
+
+    setRequeueingNoAnswer(true);
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `/api/crm/dialer/campaigns/${campaignId}/report`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          body: JSON.stringify({
+            action: "REQUEUE_NO_ANSWER",
+          }),
+        }
+      );
+
+      const json = await response.json();
+
+      if (!response.ok || !json.success) {
+        throw new Error(
+          json.error || "Erro ao recolocar não atendidos na fila."
+        );
+      }
+
+      setReportOpen(false);
+      setMessage(
+        `${json.requeued} contato(s) que não atenderam voltaram para a fila.`
+      );
+
+      await Promise.all([
+        loadCampaign(null),
+        loadReport(),
+      ]);
+    } catch (error: any) {
+      setMessage(
+        error?.message || "Erro ao recolocar não atendidos na fila."
+      );
+    } finally {
+      setRequeueingNoAnswer(false);
     }
   }
 
@@ -271,6 +402,7 @@ export default function DialerCampaignPage() {
   useEffect(() => {
     void loadCampaign();
     void loadDueCallbacks();
+    void loadReport();
 
     const timer = window.setInterval(() => {
       void loadDueCallbacks();
@@ -295,6 +427,70 @@ export default function DialerCampaignPage() {
 
     setCallStartedAt(new Date().toISOString());
     window.location.href = uri;
+  }
+
+  function openManualEdit() {
+    const prospect = data?.current?.prospect;
+
+    if (!prospect || prospect.source !== "DIALER_MANUAL") {
+      return;
+    }
+
+    setManualDraft({
+      name: prospect.name || "",
+      responsibleName: prospect.responsibleName || "",
+      responsibleRole: prospect.responsibleRole || "",
+      phone1: prospect.phone1 || "",
+      whatsapp: prospect.whatsapp || "",
+      city: prospect.city || "",
+      segment: prospect.segment || "",
+      manualNotes: prospect.manualNotes || "",
+    });
+
+    setManualEditOpen(true);
+  }
+
+  async function saveManualLead() {
+    if (!data?.current || manualEditSaving) return;
+
+    setManualEditSaving(true);
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `/api/crm/dialer/contacts/${data.current.id}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          cache: "no-store",
+          body: JSON.stringify({
+            campaignId,
+            ...manualDraft,
+          }),
+        }
+      );
+
+      const json = await response.json();
+
+      if (!response.ok || !json.success) {
+        throw new Error(
+          json.error || "Erro ao atualizar dados do contato."
+        );
+      }
+
+      setManualEditOpen(false);
+      setMessage("Dados do lead atualizados.");
+
+      await loadCampaign(viewContactId || null);
+    } catch (error: any) {
+      setMessage(
+        error?.message || "Erro ao atualizar dados do contato."
+      );
+    } finally {
+      setManualEditSaving(false);
+    }
   }
 
   async function scheduleRetry() {
@@ -337,6 +533,7 @@ export default function DialerCampaignPage() {
       await Promise.all([
         loadCampaign(null),
         loadDueCallbacks(),
+        loadReport(),
       ]);
     } catch (error: any) {
       setMessage(
@@ -412,6 +609,17 @@ export default function DialerCampaignPage() {
           <div style={styles.progressTrack}>
             <div style={{ ...styles.progressFill, width: `${Math.min(100, Math.max(0, progress))}%` }} />
           </div>
+
+          <button
+            type="button"
+            style={styles.headerReportButton}
+            onClick={async () => {
+              setReportOpen(true);
+              await loadReport(false);
+            }}
+          >
+            📊 Relatório
+          </button>
         </header>
 
         {message ? <div style={styles.message}>{message}</div> : null}
@@ -466,13 +674,39 @@ export default function DialerCampaignPage() {
                 ? `O próximo retorno está agendado para ${new Date(data.nextCallbackAt).toLocaleString("pt-BR")}.`
                 : "Todos os contatos disponíveis desta campanha foram processados."}
             </p>
-            <button
-              type="button"
-              style={styles.secondaryButton}
-              onClick={() => loadCampaign(null)}
-            >
-              Atualizar
-            </button>
+            <div style={styles.finishedActions}>
+              <button
+                type="button"
+                style={styles.secondaryButton}
+                onClick={() => loadCampaign(null)}
+              >
+                Atualizar
+              </button>
+
+              <button
+                type="button"
+                style={styles.reportButton}
+                onClick={async () => {
+                  setReportOpen(true);
+                  await loadReport(false);
+                }}
+              >
+                📊 Ver relatório da campanha
+              </button>
+            </div>
+
+            {report?.summary.noAnswer ? (
+              <button
+                type="button"
+                style={styles.requeueButton}
+                disabled={requeueingNoAnswer}
+                onClick={requeueNoAnswer}
+              >
+                {requeueingNoAnswer
+                  ? "Preparando nova rodada..."
+                  : `🔁 Ligar novamente para quem não atendeu (${report.summary.noAnswer})`}
+              </button>
+            ) : null}
           </section>
         ) : (
           <>
@@ -507,33 +741,74 @@ export default function DialerCampaignPage() {
               <div style={styles.position}>Contato {data.current.position} de {data.campaign.total}</div>
 
               <div style={styles.clientIdBadge}>
-                ID Cliente: {data.current.prospect.externalId || "Não informado"}
+                {data.current.prospect.source === "DIALER_MANUAL"
+                  ? "Lead manual"
+                  : `ID Cliente: ${data.current.prospect.externalId || "Não informado"}`}
               </div>
 
               <h2 style={styles.customerName}>{data.current.prospect.name}</h2>
+
+              {data.current.prospect.source === "DIALER_MANUAL" ? (
+                <button
+                  type="button"
+                  style={styles.editLeadButton}
+                  onClick={openManualEdit}
+                >
+                  ✏️ Editar dados do lead
+                </button>
+              ) : null}
 
               <div style={styles.location}>
                 {[data.current.prospect.city, data.current.prospect.state].filter(Boolean).join(" - ") || "Local não informado"}
               </div>
 
-              <div style={styles.infoGrid}>
-                <div style={styles.infoBox}>
-                  <span>Último pedido</span>
-                  <strong>{formatDate(data.current.prospect.lastOrderAt)}</strong>
+              {data.current.prospect.source === "DIALER_MANUAL" ? (
+                <div style={styles.infoGrid}>
+                  <div style={styles.infoBox}>
+                    <span>Responsável</span>
+                    <strong>{data.current.prospect.responsibleName || "-"}</strong>
+                  </div>
+                  <div style={styles.infoBox}>
+                    <span>Cargo / Compras</span>
+                    <strong>{data.current.prospect.responsibleRole || "-"}</strong>
+                  </div>
+                  <div style={styles.infoBox}>
+                    <span>WhatsApp</span>
+                    <strong>{formatPhone(data.current.prospect.whatsapp)}</strong>
+                  </div>
+                  <div style={styles.infoBox}>
+                    <span>Segmento</span>
+                    <strong>{data.current.prospect.segment || "-"}</strong>
+                  </div>
                 </div>
-                <div style={styles.infoBox}>
-                  <span>Limite</span>
-                  <strong>{formatMoney(data.current.prospect.creditLimit)}</strong>
+              ) : (
+                <div style={styles.infoGrid}>
+                  <div style={styles.infoBox}>
+                    <span>Último pedido</span>
+                    <strong>{formatDate(data.current.prospect.lastOrderAt)}</strong>
+                  </div>
+                  <div style={styles.infoBox}>
+                    <span>Limite</span>
+                    <strong>{formatMoney(data.current.prospect.creditLimit)}</strong>
+                  </div>
+                  <div style={styles.infoBox}>
+                    <span>Pagamento</span>
+                    <strong>{data.current.prospect.paymentMethod || "-"}</strong>
+                  </div>
+                  <div style={styles.infoBox}>
+                    <span>Segmento</span>
+                    <strong>{data.current.prospect.segment || "-"}</strong>
+                  </div>
                 </div>
-                <div style={styles.infoBox}>
-                  <span>Pagamento</span>
-                  <strong>{data.current.prospect.paymentMethod || "-"}</strong>
+              )}
+
+              {data.current.prospect.source === "DIALER_MANUAL" &&
+              data.current.prospect.manualNotes ? (
+                <div style={styles.manualNote}>
+                  <span>Observação do lead</span>
+                  <strong>{data.current.prospect.manualNotes}</strong>
                 </div>
-                <div style={styles.infoBox}>
-                  <span>Segmento</span>
-                  <strong>{data.current.prospect.segment || "-"}</strong>
-                </div>
-              </div>
+              ) : null}
 
               <div style={styles.phoneLabel}>Telefone</div>
               <div style={styles.phone}>{formatPhone(data.current.prospect.phone1)}</div>
@@ -690,6 +965,285 @@ export default function DialerCampaignPage() {
             </section>
           </>
         )}
+        {reportOpen ? (
+          <div
+            style={styles.modalBackdrop}
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) {
+                setReportOpen(false);
+              }
+            }}
+          >
+            <div style={styles.reportModal}>
+              <div style={styles.reportModalTop}>
+                <div>
+                  <div style={styles.editLeadKicker}>RELATÓRIO DA CAMPANHA</div>
+                  <h3 style={styles.editLeadTitle}>
+                    {data?.campaign.name || "Campanha"}
+                  </h3>
+                </div>
+
+                <button
+                  type="button"
+                  style={styles.editLeadClose}
+                  onClick={() => setReportOpen(false)}
+                >
+                  ×
+                </button>
+              </div>
+
+              {reportLoading && !report ? (
+                <div style={styles.reportLoading}>Carregando relatório...</div>
+              ) : report ? (
+                <>
+                  <div style={styles.reportMetrics}>
+                    <div><strong>{report.summary.total}</strong><span>Total</span></div>
+                    <div><strong>{report.summary.called}</strong><span>Ligados</span></div>
+                    <div><strong>{report.summary.answered}</strong><span>Atendidos</span></div>
+                    <div><strong>{report.summary.sales}</strong><span>Vendas</span></div>
+                    <div><strong>{report.summary.noAnswer}</strong><span>Não atenderam</span></div>
+                    <div><strong>{report.summary.busy}</strong><span>Ocupados</span></div>
+                  </div>
+
+                  {report.summary.noAnswer > 0 ? (
+                    <button
+                      type="button"
+                      style={styles.requeueButton}
+                      disabled={requeueingNoAnswer}
+                      onClick={requeueNoAnswer}
+                    >
+                      {requeueingNoAnswer
+                        ? "Preparando..."
+                        : `🔁 Nova rodada: não atenderam (${report.summary.noAnswer})`}
+                    </button>
+                  ) : null}
+
+                  <div style={styles.reportList}>
+                    {report.items.map((item) => (
+                      <div
+                        key={item.campaignContactId}
+                        style={styles.reportRow}
+                      >
+                        <div style={styles.reportRowMain}>
+                          <strong>
+                            {item.position ? `${item.position}. ` : ""}
+                            {item.prospect?.name || "Contato"}
+                          </strong>
+                          <span>
+                            {formatPhone(item.prospect?.phone1)}
+                          </span>
+                        </div>
+
+                        <div style={styles.reportRowMeta}>
+                          <span>{item.resultLabel}</span>
+                          <span>{item.attempts} tentativa(s)</span>
+                          <span>
+                            {new Date(item.lastCallAt).toLocaleString("pt-BR")}
+                          </span>
+                        </div>
+
+                        {item.notes ? (
+                          <div style={styles.reportNotes}>
+                            {item.notes}
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div style={styles.reportLoading}>
+                  Nenhum dado de relatório disponível.
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {manualEditOpen && data?.current ? (
+          <div
+            style={styles.modalBackdrop}
+            onMouseDown={(event) => {
+              if (
+                event.target === event.currentTarget &&
+                !manualEditSaving
+              ) {
+                setManualEditOpen(false);
+              }
+            }}
+          >
+            <div style={styles.editLeadModal}>
+              <div style={styles.editLeadTop}>
+                <div>
+                  <div style={styles.editLeadKicker}>QUALIFICAÇÃO DO LEAD</div>
+                  <h3 style={styles.editLeadTitle}>Editar dados do contato</h3>
+                </div>
+
+                <button
+                  type="button"
+                  style={styles.editLeadClose}
+                  disabled={manualEditSaving}
+                  onClick={() => setManualEditOpen(false)}
+                >
+                  ×
+                </button>
+              </div>
+
+              <p style={styles.editLeadText}>
+                Complete os dados enquanto conversa com o cliente. Essas informações ficam no lead desta prospecção.
+              </p>
+
+              <div style={styles.editLeadGrid}>
+                <label style={styles.field}>
+                  <span>Empresa / Nome</span>
+                  <input
+                    style={styles.input}
+                    value={manualDraft.name}
+                    onChange={(event) =>
+                      setManualDraft((current) => ({
+                        ...current,
+                        name: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+
+                <label style={styles.field}>
+                  <span>Telefone</span>
+                  <input
+                    style={styles.input}
+                    inputMode="tel"
+                    value={manualDraft.phone1}
+                    onChange={(event) =>
+                      setManualDraft((current) => ({
+                        ...current,
+                        phone1: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+
+                <label style={styles.field}>
+                  <span>Responsável</span>
+                  <input
+                    style={styles.input}
+                    value={manualDraft.responsibleName}
+                    onChange={(event) =>
+                      setManualDraft((current) => ({
+                        ...current,
+                        responsibleName: event.target.value,
+                      }))
+                    }
+                    placeholder="Ex.: João"
+                  />
+                </label>
+
+                <label style={styles.field}>
+                  <span>Cargo / Compras</span>
+                  <input
+                    style={styles.input}
+                    value={manualDraft.responsibleRole}
+                    onChange={(event) =>
+                      setManualDraft((current) => ({
+                        ...current,
+                        responsibleRole: event.target.value,
+                      }))
+                    }
+                    placeholder="Ex.: Responsável por compras"
+                  />
+                </label>
+
+                <label style={styles.field}>
+                  <span>WhatsApp</span>
+                  <input
+                    style={styles.input}
+                    inputMode="tel"
+                    value={manualDraft.whatsapp}
+                    onChange={(event) =>
+                      setManualDraft((current) => ({
+                        ...current,
+                        whatsapp: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+
+                <label style={styles.field}>
+                  <span>Cidade</span>
+                  <input
+                    style={styles.input}
+                    value={manualDraft.city}
+                    onChange={(event) =>
+                      setManualDraft((current) => ({
+                        ...current,
+                        city: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+
+                <label style={styles.field}>
+                  <span>Segmento</span>
+                  <input
+                    style={styles.input}
+                    value={manualDraft.segment}
+                    onChange={(event) =>
+                      setManualDraft((current) => ({
+                        ...current,
+                        segment: event.target.value,
+                      }))
+                    }
+                    placeholder="Ex.: Pizzaria"
+                  />
+                </label>
+              </div>
+
+              <label style={styles.field}>
+                <span>Observação do lead</span>
+                <textarea
+                  rows={4}
+                  style={{
+                    ...styles.input,
+                    resize: "vertical",
+                  }}
+                  value={manualDraft.manualNotes}
+                  onChange={(event) =>
+                    setManualDraft((current) => ({
+                      ...current,
+                      manualNotes: event.target.value,
+                    }))
+                  }
+                  placeholder="Ex.: falar com João, compras após as 14h..."
+                />
+              </label>
+
+              <div style={styles.editLeadActions}>
+                <button
+                  type="button"
+                  style={styles.editLeadCancel}
+                  disabled={manualEditSaving}
+                  onClick={() => setManualEditOpen(false)}
+                >
+                  Cancelar
+                </button>
+
+                <button
+                  type="button"
+                  style={styles.editLeadSave}
+                  disabled={
+                    manualEditSaving ||
+                    !manualDraft.name.trim() ||
+                    !manualDraft.phone1.trim()
+                  }
+                  onClick={saveManualLead}
+                >
+                  {manualEditSaving ? "Salvando..." : "Salvar dados"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
       </div>
     </main>
   );
@@ -779,6 +1333,28 @@ const styles: Record<string, any> = {
     color: "#1d4ed8",
     fontSize: 11,
     fontWeight: 950,
+  },
+  editLeadButton: {
+    marginTop: 8,
+    border: "1px solid #bbf7d0",
+    borderRadius: 11,
+    padding: "8px 11px",
+    background: "#f0fdf4",
+    color: "#166534",
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  manualNote: {
+    display: "grid",
+    gap: 4,
+    marginBottom: 16,
+    borderRadius: 14,
+    padding: 12,
+    textAlign: "left",
+    background: "#fff7ed",
+    border: "1px solid #fed7aa",
+    color: "#9a3412",
+    fontSize: 11,
   },
   navigationRow: {
     display: "flex",
@@ -1096,6 +1672,192 @@ const styles: Record<string, any> = {
     color: "#64748b",
     fontSize: 11,
     fontWeight: 700,
+  },
+  modalBackdrop: {
+    position: "fixed",
+    zIndex: 9999,
+    inset: 0,
+    display: "grid",
+    placeItems: "center",
+    padding: 14,
+    background: "rgba(15,23,42,.52)",
+    backdropFilter: "blur(4px)",
+  },
+  editLeadModal: {
+    width: "min(100%,620px)",
+    maxHeight: "92vh",
+    overflowY: "auto",
+    borderRadius: 22,
+    padding: 20,
+    background: "#fff",
+    border: "1px solid #e2e8f0",
+    boxShadow: "0 28px 80px rgba(15,23,42,.25)",
+  },
+  editLeadTop: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  editLeadKicker: {
+    color: "#14843f",
+    fontSize: 10,
+    letterSpacing: ".12em",
+    fontWeight: 950,
+  },
+  editLeadTitle: {
+    margin: "5px 0 0",
+    fontSize: 21,
+    color: "#0f172a",
+    fontWeight: 950,
+  },
+  editLeadText: {
+    margin: "8px 0 4px",
+    color: "#64748b",
+    fontSize: 12,
+    lineHeight: 1.5,
+    fontWeight: 700,
+  },
+  editLeadClose: {
+    width: 36,
+    height: 36,
+    border: "1px solid #e2e8f0",
+    borderRadius: 10,
+    background: "#fff",
+    color: "#475569",
+    fontSize: 22,
+    cursor: "pointer",
+  },
+  editLeadGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2,minmax(0,1fr))",
+    gap: "0 10px",
+  },
+  editLeadActions: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 9,
+    marginTop: 16,
+  },
+  editLeadCancel: {
+    border: "1px solid #dbe3ef",
+    borderRadius: 12,
+    padding: "11px 12px",
+    background: "#fff",
+    color: "#475569",
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  editLeadSave: {
+    border: 0,
+    borderRadius: 12,
+    padding: "11px 12px",
+    background: "#14843f",
+    color: "#fff",
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  headerReportButton: {
+    width: "100%",
+    marginTop: 12,
+    border: "1px solid #dbe3ef",
+    borderRadius: 12,
+    padding: "9px 12px",
+    background: "#fff",
+    color: "#334155",
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  finishedActions: {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+    justifyContent: "center",
+  },
+  reportButton: {
+    marginTop: 18,
+    border: "1px solid #dbe3ef",
+    color: "#334155",
+    background: "#fff",
+    padding: "11px 16px",
+    borderRadius: 14,
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  requeueButton: {
+    width: "100%",
+    marginTop: 12,
+    border: 0,
+    borderRadius: 14,
+    padding: "12px 14px",
+    background: "#14843f",
+    color: "#fff",
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  reportModal: {
+    width: "min(100%,720px)",
+    maxHeight: "92vh",
+    overflowY: "auto",
+    borderRadius: 22,
+    padding: 20,
+    background: "#fff",
+    border: "1px solid #e2e8f0",
+    boxShadow: "0 28px 80px rgba(15,23,42,.25)",
+  },
+  reportModalTop: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "flex-start",
+    marginBottom: 14,
+  },
+  reportMetrics: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3,minmax(0,1fr))",
+    gap: 8,
+    marginBottom: 12,
+  },
+  reportList: {
+    display: "grid",
+    gap: 8,
+    marginTop: 14,
+  },
+  reportRow: {
+    border: "1px solid #e2e8f0",
+    borderRadius: 13,
+    padding: 11,
+    background: "#f8fafc",
+  },
+  reportRowMain: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 10,
+    flexWrap: "wrap",
+    color: "#0f172a",
+    fontSize: 12,
+  },
+  reportRowMeta: {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+    marginTop: 6,
+    color: "#64748b",
+    fontSize: 10,
+    fontWeight: 800,
+  },
+  reportNotes: {
+    marginTop: 7,
+    color: "#475569",
+    fontSize: 11,
+    lineHeight: 1.45,
+  },
+  reportLoading: {
+    minHeight: 140,
+    display: "grid",
+    placeItems: "center",
+    color: "#64748b",
+    fontWeight: 850,
   },
   loading: {
     minHeight: 220,

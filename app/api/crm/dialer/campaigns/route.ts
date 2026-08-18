@@ -2,7 +2,61 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireCompanyAccess } from "@/lib/server-company";
 
+
 export const dynamic = "force-dynamic";
+
+const MAX_MANUAL_CONTACTS = 300;
+
+function clean(value: unknown) {
+  return String(value ?? "").trim();
+}
+
+function normalizePhone(value: unknown) {
+  let valueDigits = clean(value).replace(/\D/g, "");
+
+  if (valueDigits.startsWith("55") && valueDigits.length >= 12) {
+    valueDigits = valueDigits.slice(2);
+  }
+
+  if (valueDigits.length !== 10 && valueDigits.length !== 11) {
+    return "";
+  }
+
+  return valueDigits;
+}
+
+function normalizeManualContacts(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seenPhones = new Set<string>();
+  const contacts: Array<{
+    name: string;
+    phone: string;
+  }> = [];
+
+  for (const item of value) {
+    const name = clean(item?.name);
+    const phone = normalizePhone(item?.phone);
+
+    if (!name || !phone || seenPhones.has(phone)) {
+      continue;
+    }
+
+    seenPhones.add(phone);
+    contacts.push({
+      name: name.slice(0, 180),
+      phone,
+    });
+
+    if (contacts.length >= MAX_MANUAL_CONTACTS) {
+      break;
+    }
+  }
+
+  return contacts;
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -76,6 +130,7 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const name = String(body?.name || "").trim();
+    const manualContacts = normalizeManualContacts(body?.manualContacts);
 
     const prospectIds: string[] = Array.isArray(body?.prospectIds)
       ? Array.from(
@@ -94,46 +149,109 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!prospectIds.length) {
+    const isManualCampaign = manualContacts.length > 0;
+
+    if (!isManualCampaign && !prospectIds.length) {
       return NextResponse.json(
         { success: false, error: "Nenhum contato selecionado." },
         { status: 400 }
       );
     }
 
-    // Segurança adicional:
-    // o contato precisa ser da empresa E já ter sido revelado para este usuário.
-    const prospects = await prisma.prospect.findMany({
-      where: {
-        company_id: companyId,
-        id: { in: prospectIds },
-        active: true,
-        exports: {
-          some: {
-            company_id: companyId,
-            clientId: userId,
-          },
-        },
-      },
-      select: {
-        id: true,
-        phone1: true,
-      },
-    });
-
-    const validProspects = prospects.filter((item) => Boolean(item.phone1));
-
-    if (!validProspects.length) {
+    if (Array.isArray(body?.manualContacts) && body.manualContacts.length > MAX_MANUAL_CONTACTS) {
       return NextResponse.json(
         {
           success: false,
-          error: "Nenhum contato revelado com telefone foi encontrado para este usuário.",
+          error: `A campanha manual aceita até ${MAX_MANUAL_CONTACTS} contatos por vez.`,
         },
         { status: 400 }
       );
     }
 
+    // Segurança adicional do fluxo RADAR:
+    // o contato precisa ser da empresa E já ter sido revelado para este usuário.
+    let validProspects: Array<{ id: string; phone1: string | null }> = [];
+
+    if (!isManualCampaign) {
+      const prospects = await prisma.prospect.findMany({
+        where: {
+          company_id: companyId,
+          id: { in: prospectIds },
+          active: true,
+          exports: {
+            some: {
+              company_id: companyId,
+              clientId: userId,
+            },
+          },
+        },
+        select: {
+          id: true,
+          phone1: true,
+        },
+      });
+
+      validProspects = prospects.filter((item) => Boolean(item.phone1));
+
+      if (!validProspects.length) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Nenhum contato revelado com telefone foi encontrado para este usuário.",
+          },
+          { status: 400 }
+        );
+      }
+    }
+
     const campaign = await prisma.$transaction(async (tx) => {
+      if (isManualCampaign) {
+        const created = await tx.dialerCampaign.create({
+          data: {
+            company_id: companyId,
+            branch_id: branchId || null,
+            user_id: userId,
+            name,
+            status: "READY",
+            total: manualContacts.length,
+          },
+        });
+
+        const createdProspects = await tx.prospect.createManyAndReturn({
+          data: manualContacts.map((contact) => ({
+            company_id: companyId,
+            branch_id: branchId || null,
+            name: contact.name,
+            phone1: contact.phone,
+            active: true,
+            sourcePayload: {
+              source: "DIALER_MANUAL",
+              ownerUserId: userId,
+              createdFrom: "DIALER_MANUAL_CAMPAIGN",
+              campaignId: created.id,
+              responsibleName: null,
+              responsibleRole: null,
+              whatsapp: null,
+              manualNotes: null,
+            },
+          })),
+          select: {
+            id: true,
+          },
+        });
+
+        await tx.dialerCampaignContact.createMany({
+          data: createdProspects.map((prospect, index) => ({
+            campaignId: created.id,
+            prospectId: prospect.id,
+            position: index + 1,
+            status: "PENDING",
+          })),
+        });
+
+        return created;
+      }
+
       const created = await tx.dialerCampaign.create({
         data: {
           company_id: companyId,
@@ -164,6 +282,7 @@ export async function POST(req: NextRequest) {
         name: campaign.name,
         total: campaign.total,
         status: campaign.status,
+        source: isManualCampaign ? "MANUAL" : "RADAR",
       },
     });
   } catch (error: any) {
