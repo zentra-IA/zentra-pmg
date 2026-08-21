@@ -4,36 +4,78 @@ import { requireCompanyAccess } from "@/lib/server-company";
 
 export const dynamic = "force-dynamic";
 
+/*
+ * Status oficiais do Kanban Comercial.
+ *
+ * IMPORTANTE:
+ * Estes valores precisam permanecer alinhados com:
+ *
+ * app/crm/dashboard/page.tsx
+ * app/api/whatsapp/incoming
+ */
 const ALLOWED_STATUSES = [
   "novo",
   "enviado",
   "respondeu",
-  "quer_agendar_entrevista",
-  "entrevista_agendada",
-  "entrevista_confirmada",
+  "primeiro_contato",
+  "em_negociacao",
+  "cotacao_enviada",
+  "pedido_fechado",
+  "pos_venda",
+  "cliente_ativo",
+  "cliente_inativo",
   "campanha",
-  "reagendar_futuro",
-  "contratado",
   "sem_interesse",
-  "nao_aprovado",
-  "selecionado_vaga",
-  "aprovado",
-  "nao_compareceu",
+  "perdido",
 ];
 
+/*
+ * Compatibilidade com registros/status antigos.
+ *
+ * Assim não quebramos contatos que ainda possam ter
+ * valores utilizados por versões anteriores do sistema.
+ */
 const LEGACY_TO_NEW: Record<string, string> = {
+  // Resposta
   respondido: "respondeu",
-  interesse: "quer_agendar_entrevista",
-  pedido: "entrevista_agendada",
-  reativar_futuro: "reagendar_futuro",
-  finalizado: "contratado",
-  aprovado_entrevista: "aprovado",
-  reprovado: "nao_aprovado",
-  rejected: "nao_aprovado",
-  hired: "contratado",
-  finished: "contratado",
-  approved: "aprovado",
-  falta: "nao_compareceu",
+  cliente_respondeu: "respondeu",
+
+  // Interesse / negociação
+  interesse: "em_negociacao",
+  negociacao: "em_negociacao",
+  quer_cotacao: "em_negociacao",
+  quer_agendar_entrevista: "em_negociacao",
+
+  // Cotação
+  proposta: "cotacao_enviada",
+  cotacao: "cotacao_enviada",
+  orcamento_enviado: "cotacao_enviada",
+  agendamento: "cotacao_enviada",
+  entrevista: "cotacao_enviada",
+  entrevista_agendada: "cotacao_enviada",
+  entrevista_confirmada: "cotacao_enviada",
+
+  // Venda / fechamento
+  pedido: "pedido_fechado",
+  contratado: "pedido_fechado",
+  aprovado: "pedido_fechado",
+  finalizado: "pedido_fechado",
+  hired: "pedido_fechado",
+  finished: "pedido_fechado",
+  approved: "pedido_fechado",
+
+  // Retomar
+  reagendar_futuro: "cliente_inativo",
+  reativar_futuro: "cliente_inativo",
+  banco_talentos: "cliente_inativo",
+
+  // Perdidos
+  nao_aprovado: "perdido",
+  nao_compareceu: "perdido",
+  descartado: "perdido",
+  reprovado: "perdido",
+  rejected: "perdido",
+  falta: "perdido",
 };
 
 function getSupabase() {
@@ -48,181 +90,259 @@ function getSupabase() {
 }
 
 function clean(value: any) {
-  if (value === undefined || value === null) return "";
+  if (value === undefined || value === null) {
+    return "";
+  }
+
   return String(value).trim();
 }
 
+/*
+ * Normaliza status vindos do frontend ou de versões antigas.
+ */
 function normalizeStatus(value: any) {
-  const status = clean(value);
-  return LEGACY_TO_NEW[status] || status;
+  const raw = clean(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\s-]+/g, "_");
+
+  return LEGACY_TO_NEW[raw] || raw;
 }
 
 function safeDate(value: any) {
-  if (!value) return null;
+  if (!value) {
+    return null;
+  }
+
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
-}
 
-async function syncHiringStatus({
-  supabase,
-  companyId,
-  leadId,
-  status,
-}: {
-  supabase: any;
-  companyId: string;
-  leadId: string;
-  status: string;
-}) {
-  const hiringStatusMap: Record<string, string> = {
-    contratado: "hired",
-    aprovado: "pending_documents",
-    nao_aprovado: "canceled",
-    sem_interesse: "canceled",
-    nao_compareceu: "canceled",
-  };
-
-  const hiringStatus = hiringStatusMap[status];
-
-  if (!hiringStatus) return;
-
-  const { error } = await supabase
-    .from("rh_hirings")
-    .update({
-      status: hiringStatus,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("company_id", companyId)
-    .eq("lead_id", leadId);
-
-  if (error) {
-    console.error("SYNC HIRING STATUS ERROR:", error);
-  }
-}
-
-async function syncInterviewStatus({
-  supabase,
-  companyId,
-  leadId,
-  status,
-}: {
-  supabase: any;
-  companyId: string;
-  leadId: string;
-  status: string;
-}) {
-  const interviewStatusMap: Record<string, string> = {
-    entrevista_confirmada: "confirmed",
-    aprovado: "approved",
-    nao_aprovado: "rejected",
-    nao_compareceu: "no_show",
-  };
-
-  const interviewStatus = interviewStatusMap[status];
-
-  if (!interviewStatus) return;
-
-  const { error } = await supabase
-    .from("rh_interview_slots")
-    .update({
-      status: interviewStatus,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("company_id", companyId)
-    .eq("lead_id", leadId);
-
-  if (error) {
-    console.error("SYNC INTERVIEW STATUS ERROR:", error);
-  }
+  return Number.isNaN(date.getTime())
+    ? null
+    : date.toISOString();
 }
 
 export async function PATCH(req: NextRequest) {
   try {
     const supabase = getSupabase();
+
     const access = await requireCompanyAccess(req);
+
     const companyId = access.companyId;
     const userId = access.userId;
-    const role = String(access.userRole || "").toUpperCase();
+    const role = String(
+      access.userRole || ""
+    ).toUpperCase();
 
+    /*
+     * Supervisor continua sem permissão de movimentação,
+     * preservando a regra atual.
+     */
     if (role === "SUPERVISOR") {
       return NextResponse.json(
-        { error: "Acesso negado." },
-        { status: 403 }
+        {
+          error: "Acesso negado.",
+        },
+        {
+          status: 403,
+        }
       );
     }
 
     if (!companyId || !userId) {
       return NextResponse.json(
-        { error: "Empresa ou usuário não identificado." },
-        { status: 401 }
+        {
+          error:
+            "Empresa ou usuário não identificado.",
+        },
+        {
+          status: 401,
+        }
       );
     }
 
     const body = await req.json();
 
-    const id = clean(body?.id || body?.leadId || body?.lead_id);
-    const status = normalizeStatus(body?.status);
+    const id = clean(
+      body?.id ||
+        body?.leadId ||
+        body?.lead_id
+    );
+
+    const status = normalizeStatus(
+      body?.status
+    );
 
     if (!id) {
       return NextResponse.json(
-        { error: "ID do contato é obrigatório." },
-        { status: 400 }
+        {
+          error:
+            "ID do contato é obrigatório.",
+        },
+        {
+          status: 400,
+        }
       );
     }
 
+    /*
+     * Agora valida contra os mesmos status
+     * utilizados pelo Kanban comercial.
+     */
     if (!ALLOWED_STATUSES.includes(status)) {
       return NextResponse.json(
-        { error: "Status inválido.", allowed: ALLOWED_STATUSES },
-        { status: 400 }
+        {
+          error: "Status inválido.",
+          received: status,
+          allowed: ALLOWED_STATUSES,
+        },
+        {
+          status: 400,
+        }
       );
     }
+
+    const now =
+      new Date().toISOString();
 
     const update: any = {
       status,
-      updated_at: new Date().toISOString(),
+      updated_at: now,
     };
 
-    if (body?.job_id !== undefined || body?.jobId !== undefined) {
-      const jobId = clean(body.job_id || body.jobId) || null;
+    /*
+     * Mantém os campos auxiliares usados por outras
+     * partes do CRM.
+     */
+    if (
+      body?.job_id !== undefined ||
+      body?.jobId !== undefined
+    ) {
+      const jobId =
+        clean(
+          body.job_id ||
+            body.jobId
+        ) || null;
+
       update.job_id = jobId;
       update.current_job_id = jobId;
     }
 
-    if (body?.current_job_id !== undefined || body?.currentJobId !== undefined) {
+    if (
+      body?.current_job_id !== undefined ||
+      body?.currentJobId !== undefined
+    ) {
       update.current_job_id =
-        clean(body.current_job_id || body.currentJobId) || null;
+        clean(
+          body.current_job_id ||
+            body.currentJobId
+        ) || null;
     }
 
-    if (body?.batch_id !== undefined || body?.batchId !== undefined) {
-      update.batch_id = clean(body.batch_id || body.batchId) || null;
+    if (
+      body?.batch_id !== undefined ||
+      body?.batchId !== undefined
+    ) {
+      update.batch_id =
+        clean(
+          body.batch_id ||
+            body.batchId
+        ) || null;
     }
 
-    if (body?.last_message !== undefined || body?.lastMessage !== undefined) {
-      update.last_message = clean(body.last_message || body.lastMessage) || null;
-      update.last_message_at = new Date().toISOString();
+    if (
+      body?.last_message !== undefined ||
+      body?.lastMessage !== undefined
+    ) {
+      update.last_message =
+        clean(
+          body.last_message ||
+            body.lastMessage
+        ) || null;
+
+      update.last_message_at = now;
     }
 
-    if (body?.ai_paused !== undefined || body?.aiPaused !== undefined) {
-      update.ai_paused = Boolean(body.ai_paused ?? body.aiPaused);
+    if (
+      body?.ai_paused !== undefined ||
+      body?.aiPaused !== undefined
+    ) {
+      update.ai_paused = Boolean(
+        body.ai_paused ??
+          body.aiPaused
+      );
     }
 
     if (body?.paused !== undefined) {
-      update.paused = Boolean(body.paused);
+      update.paused = Boolean(
+        body.paused
+      );
     }
 
-    if (["contratado", "aprovado", "nao_aprovado", "nao_compareceu", "sem_interesse"].includes(status)) {
+    /*
+     * Status finais ou suspensos.
+     *
+     * Quando o contato chega nesses pontos,
+     * automações/campanhas não devem continuar
+     * enviando mensagens automaticamente.
+     */
+    if (
+      [
+        "pedido_fechado",
+        "cliente_ativo",
+        "cliente_inativo",
+        "sem_interesse",
+        "perdido",
+      ].includes(status)
+    ) {
       update.ai_paused = true;
       update.paused = true;
       update.campaign_status = null;
     }
 
+    /*
+     * Se voltar manualmente para uma etapa comercial ativa,
+     * liberamos a pausa operacional.
+     *
+     * Isso evita um contato que estava "Sem interesse"
+     * continuar travado depois de ser movido novamente
+     * para negociação.
+     */
+    if (
+      [
+        "novo",
+        "enviado",
+        "respondeu",
+        "primeiro_contato",
+        "em_negociacao",
+        "cotacao_enviada",
+        "pos_venda",
+      ].includes(status)
+    ) {
+      update.paused = false;
+    }
+
+    /*
+     * Entrada em campanha.
+     */
     if (status === "campanha") {
       update.campaign_step = 0;
       update.campaign_status = "pending";
+      update.paused = false;
     }
 
-    if (status === "reagendar_futuro") {
-      update.reactivation_at = safeDate(body?.reactivationAt || body?.reactivation_at);
+    /*
+     * "Retomar depois"
+     *
+     * O novo Kanban usa cliente_inativo,
+     * substituindo o antigo reagendar_futuro.
+     */
+    if (status === "cliente_inativo") {
+      update.reactivation_at =
+        safeDate(
+          body?.reactivationAt ||
+            body?.reactivation_at
+        );
     }
 
     let updateQuery = supabase
@@ -231,36 +351,41 @@ export async function PATCH(req: NextRequest) {
       .eq("id", id)
       .eq("company_id", companyId);
 
+    /*
+     * Vendedor só altera contatos próprios.
+     */
     if (role === "VENDEDOR") {
-      updateQuery = updateQuery.eq("owner_user_id", userId);
+      updateQuery =
+        updateQuery.eq(
+          "owner_user_id",
+          userId
+        );
     }
 
-    const { data: lead, error } = await updateQuery
+    const {
+      data: lead,
+      error,
+    } = await updateQuery
       .select("*")
       .maybeSingle();
 
-    if (error) throw new Error(error.message);
-
-    if (!lead) {
-      return NextResponse.json(
-        { error: "Contato não encontrado ou sem permissão." },
-        { status: 404 }
+    if (error) {
+      throw new Error(
+        error.message
       );
     }
 
-    await syncHiringStatus({
-      supabase,
-      companyId,
-      leadId: id,
-      status,
-    });
-
-    await syncInterviewStatus({
-      supabase,
-      companyId,
-      leadId: id,
-      status,
-    });
+    if (!lead) {
+      return NextResponse.json(
+        {
+          error:
+            "Contato não encontrado ou sem permissão.",
+        },
+        {
+          status: 404,
+        }
+      );
+    }
 
     return NextResponse.json({
       success: true,
@@ -269,15 +394,30 @@ export async function PATCH(req: NextRequest) {
       lead,
     });
   } catch (error: any) {
-    console.error("CRM LEADS STATUS PATCH:", error);
+    console.error(
+      "CRM LEADS STATUS PATCH:",
+      error
+    );
 
     return NextResponse.json(
-      { error: error?.message || "Erro ao atualizar status." },
-      { status: 500 }
+      {
+        error:
+          error?.message ||
+          "Erro ao atualizar status.",
+      },
+      {
+        status: 500,
+      }
     );
   }
 }
 
-export async function POST(req: NextRequest) {
+/*
+ * Mantemos POST apontando para o mesmo comportamento
+ * para compatibilidade com partes antigas do sistema.
+ */
+export async function POST(
+  req: NextRequest
+) {
   return PATCH(req);
 }
