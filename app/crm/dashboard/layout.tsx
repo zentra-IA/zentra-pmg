@@ -492,6 +492,23 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
         <main className="pmg-page">{children}</main>
       </section>
 
+      <a
+        href="https://site-suporte-zentra-pmg.vercel.app/"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="pmg-support-float"
+        title="Central de Suporte PMG"
+        aria-label="Abrir Central de Suporte PMG"
+      >
+        <span className="pmg-support-float-icon">
+          <Icon name="message" />
+        </span>
+        <span className="pmg-support-float-text">
+          <b>Suporte</b>
+          <small>Vídeos e treinamentos</small>
+        </span>
+      </a>
+
       <style jsx global>{`
         :root {
           --pmg-bg: #f6f7f9;
@@ -1067,6 +1084,77 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
           cursor: pointer;
         }
 
+        .pmg-support-float {
+          position: fixed;
+          right: 24px;
+          bottom: 24px;
+          z-index: 90;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          min-height: 58px;
+          padding: 8px 16px 8px 8px;
+          color: #ffffff;
+          text-decoration: none;
+          background: linear-gradient(135deg, var(--pmg-green), #166534);
+          border: 1px solid rgba(255, 255, 255, 0.16);
+          border-radius: 999px;
+          box-shadow: 0 16px 40px rgba(21, 128, 61, 0.3);
+          transition:
+            transform 160ms ease,
+            box-shadow 160ms ease,
+            background 160ms ease;
+        }
+
+        .pmg-support-float:hover {
+          color: #ffffff;
+          background: linear-gradient(135deg, #166534, #14532d);
+          transform: translateY(-3px);
+          box-shadow: 0 20px 46px rgba(21, 128, 61, 0.38);
+        }
+
+        .pmg-support-float:focus-visible {
+          outline: 3px solid rgba(22, 163, 74, 0.28);
+          outline-offset: 4px;
+        }
+
+        .pmg-support-float-icon {
+          width: 42px;
+          height: 42px;
+          flex: 0 0 auto;
+          display: grid;
+          place-items: center;
+          color: var(--pmg-green);
+          background: #ffffff;
+          border-radius: 999px;
+          box-shadow: inset 0 0 0 1px rgba(21, 128, 61, 0.08);
+        }
+
+        .pmg-support-float-icon svg {
+          width: 20px;
+          height: 20px;
+        }
+
+        .pmg-support-float-text {
+          min-width: 0;
+          display: grid;
+          gap: 1px;
+        }
+
+        .pmg-support-float-text b {
+          font-size: 14px;
+          line-height: 1.1;
+          font-weight: 850;
+        }
+
+        .pmg-support-float-text small {
+          font-size: 10px;
+          line-height: 1.2;
+          font-weight: 650;
+          opacity: 0.88;
+          white-space: nowrap;
+        }
+
         @media (max-width: 1100px) {
           .pmg-shell {
             grid-template-columns: 72px minmax(0, 1fr);
@@ -1106,6 +1194,22 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
         }
 
         @media (max-width: 760px) {
+          .pmg-support-float {
+            right: 14px;
+            bottom: max(14px, env(safe-area-inset-bottom));
+            min-height: 56px;
+            padding: 7px;
+          }
+
+          .pmg-support-float-text {
+            display: none;
+          }
+
+          .pmg-support-float-icon {
+            width: 42px;
+            height: 42px;
+          }
+
           body.pmg-menu-open {
             overflow: hidden;
           }
