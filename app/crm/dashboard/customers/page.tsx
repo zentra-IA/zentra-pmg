@@ -2,6 +2,8 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
+import CustomerPmgImporter from "./CustomerPmgImporter";
+
 type Customer = {
   id: string;
   internal_code?: string | null;
@@ -935,6 +937,7 @@ export default function CustomersPage() {
         </div>
 
         <div className="hero-actions">
+          <CustomerPmgImporter onImported={loadCustomers} />
           <button
             type="button"
             className="secondary-button"

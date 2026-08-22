@@ -162,7 +162,10 @@ export async function POST(req: NextRequest) {
     const title = cleanText(body?.title);
     const scheduledAt = parseDate(body?.scheduled_at);
 
-    if (!customerId && !leadId && !phone) {
+    const origin = cleanText(body?.origin || (leadId ? "kanban" : "customer"));
+    const isPersonalAgenda = origin === "personal_agenda";
+
+    if (!customerId && !leadId && !phone && !isPersonalAgenda) {
       return NextResponse.json(
         {
           error:
@@ -255,7 +258,7 @@ export async function POST(req: NextRequest) {
         phone,
 
         type: cleanText(body?.type || "followup"),
-        origin: cleanText(body?.origin || (leadId ? "kanban" : "customer")),
+        origin,
         title,
         description: cleanOptional(body?.description),
         scheduled_at: scheduledAt,

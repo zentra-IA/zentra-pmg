@@ -92,6 +92,84 @@ const COLOR_PRESETS = [
   { label: "Laticínios Dourado", value: "#d4a017" },
 ];
 
+const PMG_LOGO_CANDIDATES = [
+  "/logo-pmg.png",
+  "/logo-pmg.webp",
+  "/logo-pmg.jpg",
+  "/logo-pmg.jpeg",
+  "/logo-pmg.svg",
+];
+
+async function loadImageFromCandidates(paths: string[]) {
+  for (const path of paths) {
+    try {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.src = path;
+
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error(`Falha ao carregar ${path}`));
+      });
+
+      return img;
+    } catch {
+      // Tenta o próximo formato.
+    }
+  }
+
+  return null;
+}
+
+function PmgLogo({
+  size = 92,
+  className,
+}: {
+  size?: number;
+  className?: string;
+}) {
+  const [index, setIndex] = useState(0);
+
+  if (index >= PMG_LOGO_CANDIDATES.length) {
+    return (
+      <div
+        className={className}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: 18,
+          display: "grid",
+          placeItems: "center",
+          background: "linear-gradient(135deg,#0f8f45,#ef4444)",
+          color: "#fff",
+          fontWeight: 950,
+          fontSize: Math.max(13, Math.round(size * 0.22)),
+          boxShadow: "0 10px 28px rgba(0,0,0,.20)",
+        }}
+      >
+        PMG
+      </div>
+    );
+  }
+
+  return (
+    <img
+      className={className}
+      src={PMG_LOGO_CANDIDATES[index]}
+      alt="Logo PMG"
+      onError={() => setIndex((current) => current + 1)}
+      style={{
+        width: size,
+        height: "auto",
+        maxHeight: size,
+        objectFit: "contain",
+        display: "block",
+        filter: "drop-shadow(0 8px 18px rgba(0,0,0,.28))",
+      }}
+    />
+  );
+}
+
 function copy(text: string) {
   navigator.clipboard.writeText(text || "");
   alert("Copiado para a área de transferência.");
@@ -210,6 +288,38 @@ async function downloadImageComposition(form: any, result: CreativeResult) {
     ctx.fillText(String(price).toUpperCase(), pad + 30, boxY + Math.round(boxH * 0.24));
   }
 
+  // Marca PMG fixa em toda arte final.
+  const pmgLogo = await loadImageFromCandidates(PMG_LOGO_CANDIDATES);
+  if (pmgLogo) {
+    const logoMaxW = Math.round(canvas.width * 0.18);
+    const logoMaxH = Math.round(canvas.height * 0.10);
+    const ratio = Math.min(
+      logoMaxW / pmgLogo.width,
+      logoMaxH / pmgLogo.height,
+      1
+    );
+
+    const logoW = Math.round(pmgLogo.width * ratio);
+    const logoH = Math.round(pmgLogo.height * ratio);
+    const logoX = canvas.width - pad - logoW;
+    const logoY = canvas.height - pad - logoH;
+
+    // Fundo branco suave melhora leitura de logos transparentes/coloridas.
+    const badgePad = Math.round(canvas.width * 0.014);
+    ctx.fillStyle = "rgba(255,255,255,.94)";
+    ctx.beginPath();
+    ctx.roundRect(
+      logoX - badgePad,
+      logoY - badgePad,
+      logoW + badgePad * 2,
+      logoH + badgePad * 2,
+      Math.max(18, Math.round(canvas.width * 0.016))
+    );
+    ctx.fill();
+
+    ctx.drawImage(pmgLogo, logoX, logoY, logoW, logoH);
+  }
+
   ctx.fillStyle = "#fff";
   ctx.font = `800 ${Math.round(canvas.width * 0.032)}px Arial`;
   ctx.fillText(form.companyName || "PMG Atacadista", pad, canvas.height - pad - 42);
@@ -288,7 +398,22 @@ function PreviewCard({ form, result }: { form: any; result: CreativeResult | nul
 
       <div style={{ position: "absolute", inset: 0, background: "linear-gradient(135deg,rgba(0,0,0,.78),rgba(0,0,0,.20),rgba(0,0,0,.82))" }} />
 
-      <div style={{ position: "relative", minHeight: 560, padding: 30, display: "flex", flexDirection: "column", justifyContent: "space-between", color: "#fff" }}>
+      <div
+        style={{
+          position: "absolute",
+          top: 22,
+          right: 22,
+          zIndex: 3,
+          padding: 10,
+          borderRadius: 18,
+          background: "rgba(255,255,255,.94)",
+          boxShadow: "0 12px 30px rgba(0,0,0,.18)",
+        }}
+      >
+        <PmgLogo size={88} />
+      </div>
+
+      <div style={{ position: "relative", minHeight: 560, padding: 30, paddingTop: 125, display: "flex", flexDirection: "column", justifyContent: "space-between", color: "#fff" }}>
         <div>
           <div style={{ display: "inline-flex", background: form.dominantColor, color: "#fff", borderRadius: 999, padding: "9px 14px", fontWeight: 950, fontSize: 13 }}>
             {(form.topText || "OFERTA PMG").toUpperCase()}
@@ -382,6 +507,7 @@ Texto inferior: ${form.bottomText}
 Empresa: ${form.companyName}
 WhatsApp vendedor: ${form.sellerWhatsapp}
 Instruções extras: ${form.extra}
+Identidade visual obrigatória: reservar espaço visual limpo para aplicação do logo oficial da PMG no canto superior direito. Não inventar, redesenhar ou gerar logotipo por IA; o sistema aplicará o arquivo oficial da PMG por cima da arte.
 `.trim(),
   }), [form]);
 
@@ -445,7 +571,16 @@ ${result.hashtags || ""}`.trim()
     <main style={styles.page}>
       <section style={styles.header}>
         <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-          <div style={styles.logo}>PMG</div>
+          <div
+            style={{
+              ...styles.logo,
+              background: "#fff",
+              overflow: "hidden",
+              padding: 5,
+            }}
+          >
+            <PmgLogo size={40} />
+          </div>
           <div>
             <p style={styles.kicker}>Zentra Sales AI</p>
             <h1 style={styles.title}>Gerador de Criativos IA</h1>

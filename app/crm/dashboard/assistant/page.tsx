@@ -92,6 +92,25 @@ type Activity = {
   } | null;
 };
 
+type AgendaCustomer = {
+  id: string;
+  legal_name: string;
+  trade_name?: string | null;
+  buyer_name?: string | null;
+  whatsapp?: string | null;
+  phone?: string | null;
+};
+
+type AgendaForm = {
+  title: string;
+  description: string;
+  customer_id: string;
+  date: string;
+  time: string;
+  priority: "baixa" | "media" | "alta";
+  notify: boolean;
+};
+
 type Goal = {
   id: string;
   seller_id?: string | null;
@@ -117,6 +136,13 @@ function todayISO(offset = 0) {
   const date = new Date();
   date.setDate(date.getDate() + offset);
   return date.toISOString().slice(0, 10);
+}
+
+function localDateISO(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function formatDateLabel(value: string) {
@@ -510,6 +536,19 @@ export default function CentralIA() {
   const [deliveryDate, setDeliveryDate] = useState(todayISO());
   const [deliveryOpen, setDeliveryOpen] = useState(true);
   const [showAllDeliveries, setShowAllDeliveries] = useState(false);
+  const [agendaOpen, setAgendaOpen] = useState(false);
+  const [agendaSaving, setAgendaSaving] = useState(false);
+  const [agendaCustomers, setAgendaCustomers] = useState<AgendaCustomer[]>([]);
+  const [agendaCustomerSearch, setAgendaCustomerSearch] = useState("");
+  const [agendaForm, setAgendaForm] = useState<AgendaForm>({
+    title: "",
+    description: "",
+    customer_id: "",
+    date: localDateISO(),
+    time: "",
+    priority: "media",
+    notify: true,
+  });
 
   async function load() {
     setLoading(true);
@@ -575,6 +614,156 @@ export default function CentralIA() {
 
     await load();
   }
+
+  async function openAgenda() {
+    setAgendaOpen(true);
+    setAgendaCustomerSearch("");
+    setAgendaForm({
+      title: "",
+      description: "",
+      customer_id: "",
+      date: localDateISO(),
+      time: "",
+      priority: "media",
+      notify: true,
+    });
+
+    try {
+      const response = await fetch("/api/crm/customers", { cache: "no-store" });
+      const json = await response.json();
+
+      if (response.ok && !json?.error) {
+        setAgendaCustomers(json.customers || []);
+      } else {
+        setAgendaCustomers([]);
+      }
+    } catch {
+      setAgendaCustomers([]);
+    }
+  }
+
+  async function saveAgendaItem() {
+    const title = agendaForm.title.trim();
+
+    if (!title) {
+      alert("Escreva o que você precisa fazer.");
+      return;
+    }
+
+    if (!agendaForm.date) {
+      alert("Informe a data do lembrete.");
+      return;
+    }
+
+    setAgendaSaving(true);
+
+    try {
+      const scheduledAt = agendaForm.time
+        ? `${agendaForm.date}T${agendaForm.time}:00`
+        : `${agendaForm.date}T12:00:00`;
+
+      const response = await fetch("/api/crm/customer-activities", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customer_id: agendaForm.customer_id || null,
+          type: "task",
+          origin: "personal_agenda",
+          title,
+          description: agendaForm.description.trim() || null,
+          scheduled_at: scheduledAt,
+          priority: agendaForm.priority,
+          status: "pendente",
+          notify: agendaForm.notify,
+        }),
+      });
+
+      const json = await response.json();
+
+      if (!response.ok) {
+        throw new Error(json?.error || "Erro ao salvar lembrete.");
+      }
+
+      setAgendaOpen(false);
+      await load();
+    } catch (error: any) {
+      alert(error?.message || "Erro ao salvar lembrete.");
+    } finally {
+      setAgendaSaving(false);
+    }
+  }
+
+  async function completeAgendaItem(id: string) {
+    const response = await fetch("/api/crm/customer-activities", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, status: "concluido" }),
+    });
+
+    const json = await response.json();
+
+    if (!response.ok) {
+      alert(json?.error || "Erro ao concluir lembrete.");
+      return;
+    }
+
+    await load();
+  }
+
+  async function deleteAgendaItem(id: string) {
+    if (!confirm("Excluir este lembrete?")) return;
+
+    const response = await fetch(
+      `/api/crm/customer-activities?id=${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    );
+
+    const json = await response.json();
+
+    if (!response.ok) {
+      alert(json?.error || "Erro ao excluir lembrete.");
+      return;
+    }
+
+    await load();
+  }
+
+  const filteredAgendaCustomers = useMemo(() => {
+    const query = agendaCustomerSearch.trim().toLowerCase();
+    if (!query) return agendaCustomers.slice(0, 50);
+
+    return agendaCustomers
+      .filter((customer) =>
+        [
+          customer.trade_name,
+          customer.legal_name,
+          customer.buyer_name,
+          customer.whatsapp,
+          customer.phone,
+        ]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(query))
+      )
+      .slice(0, 50);
+  }, [agendaCustomerSearch, agendaCustomers]);
+
+  useEffect(() => {
+    if (!agendaOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAgendaOpen(false);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [agendaOpen]);
 
   useEffect(() => {
     load();
@@ -929,15 +1118,46 @@ export default function CentralIA() {
                   </p>
                 </div>
 
-                <div className="rounded-2xl bg-white px-5 py-4 text-center shadow-sm">
-                  <p className="text-[11px] font-black uppercase text-blue-500">Atividades</p>
-                  <strong className="text-3xl font-black text-blue-700">{activities.length}</strong>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <div className="rounded-2xl bg-white px-5 py-3 text-center shadow-sm">
+                    <p className="text-[11px] font-black uppercase text-blue-500">Atividades</p>
+                    <strong className="text-2xl font-black text-blue-700">{activities.length}</strong>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={openAgenda}
+                    className="rounded-2xl bg-blue-700 px-5 py-3 text-sm font-black text-white shadow-sm transition hover:bg-blue-800"
+                  >
+                    + Novo lembrete
+                  </button>
                 </div>
               </div>
 
               <div className="mt-5 grid gap-3">
                 {activities.length ? (
-                  activities.slice(0, 6).map((activity) => <ActivityMiniCard key={activity.id} activity={activity} />)
+                  activities.slice(0, 6).map((activity) => (
+                    <div key={activity.id}>
+                      <ActivityMiniCard activity={activity} />
+                      {activity.origin === "personal_agenda" ? (
+                        <div className="-mt-2 mb-1 flex flex-wrap justify-end gap-2 px-3">
+                          <button
+                            type="button"
+                            onClick={() => completeAgendaItem(activity.id)}
+                            className="rounded-xl bg-emerald-700 px-3 py-2 text-[11px] font-black text-white hover:bg-emerald-800"
+                          >
+                            ✓ Concluir
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteAgendaItem(activity.id)}
+                            className="rounded-xl border border-red-200 bg-white px-3 py-2 text-[11px] font-black text-red-700 hover:bg-red-50"
+                          >
+                            Excluir
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ))
                 ) : (
                   <div className="rounded-3xl border border-dashed border-blue-200 bg-white/70 p-6 text-center text-sm font-bold text-slate-500">
                     Nenhuma próxima ação para hoje.
@@ -1045,6 +1265,162 @@ export default function CentralIA() {
           ) : null}
         </>
       ) : null}
+    
+      {agendaOpen ? (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setAgendaOpen(false);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="agenda-title"
+            className="max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-[28px] border border-slate-200 bg-white p-5 shadow-2xl md:p-6"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-blue-700">
+                  Minha agenda
+                </p>
+                <h2 id="agenda-title" className="mt-1 text-2xl font-black text-slate-950">
+                  Novo lembrete
+                </h2>
+                <p className="mt-1 text-sm font-semibold text-slate-500">
+                  Anote uma tarefa e, se quiser, vincule um cliente e horário.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setAgendaOpen(false)}
+                className="h-10 w-10 rounded-2xl bg-slate-100 text-lg font-black text-slate-600 hover:bg-slate-200"
+                aria-label="Fechar"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="mt-5 grid gap-4">
+              <label className="grid gap-2">
+                <span className="text-xs font-black text-slate-700">O que você precisa fazer? *</span>
+                <input
+                  autoFocus
+                  value={agendaForm.title}
+                  onChange={(e) => setAgendaForm((prev) => ({ ...prev, title: e.target.value }))}
+                  placeholder="Ex.: Ligar para o cliente sobre o pedido"
+                  className="min-h-[46px] rounded-2xl border border-slate-200 px-4 text-sm font-bold outline-none focus:border-blue-500"
+                />
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-xs font-black text-slate-700">Observação</span>
+                <textarea
+                  value={agendaForm.description}
+                  onChange={(e) => setAgendaForm((prev) => ({ ...prev, description: e.target.value }))}
+                  placeholder="Texto livre, detalhes do pedido, o que lembrar..."
+                  rows={3}
+                  className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold outline-none focus:border-blue-500"
+                />
+              </label>
+
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs font-black text-slate-700">Cliente (opcional)</p>
+                <input
+                  value={agendaCustomerSearch}
+                  onChange={(e) => setAgendaCustomerSearch(e.target.value)}
+                  placeholder="Buscar por nome, comprador ou WhatsApp..."
+                  className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500"
+                />
+                <select
+                  value={agendaForm.customer_id}
+                  onChange={(e) => setAgendaForm((prev) => ({ ...prev, customer_id: e.target.value }))}
+                  className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500"
+                >
+                  <option value="">Sem cliente vinculado</option>
+                  {filteredAgendaCustomers.map((customer) => (
+                    <option key={customer.id} value={customer.id}>
+                      {customer.trade_name || customer.legal_name}
+                      {customer.buyer_name ? ` • ${customer.buyer_name}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-2">
+                  <span className="text-xs font-black text-slate-700">Data *</span>
+                  <input
+                    type="date"
+                    value={agendaForm.date}
+                    onChange={(e) => setAgendaForm((prev) => ({ ...prev, date: e.target.value }))}
+                    className="min-h-[46px] rounded-2xl border border-slate-200 px-4 text-sm font-bold outline-none focus:border-blue-500"
+                  />
+                </label>
+
+                <label className="grid gap-2">
+                  <span className="text-xs font-black text-slate-700">Horário (opcional)</span>
+                  <input
+                    type="time"
+                    value={agendaForm.time}
+                    onChange={(e) => setAgendaForm((prev) => ({ ...prev, time: e.target.value }))}
+                    className="min-h-[46px] rounded-2xl border border-slate-200 px-4 text-sm font-bold outline-none focus:border-blue-500"
+                  />
+                </label>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-2">
+                  <span className="text-xs font-black text-slate-700">Prioridade</span>
+                  <select
+                    value={agendaForm.priority}
+                    onChange={(e) =>
+                      setAgendaForm((prev) => ({
+                        ...prev,
+                        priority: e.target.value as AgendaForm["priority"],
+                      }))
+                    }
+                    className="min-h-[46px] rounded-2xl border border-slate-200 px-4 text-sm font-bold outline-none focus:border-blue-500"
+                  >
+                    <option value="baixa">Baixa</option>
+                    <option value="media">Média</option>
+                    <option value="alta">Alta</option>
+                  </select>
+                </label>
+
+                <label className="flex min-h-[46px] items-center gap-3 self-end rounded-2xl border border-slate-200 px-4">
+                  <input
+                    type="checkbox"
+                    checked={agendaForm.notify}
+                    onChange={(e) => setAgendaForm((prev) => ({ ...prev, notify: e.target.checked }))}
+                  />
+                  <span className="text-sm font-black text-slate-700">Ativar aviso</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setAgendaOpen(false)}
+                className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-black text-slate-700 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={agendaSaving}
+                onClick={saveAgendaItem}
+                className="rounded-2xl bg-blue-700 px-5 py-3 text-sm font-black text-white shadow-sm hover:bg-blue-800 disabled:opacity-60"
+              >
+                {agendaSaving ? "Salvando..." : "Salvar lembrete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
     </main>
   );
 }

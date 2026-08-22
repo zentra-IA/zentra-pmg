@@ -357,8 +357,25 @@ async function queueMissingDeliveries(
           company_id: options.companyId,
           seller_id: options.sellerId,
           status: {
+
             equals: "ativo",
+
             mode: "insensitive",
+
+          },
+
+          webPromotionAccess: {
+
+            is: {
+
+              company_id: options.companyId,
+
+              seller_id: options.sellerId,
+
+              active: true,
+
+            },
+
           },
         },
         select: {
@@ -376,8 +393,25 @@ async function queueMissingDeliveries(
         company_id: options.companyId,
         seller_id: options.sellerId,
         status: {
+
           equals: "ativo",
+
           mode: "insensitive",
+
+        },
+
+        webPromotionAccess: {
+
+          is: {
+
+            company_id: options.companyId,
+
+            seller_id: options.sellerId,
+
+            active: true,
+
+          },
+
         },
         distance_km: {
           not: null,

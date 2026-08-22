@@ -76,6 +76,8 @@ type Delivery = {
     id: string;
     legal_name: string;
     trade_name?: string | null;
+    whatsapp?: string | null;
+    phone?: string | null;
   };
 };
 
@@ -134,6 +136,13 @@ type FormState = {
   price_tables: number[];
   images: PromotionImage[];
 };
+
+type DeliveryFilter =
+  | "all"
+  | "viewed"
+  | "not_viewed"
+  | "whatsapp"
+  | "failed";
 
 type Toast = {
   type: "success" | "error";
@@ -300,6 +309,76 @@ export default function PromotionsPage() {
   const [generating, setGenerating] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
+  const [deliveryModalPromotion, setDeliveryModalPromotion] =
+    useState<Promotion | null>(null);
+  const [deliveryFilter, setDeliveryFilter] =
+    useState<DeliveryFilter>("all");
+  const [deliverySearch, setDeliverySearch] = useState("");
+
+  const deliveryModalMetrics = useMemo(
+    () => deliveryModalPromotion ? promotionMetrics(deliveryModalPromotion) : null,
+    [deliveryModalPromotion]
+  );
+
+  const filteredDeliveryModalItems = useMemo(() => {
+    const deliveries = deliveryModalPromotion?.deliveries || [];
+    const query = deliverySearch.trim().toLowerCase();
+
+    return deliveries.filter((delivery) => {
+      const matchesFilter =
+        deliveryFilter === "all" ||
+        (deliveryFilter === "viewed" && Boolean(delivery.viewed_at)) ||
+        (deliveryFilter === "not_viewed" &&
+          !delivery.viewed_at &&
+          delivery.status !== "failed") ||
+        (deliveryFilter === "whatsapp" && Boolean(delivery.whatsapp_clicked_at)) ||
+        (deliveryFilter === "failed" && delivery.status === "failed");
+
+      if (!matchesFilter) return false;
+      if (!query) return true;
+
+      return [
+        delivery.customer?.trade_name,
+        delivery.customer?.legal_name,
+        delivery.customer?.whatsapp,
+        delivery.customer?.phone,
+        delivery.customer_id,
+        delivery.status,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(query);
+    });
+  }, [deliveryModalPromotion, deliveryFilter, deliverySearch]);
+
+  function openDeliveryDetails(promotion: Promotion) {
+    setDeliveryModalPromotion(promotion);
+    setDeliveryFilter("all");
+    setDeliverySearch("");
+  }
+
+  function closeDeliveryDetails() {
+    setDeliveryModalPromotion(null);
+    setDeliveryFilter("all");
+    setDeliverySearch("");
+  }
+
+  useEffect(() => {
+    if (!deliveryModalPromotion) return;
+    const oldOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeDeliveryDetails();
+    };
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      document.body.style.overflow = oldOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [deliveryModalPromotion]);
 
   const audienceLocked = editingStatus === "published";
 
@@ -2099,123 +2178,24 @@ export default function PromotionsPage() {
                       </td>
 
                       <td>
-                        <details className="delivery-details">
-                          <summary>
-                            {metrics.sent}/{metrics.total} entregue(s)
-                          </summary>
-
-                          <div className="delivery-metrics">
-                            <span>Enviados: <b>{metrics.sent}</b></span>
-                            <span>Abertos: <b>{metrics.opened}</b></span>
-                            <span>Visualizados: <b>{metrics.viewed}</b></span>
-                            <span>Cliques no Push: <b>{metrics.clicked}</b></span>
+                        <div className="delivery-summary-cell">
+                          <strong>{metrics.sent}/{metrics.total} entregue(s)</strong>
+                          <div className="delivery-summary-badges">
+                            <span>Viu: <b>{metrics.viewed}</b></span>
+                            <span>Não viu: <b>{Math.max(metrics.total - metrics.viewed - metrics.failed, 0)}</b></span>
                             <span>WhatsApp: <b>{metrics.whatsapp}</b></span>
-                            <span>Falhas: <b>{metrics.failed}</b></span>
-                            <span>Taxa de abertura: <b>{metrics.openRate}%</b></span>
-                            <span>CTR Push: <b>{metrics.clickRate}%</b></span>
-                          </div>
-
-                          <div className="delivery-list">
-                            {(promotion.deliveries || []).length === 0 ? (
-                              <span>Nenhuma entrega criada.</span>
-                            ) : (
-                              promotion.deliveries?.slice(0, 100).map(
-                                (delivery) => {
-                                  const queuedAt = formatDeliveryDateTime(delivery.queued_at);
-                                  const sentAt = formatDeliveryDateTime(delivery.sent_at);
-                                  const acceptedAt = formatDeliveryDateTime(delivery.accepted_at);
-                                  const clickedAt = formatDeliveryDateTime(delivery.clicked_at);
-                                  const openedAt = formatDeliveryDateTime(delivery.opened_at);
-                                  const viewedAt = formatDeliveryDateTime(delivery.viewed_at);
-                                  const whatsappAt = formatDeliveryDateTime(
-                                    delivery.whatsapp_clicked_at
-                                  );
-
-                                  return (
-                                    <div
-                                      key={delivery.id}
-                                      className="delivery-history-card"
-                                    >
-                                      <div className="delivery-history-head">
-                                        <span>
-                                          {delivery.customer?.trade_name ||
-                                            delivery.customer?.legal_name ||
-                                            delivery.customer_id}
-                                        </span>
-
-                                        <b
-                                          className={`delivery-status delivery-status-${delivery.status}`}
-                                        >
-                                          {delivery.status}
-                                        </b>
-                                      </div>
-
-                                      <div className="delivery-timeline">
-                                        {queuedAt && (
-                                          <span><b>Na fila:</b> {queuedAt}</span>
-                                        )}
-
-                                        {sentAt && (
-                                          <span><b>Push enviado:</b> {sentAt}</span>
-                                        )}
-
-                                        {acceptedAt && (
-                                          <span>
-                                            <b>Aceito pelo serviço:</b> {acceptedAt}
-                                          </span>
-                                        )}
-
-                                        {clickedAt && (
-                                          <span>
-                                            <b>Clicou na notificação:</b> {clickedAt}
-                                          </span>
-                                        )}
-
-                                        {openedAt && (
-                                          <span><b>Abriu o portal:</b> {openedAt}</span>
-                                        )}
-
-                                        {viewedAt && (
-                                          <span>
-                                            <b>Visualizou a promoção:</b> {viewedAt}
-                                          </span>
-                                        )}
-
-                                        {whatsappAt && (
-                                          <span>
-                                            <b>Clicou no WhatsApp:</b> {whatsappAt}
-                                          </span>
-                                        )}
-
-                                        {delivery.status === "failed" &&
-                                          (delivery.error_message ||
-                                            delivery.error_code) && (
-                                            <span className="delivery-error">
-                                              <b>Motivo da falha:</b>{" "}
-                                              {delivery.error_message ||
-                                                delivery.error_code}
-                                            </span>
-                                          )}
-
-                                        {!queuedAt &&
-                                          !sentAt &&
-                                          !acceptedAt &&
-                                          !clickedAt &&
-                                          !openedAt &&
-                                          !viewedAt &&
-                                          !whatsappAt && (
-                                            <span className="delivery-muted">
-                                              Ainda não há eventos registrados para esta entrega.
-                                            </span>
-                                          )}
-                                      </div>
-                                    </div>
-                                  );
-                                }
-                              )
+                            {metrics.failed > 0 && (
+                              <span className="summary-failed">Falhas: <b>{metrics.failed}</b></span>
                             )}
                           </div>
-                        </details>
+                          <button
+                            type="button"
+                            className="delivery-details-button"
+                            onClick={() => openDeliveryDetails(promotion)}
+                          >
+                            Ver detalhes
+                          </button>
+                        </div>
                       </td>
 
                       <td>
@@ -2263,6 +2243,110 @@ export default function PromotionsPage() {
           </div>
         )}
       </section>
+
+      {deliveryModalPromotion && deliveryModalMetrics && (
+        <div
+          className="delivery-modal-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeDeliveryDetails();
+          }}
+        >
+          <div className="delivery-modal" role="dialog" aria-modal="true">
+            <div className="delivery-modal-header">
+              <div>
+                <span>Detalhes da promoção</span>
+                <h2>{deliveryModalPromotion.internal_title || deliveryModalPromotion.title}</h2>
+                <p>Quem visualizou, quem ainda não viu, WhatsApp e falhas.</p>
+              </div>
+              <button type="button" onClick={closeDeliveryDetails} aria-label="Fechar">×</button>
+            </div>
+
+            <div className="delivery-modal-metrics">
+              <div><span>Entregas</span><b>{deliveryModalMetrics.total}</b></div>
+              <div><span>Enviados</span><b>{deliveryModalMetrics.sent}</b></div>
+              <div><span>Visualizaram</span><b>{deliveryModalMetrics.viewed}</b></div>
+              <div><span>Não visualizaram</span><b>{Math.max(deliveryModalMetrics.total - deliveryModalMetrics.viewed - deliveryModalMetrics.failed, 0)}</b></div>
+              <div><span>WhatsApp</span><b>{deliveryModalMetrics.whatsapp}</b></div>
+              <div><span>Falhas</span><b>{deliveryModalMetrics.failed}</b></div>
+            </div>
+
+            <div className="delivery-modal-toolbar">
+              <input
+                type="search"
+                value={deliverySearch}
+                onChange={(event) => setDeliverySearch(event.target.value)}
+                placeholder="Buscar cliente, telefone ou status..."
+              />
+              <div className="delivery-filter-tabs">
+                {([
+                  ["all", "Todos"],
+                  ["viewed", "Visualizou"],
+                  ["not_viewed", "Não visualizou"],
+                  ["whatsapp", "WhatsApp"],
+                  ["failed", "Falhou"],
+                ] as Array<[DeliveryFilter, string]>).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={deliveryFilter === value ? "active" : ""}
+                    onClick={() => setDeliveryFilter(value)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="delivery-modal-list">
+              {filteredDeliveryModalItems.length === 0 ? (
+                <div className="delivery-modal-empty">Nenhum cliente encontrado neste filtro.</div>
+              ) : (
+                filteredDeliveryModalItems.map((delivery) => {
+                  const queuedAt = formatDeliveryDateTime(delivery.queued_at);
+                  const sentAt = formatDeliveryDateTime(delivery.sent_at);
+                  const acceptedAt = formatDeliveryDateTime(delivery.accepted_at);
+                  const clickedAt = formatDeliveryDateTime(delivery.clicked_at);
+                  const openedAt = formatDeliveryDateTime(delivery.opened_at);
+                  const viewedAt = formatDeliveryDateTime(delivery.viewed_at);
+                  const whatsappAt = formatDeliveryDateTime(delivery.whatsapp_clicked_at);
+
+                  return (
+                    <article key={delivery.id} className="delivery-modal-card">
+                      <div className="delivery-modal-card-head">
+                        <div>
+                          <strong>{delivery.customer?.trade_name || delivery.customer?.legal_name || delivery.customer_id}</strong>
+                          <small>{delivery.customer?.whatsapp || delivery.customer?.phone || "Telefone não informado"}</small>
+                        </div>
+                        <span className={`delivery-status delivery-status-${delivery.status}`}>{delivery.status}</span>
+                      </div>
+
+                      <div className="delivery-modal-flags">
+                        <span className={sentAt ? "ok" : ""}>{sentAt ? "✓" : "○"} Push</span>
+                        <span className={openedAt ? "ok" : ""}>{openedAt ? "✓" : "○"} Portal</span>
+                        <span className={viewedAt ? "ok" : ""}>{viewedAt ? "✓" : "○"} Visualizou</span>
+                        <span className={whatsappAt ? "ok" : ""}>{whatsappAt ? "✓" : "○"} WhatsApp</span>
+                      </div>
+
+                      <div className="delivery-modal-timeline">
+                        {queuedAt && <span><b>Na fila:</b> {queuedAt}</span>}
+                        {sentAt && <span><b>Push enviado:</b> {sentAt}</span>}
+                        {acceptedAt && <span><b>Aceito:</b> {acceptedAt}</span>}
+                        {clickedAt && <span><b>Clicou no Push:</b> {clickedAt}</span>}
+                        {openedAt && <span><b>Abriu o portal:</b> {openedAt}</span>}
+                        {viewedAt && <span><b>Visualizou:</b> {viewedAt}</span>}
+                        {whatsappAt && <span><b>WhatsApp:</b> {whatsappAt}</span>}
+                        {delivery.status === "failed" && (delivery.error_message || delivery.error_code) && (
+                          <span className="delivery-error"><b>Falha:</b> {delivery.error_message || delivery.error_code}</span>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <style jsx>{`
         :global(*) {
@@ -3784,7 +3868,56 @@ export default function PromotionsPage() {
           }
         }
 
+
+        .delivery-summary-cell { display:grid; gap:8px; min-width:190px; }
+        .delivery-summary-cell > strong { color:#1c2b23; font-size:12px; }
+        .delivery-summary-badges { display:flex; flex-wrap:wrap; gap:5px; }
+        .delivery-summary-badges span { border-radius:999px; background:#f1f6f3; padding:4px 7px; color:#5d6f65; font-size:9px; font-weight:800; }
+        .delivery-summary-badges .summary-failed { background:#fff1f2; color:#b42335; }
+        .delivery-details-button { width:fit-content; min-height:32px; border:1px solid #b8d8c6; border-radius:9px; background:#eef9f3; padding:6px 10px; color:#087443; font-size:10px; font-weight:900; cursor:pointer; }
+
+        .delivery-modal-overlay { position:fixed; z-index:5000; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(10,20,15,.48); padding:20px; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); }
+        .delivery-modal { display:flex; width:min(1180px,96vw); max-height:92vh; flex-direction:column; overflow:hidden; border:1px solid #dce7e1; border-radius:24px; background:#fff; box-shadow:0 30px 90px rgba(12,30,20,.28); }
+        .delivery-modal-header { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; border-bottom:1px solid #e8efeb; padding:22px 24px 18px; }
+        .delivery-modal-header > div > span { color:#0b8150; font-size:10px; font-weight:950; letter-spacing:.12em; text-transform:uppercase; }
+        .delivery-modal-header h2 { margin:4px 0 3px; color:#15271e; font-size:22px; }
+        .delivery-modal-header p { margin:0; color:#6c7d73; font-size:11px; font-weight:700; }
+        .delivery-modal-header > button { width:40px; height:40px; flex:0 0 40px; border:0; border-radius:12px; background:#f1f5f3; color:#516159; font-size:24px; cursor:pointer; }
+        .delivery-modal-metrics { display:grid; grid-template-columns:repeat(6,minmax(90px,1fr)); gap:10px; padding:16px 24px 0; }
+        .delivery-modal-metrics > div { display:grid; gap:3px; border:1px solid #e3ece7; border-radius:14px; background:#f9fcfa; padding:11px 13px; }
+        .delivery-modal-metrics span { color:#75857c; font-size:9px; font-weight:850; text-transform:uppercase; }
+        .delivery-modal-metrics b { color:#173526; font-size:20px; }
+        .delivery-modal-toolbar { display:flex; align-items:center; gap:12px; padding:16px 24px; }
+        .delivery-modal-toolbar input { min-width:240px; flex:1; min-height:42px; border:1px solid #dce7e1; border-radius:12px; padding:0 13px; outline:none; font-size:11px; }
+        .delivery-filter-tabs { display:flex; flex-wrap:wrap; gap:6px; }
+        .delivery-filter-tabs button { min-height:34px; border:1px solid #dce7e1; border-radius:10px; background:#fff; padding:6px 10px; color:#607168; font-size:9px; font-weight:900; cursor:pointer; }
+        .delivery-filter-tabs button.active { border-color:#0b8150; background:#0b8150; color:#fff; }
+        .delivery-modal-list { display:grid; gap:10px; overflow-y:auto; padding:0 24px 24px; }
+        .delivery-modal-card { display:grid; gap:10px; border:1px solid #e1ebe6; border-radius:16px; background:#fff; padding:14px; }
+        .delivery-modal-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+        .delivery-modal-card-head > div { display:grid; gap:2px; }
+        .delivery-modal-card-head strong { color:#1d3026; font-size:12px; }
+        .delivery-modal-card-head small { color:#7a8981; font-size:9px; font-weight:700; }
+        .delivery-modal-flags { display:flex; flex-wrap:wrap; gap:6px; }
+        .delivery-modal-flags span { border-radius:999px; background:#f1f4f2; padding:5px 8px; color:#89958e; font-size:9px; font-weight:850; }
+        .delivery-modal-flags span.ok { background:#eaf8f0; color:#087443; }
+        .delivery-modal-timeline { display:flex; flex-wrap:wrap; gap:7px 14px; border-top:1px solid #eef3f0; padding-top:9px; color:#617269; font-size:9px; }
+        .delivery-modal-empty { border:1px dashed #cad9d1; border-radius:14px; padding:28px; color:#718078; text-align:center; font-size:11px; font-weight:800; }
+
+        @media (max-width:900px) {
+          .delivery-modal { width:100%; max-height:94vh; border-radius:18px; }
+          .delivery-modal-metrics { grid-template-columns:repeat(3,1fr); }
+          .delivery-modal-toolbar { align-items:stretch; flex-direction:column; }
+          .delivery-modal-toolbar input { min-width:0; width:100%; }
+        }
+
         @media (max-width: 720px) {
+          .delivery-modal-overlay { padding:8px; }
+          .delivery-modal-header, .delivery-modal-toolbar, .delivery-modal-list { padding-right:14px; padding-left:14px; }
+          .delivery-modal-metrics { grid-template-columns:repeat(2,1fr); padding-right:14px; padding-left:14px; }
+          .delivery-filter-tabs { overflow-x:auto; flex-wrap:nowrap; padding-bottom:2px; }
+          .delivery-filter-tabs button { flex:0 0 auto; }
+
           .audience-summary-row {
             grid-template-columns: 1fr;
           }
