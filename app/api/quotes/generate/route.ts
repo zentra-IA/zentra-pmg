@@ -610,6 +610,23 @@ function toOption(row: PriceRow, score = 0, reasons: string[] = []) {
   const name = getName(row);
   const brand = getBrand(row);
   const category = getCategory(row);
+  const catalog = getCatalog(row);
+  const attributes =
+    catalog.attributes && typeof catalog.attributes === "object"
+      ? catalog.attributes
+      : {};
+
+  const weightValueRaw = firstValue(
+    row.weight_value,
+    catalog.weight_value,
+    null
+  );
+  const weightValue =
+    weightValueRaw !== null &&
+    weightValueRaw !== undefined &&
+    String(weightValueRaw).trim() !== ""
+      ? Number(weightValueRaw)
+      : null;
 
   return {
     id: String(firstValue(row.id, getCode(row))),
@@ -619,10 +636,45 @@ function toOption(row: PriceRow, score = 0, reasons: string[] = []) {
     normalized_name: normalize(name),
     brand: brand || null,
     category: category || null,
-    subcategory: firstValue(row.subcategory, getCatalog(row).subcategory, null),
-    package_type: firstValue(row.package_type, getCatalog(row).package, null),
+    subcategory: firstValue(row.subcategory, catalog.subcategory, null),
+
+    // Dados estruturados do catálogo. Eles têm prioridade no detalhamento
+    // comercial; o nome do produto fica apenas como fallback.
+    package_type: firstValue(
+      row.package_type,
+      catalog.package_type,
+      catalog.package,
+      null
+    ),
+    package_qty: firstValue(
+      row.package_qty,
+      catalog.package_qty,
+      attributes.packageQty,
+      null
+    ),
+    package_unit: firstValue(
+      row.package_unit,
+      catalog.package_unit,
+      attributes.packageUnit,
+      null
+    ),
+    weight_value:
+      Number.isFinite(weightValue as number) ? weightValue : null,
+    weight_unit: firstValue(
+      row.weight_unit,
+      catalog.weight_unit,
+      null
+    ),
+    attributes,
+
     sell_unit: unit,
-    default_sell_unit: unit,
+    default_sell_unit: String(
+      firstValue(
+        row.default_sell_unit,
+        catalog.default_sell_unit,
+        unit
+      )
+    ).toUpperCase(),
     unit,
     price,
     unitPrice: price,
@@ -1024,6 +1076,470 @@ function getBilledQuantity(quantity: number, requestedUnit: string, option: any)
     equivalentText: sellUnit !== unit ? `verificar conversão para ${sellUnit}` : null,
   };
 }
+
+type PriceBreakdown = {
+  available: boolean;
+  source: "structured" | "mixed" | "name_fallback" | "none";
+  sellUnit: string;
+  sellUnitPrice: number;
+  packageType: string | null;
+  packageQty: number | null;
+  packageUnit: string | null;
+  outerPackagePrice: number | null;
+  innerUnitPrice: number | null;
+  weightValue: number | null;
+  weightUnit: string | null;
+  weightKgPerInnerUnit: number | null;
+  totalPackageWeightKg: number | null;
+  pricePerKg: number | null;
+  lines: string[];
+};
+
+function finiteNumber(value: unknown): number | null {
+  if (value === null || value === undefined || String(value).trim() === "") {
+    return null;
+  }
+
+  const parsed =
+    typeof value === "number"
+      ? value
+      : Number(String(value).replace(",", "."));
+
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getObject(value: unknown): Record<string, any> {
+  return value && typeof value === "object"
+    ? (value as Record<string, any>)
+    : {};
+}
+
+function parsePackageFromName(name: string): {
+  packageType: string | null;
+  packageQty: number | null;
+  packageUnit: string | null;
+} {
+  const text = String(name || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/Ç/g, "C")
+    .replace(/\s+/g, " ");
+
+  /*
+   * Fallback genérico para padrões do catálogo:
+   * (CX 8 BIS), (CX 5 PCT), (FDO 10 PCT), (CX 21 UN),
+   * (CX 2 PC), (PCT 12 UN), (BD 2 KG) etc.
+   */
+  const match = text.match(
+    /(?:\(|\b)(CX|CAIXA|CAIXAS|FDO|FD|FARDO|FARDOS|PCT|PACOTE|PACOTES|BD|BALDE|BALDES|BARR|BARRICA|BARRICAS|BAG|GL|GALAO|GALOES)\s*(\d+(?:[,.]\d+)?)\s*(PC|PCA|PECA|PECAS|PCT|PACOTE|PACOTES|BIS|BISNAGA|BISNAGAS|UN|UNIDADE|UNIDADES|KG|G|LT|LATA|LATAS|VD|VIDRO|VIDROS|BD|BALDE|BALDES|FR|FRASCO|FRASCOS|GL|GALAO|GALOES|BAG)(?:\)|\b)/i
+  );
+
+  if (!match) {
+    return {
+      packageType: null,
+      packageQty: null,
+      packageUnit: null,
+    };
+  }
+
+  return {
+    packageType: normalizeUnitAlias(match[1]),
+    packageQty: finiteNumber(match[2]),
+    packageUnit: normalizeUnitAlias(match[3]),
+  };
+}
+
+function parseWeightFromName(name: string): {
+  weightValue: number | null;
+  weightUnit: string | null;
+} {
+  const text = String(name || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\s+/g, " ");
+
+  const matches = Array.from(
+    text.matchAll(/(\d+(?:[,.]\d+)?)\s*(KG|G|MG|ML|L)\b/g)
+  );
+
+  if (!matches.length) {
+    return { weightValue: null, weightUnit: null };
+  }
+
+  const last = matches[matches.length - 1];
+
+  return {
+    weightValue: finiteNumber(last[1]),
+    weightUnit: String(last[2] || "").toUpperCase() || null,
+  };
+}
+
+function massToKg(value: number | null, unit: string | null): number | null {
+  if (!value || value <= 0 || !unit) return null;
+
+  const normalized = String(unit).trim().toUpperCase();
+
+  if (normalized === "KG") return value;
+  if (normalized === "G") return value / 1000;
+  if (normalized === "MG") return value / 1_000_000;
+
+  // ML/L não são convertidos para KG porque densidade depende do produto.
+  return null;
+}
+
+function formatDecimalBR(value: number, maximumFractionDigits = 3): string {
+  return Number(value || 0).toLocaleString("pt-BR", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits,
+  });
+}
+
+function roundQuantity(value: number, decimals = 3): number {
+  const factor = 10 ** decimals;
+  return Math.round((Number(value || 0) + Number.EPSILON) * factor) / factor;
+}
+
+function unitCommercialLabel(
+  unit: string | null | undefined,
+  plural = false
+): string {
+  const normalized = normalizeUnitAlias(String(unit || "UN"));
+
+  const labels: Record<string, [string, string]> = {
+    FD: ["fardo", "fardos"],
+    CX: ["caixa", "caixas"],
+    "PÇ": ["peça", "peças"],
+    PCT: ["pacote", "pacotes"],
+    BIS: ["bisnaga", "bisnagas"],
+    BD: ["balde", "baldes"],
+    LT: ["lata", "latas"],
+    VD: ["vidro", "vidros"],
+    UN: ["unidade", "unidades"],
+    KG: ["KG", "KG"],
+    G: ["g", "g"],
+    BAG: ["bag", "bags"],
+    GL: ["galão", "galões"],
+    BARR: ["barrica", "barricas"],
+    FR: ["frasco", "frascos"],
+  };
+
+  const pair = labels[normalized] || [
+    normalized.toLowerCase(),
+    normalized.toLowerCase(),
+  ];
+
+  return plural ? pair[1] : pair[0];
+}
+
+function unitPricePrefix(unit: string | null | undefined): string {
+  const normalized = normalizeUnitAlias(String(unit || "UN"));
+
+  const gender: Record<string, "m" | "f"> = {
+    FD: "m",
+    CX: "f",
+    "PÇ": "f",
+    PCT: "m",
+    BIS: "f",
+    BD: "m",
+    LT: "f",
+    VD: "m",
+    UN: "f",
+    BAG: "f",
+    GL: "m",
+    BARR: "f",
+    FR: "m",
+  };
+
+  if (normalized === "KG" || normalized === "G") {
+    return `por ${unitCommercialLabel(normalized)}`;
+  }
+
+  return `${gender[normalized] === "f" ? "da" : "do"} ${unitCommercialLabel(
+    normalized
+  )}`;
+}
+
+function capitalizeCommercial(value: string): string {
+  if (!value) return value;
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function buildPriceBreakdown(params: {
+  option: any;
+  discountedTableUnitPrice: number;
+}): PriceBreakdown {
+  const option = params.option || {};
+  const attributes = getObject(option.attributes);
+  const name = String(option.official_name || option.product_name_from_pdf || "");
+
+  const fallbackPackage = parsePackageFromName(name);
+  const fallbackWeight = parseWeightFromName(name);
+
+  const structuredPackageType = firstValue(option.package_type, null);
+  const structuredPackageQty = finiteNumber(
+    firstValue(option.package_qty, attributes.packageQty, null)
+  );
+  const structuredPackageUnit = firstValue(
+    option.package_unit,
+    attributes.packageUnit,
+    null
+  );
+
+  const structuredWeightValue = finiteNumber(option.weight_value);
+  const structuredWeightUnit = firstValue(option.weight_unit, null);
+
+  const packageType = structuredPackageType
+    ? normalizeUnitAlias(String(structuredPackageType))
+    : fallbackPackage.packageType;
+
+  const packageQty =
+    structuredPackageQty && structuredPackageQty > 0
+      ? structuredPackageQty
+      : fallbackPackage.packageQty;
+
+  const packageUnit = structuredPackageUnit
+    ? normalizeUnitAlias(String(structuredPackageUnit))
+    : fallbackPackage.packageUnit;
+
+  const weightValue =
+    structuredWeightValue && structuredWeightValue > 0
+      ? structuredWeightValue
+      : fallbackWeight.weightValue;
+
+  const weightUnit = structuredWeightUnit
+    ? String(structuredWeightUnit).toUpperCase()
+    : fallbackWeight.weightUnit;
+
+  const hasStructuredPackage =
+    Boolean(structuredPackageType) ||
+    Boolean(structuredPackageQty) ||
+    Boolean(structuredPackageUnit);
+
+  const hasStructuredWeight =
+    Boolean(structuredWeightValue) || Boolean(structuredWeightUnit);
+
+  const usedFallbackPackage =
+    !hasStructuredPackage &&
+    Boolean(
+      fallbackPackage.packageType ||
+        fallbackPackage.packageQty ||
+        fallbackPackage.packageUnit
+    );
+
+  const usedFallbackWeight =
+    !hasStructuredWeight &&
+    Boolean(fallbackWeight.weightValue || fallbackWeight.weightUnit);
+
+  let source: PriceBreakdown["source"] = "none";
+
+  if (
+    (hasStructuredPackage || hasStructuredWeight) &&
+    !usedFallbackPackage &&
+    !usedFallbackWeight
+  ) {
+    source = "structured";
+  } else if (hasStructuredPackage || hasStructuredWeight) {
+    source = "mixed";
+  } else if (usedFallbackPackage || usedFallbackWeight) {
+    source = "name_fallback";
+  }
+
+  const sellUnit = normalizeUnitAlias(
+    String(option.sell_unit || option.default_sell_unit || "UN")
+  );
+
+  const sellUnitPrice = roundMoney(
+    Number(params.discountedTableUnitPrice || 0)
+  );
+
+  const weightKg = massToKg(weightValue, weightUnit);
+
+  let outerPackagePrice: number | null = null;
+  let innerUnitPrice: number | null = null;
+  let totalPackageWeightKg: number | null = null;
+  let pricePerKg: number | null = null;
+
+  const hasContainer =
+    Boolean(packageType) &&
+    Boolean(packageUnit) &&
+    Boolean(packageQty && packageQty > 0);
+
+  if (hasContainer && packageType && packageUnit && packageQty) {
+    const outer = normalizeUnitAlias(packageType);
+    const inner = normalizeUnitAlias(packageUnit);
+
+    /*
+     * Quando a embalagem diz, por exemplo, "(CX 3 KG)", o número representa
+     * o peso total da caixa, e não "3 unidades de 1 KG".
+     */
+    if (inner === "KG" || inner === "G") {
+      totalPackageWeightKg =
+        inner === "KG"
+          ? roundQuantity(packageQty)
+          : roundQuantity(packageQty / 1000);
+
+      if (sellUnit === "KG") {
+        pricePerKg = sellUnitPrice;
+        outerPackagePrice = roundMoney(
+          sellUnitPrice * totalPackageWeightKg
+        );
+      } else if (sellUnit === outer && totalPackageWeightKg > 0) {
+        outerPackagePrice = sellUnitPrice;
+        pricePerKg = roundMoney(
+          sellUnitPrice / totalPackageWeightKg
+        );
+      }
+    } else {
+      if (sellUnit === outer) {
+        outerPackagePrice = sellUnitPrice;
+        innerUnitPrice = roundMoney(sellUnitPrice / packageQty);
+      } else if (sellUnit === inner) {
+        innerUnitPrice = sellUnitPrice;
+        outerPackagePrice = roundMoney(sellUnitPrice * packageQty);
+      } else if (sellUnit === "KG" && weightKg) {
+        pricePerKg = sellUnitPrice;
+        innerUnitPrice = roundMoney(sellUnitPrice * weightKg);
+        outerPackagePrice = roundMoney(innerUnitPrice * packageQty);
+      }
+
+      if (weightKg) {
+        totalPackageWeightKg = roundQuantity(weightKg * packageQty);
+
+        if (pricePerKg === null) {
+          if (innerUnitPrice !== null) {
+            pricePerKg = roundMoney(innerUnitPrice / weightKg);
+          } else if (
+            outerPackagePrice !== null &&
+            totalPackageWeightKg > 0
+          ) {
+            pricePerKg = roundMoney(
+              outerPackagePrice / totalPackageWeightKg
+            );
+          }
+        }
+      }
+    }
+  }
+
+  /*
+   * Produto sem embalagem externa, mas com peso individual estruturado.
+   * Ex.: PCT de 1 KG, BIS de 1,010 KG, PÇ de 500 G.
+   */
+  if (!hasContainer && weightKg) {
+    if (sellUnit === "KG") {
+      pricePerKg = sellUnitPrice;
+    } else {
+      innerUnitPrice = sellUnitPrice;
+      pricePerKg = roundMoney(sellUnitPrice / weightKg);
+    }
+  }
+
+  const lines: string[] = [];
+
+  if (outerPackagePrice !== null && packageType) {
+    lines.push(
+      `🏷️ Preço ${unitPricePrefix(packageType)}: ${moneyBR(
+        outerPackagePrice
+      )}`
+    );
+  } else if (sellUnitPrice > 0 && !hasContainer) {
+    lines.push(
+      `🏷️ Preço ${unitPricePrefix(sellUnit)}: ${moneyBR(sellUnitPrice)}`
+    );
+  }
+
+  if (hasContainer && packageType && packageQty && packageUnit) {
+    const outerLabel = capitalizeCommercial(
+      unitCommercialLabel(packageType)
+    );
+    const innerLabel = unitCommercialLabel(
+      packageUnit,
+      Number(packageQty) !== 1
+    );
+
+    lines.push(
+      `📦 ${outerLabel} contém ${formatDecimalBR(
+        packageQty
+      )} ${innerLabel}`
+    );
+  }
+
+  if (
+    innerUnitPrice !== null &&
+    packageUnit &&
+    normalizeUnitAlias(packageUnit) !== "KG"
+  ) {
+    lines.push(
+      `💵 Preço por ${unitCommercialLabel(packageUnit)}: ${moneyBR(
+        innerUnitPrice
+      )}`
+    );
+  }
+
+  if (
+    weightValue &&
+    weightUnit &&
+    packageUnit &&
+    normalizeUnitAlias(packageUnit) !== "KG" &&
+    massToKg(weightValue, weightUnit)
+  ) {
+    lines.push(
+      `⚖️ Peso por ${unitCommercialLabel(packageUnit)}: ${formatDecimalBR(
+        weightValue
+      )} ${String(weightUnit).toUpperCase()}`
+    );
+  } else if (
+    weightValue &&
+    weightUnit &&
+    !hasContainer &&
+    sellUnit !== "KG" &&
+    massToKg(weightValue, weightUnit)
+  ) {
+    lines.push(
+      `⚖️ Peso por ${unitCommercialLabel(sellUnit)}: ${formatDecimalBR(
+        weightValue
+      )} ${String(weightUnit).toUpperCase()}`
+    );
+  }
+
+  if (
+    totalPackageWeightKg !== null &&
+    packageType &&
+    normalizeUnitAlias(packageUnit || "") !== "KG"
+  ) {
+    lines.push(
+      `⚖️ Peso total ${unitPricePrefix(packageType)}: ${formatDecimalBR(
+        totalPackageWeightKg
+      )} KG`
+    );
+  }
+
+  if (pricePerKg !== null && pricePerKg > 0) {
+    lines.push(`⚖️ Preço por KG: ${moneyBR(pricePerKg)}`);
+  }
+
+  return {
+    available: lines.length > 0,
+    source,
+    sellUnit,
+    sellUnitPrice,
+    packageType: packageType || null,
+    packageQty: packageQty || null,
+    packageUnit: packageUnit || null,
+    outerPackagePrice,
+    innerUnitPrice,
+    weightValue: weightValue || null,
+    weightUnit: weightUnit || null,
+    weightKgPerInnerUnit: weightKg,
+    totalPackageWeightKg,
+    pricePerKg,
+    lines,
+  };
+}
+
 function buildFinalItem(params: {
   raw: string;
   code: string;
@@ -1081,6 +1597,16 @@ function buildFinalItem(params: {
     discountAmountPerUnit * quantity
   );
 
+  /*
+   * NOVO: detalhamento comercial apenas informativo.
+   * Ele é derivado depois de todos os cálculos financeiros e NÃO altera
+   * desconto, quantidade faturada, preço unitário, subtotal ou total.
+   */
+  const priceBreakdown = buildPriceBreakdown({
+    option: params.option,
+    discountedTableUnitPrice,
+  });
+
   return {
     raw: params.raw,
     code: params.code,
@@ -1103,6 +1629,10 @@ function buildFinalItem(params: {
     equivalentText: conversion.equivalentText,
     subtotal,
     discountPercent,
+
+    // Informação adicional para o modo "KG + unidade + caixa".
+    priceBreakdown,
+
     option: params.option,
   };
 }
@@ -1111,8 +1641,12 @@ function formatFinalQuote(params: {
   clientName?: string;
   items: any[];
   total: number;
+  displayMode?: string;
+  showProductId?: boolean;
 }) {
   const lines: string[] = [];
+  const displayMode = String(params.displayMode || "client_clean");
+  const showProductId = params.showProductId !== false;
 
   lines.push("📋 *COTAÇÃO*");
 
@@ -1123,22 +1657,43 @@ function formatFinalQuote(params: {
   lines.push("");
 
   params.items.forEach((item, index) => {
+    const productCode = String(item?.code || item?.option?.code || "").trim();
+    const productIdSuffix =
+      showProductId && productCode ? ` • ID ${productCode}` : "";
+
     lines.push("━━━━━━━━━━━━━━━━━━━━━━");
-    lines.push(`*${index + 1}. ${item.productName}*`);
+    lines.push(`*${index + 1}. ${item.productName}${productIdSuffix}*`);
     lines.push("");
     lines.push(`📦 Quantidade solicitada: ${item.quantity} ${item.unit}`);
 
-if (item.equivalentText) {
-  lines.push(`📐 Conversão: ${item.equivalentText}`);
-}
+    if (item.equivalentText) {
+      lines.push(`📐 Conversão: ${item.equivalentText}`);
+    }
 
-const finalUnitPrice = roundMoney(
-  Number(item.discountedUnitPrice ?? item.unitPrice ?? 0)
-);
+    const finalUnitPrice = roundMoney(
+      Number(item.discountedUnitPrice ?? item.unitPrice ?? 0)
+    );
 
-lines.push(`💰 Preço unitário final: ${moneyBR(finalUnitPrice)}`);
+    lines.push(`💰 Preço unitário final: ${moneyBR(finalUnitPrice)}`);
+    lines.push(`💲 Valor total deste item: ${moneyBR(item.subtotal)}`);
 
-lines.push(`💲Valor total deste item: ${moneyBR(item.subtotal)}`);
+    /*
+     * O modo "KG + unidade + caixa" exibe o detalhamento comercial
+     * derivado sem participar do cálculo financeiro.
+     */
+    if (
+      displayMode === "kg_unit_box" &&
+      item.priceBreakdown?.available &&
+      Array.isArray(item.priceBreakdown.lines) &&
+      item.priceBreakdown.lines.length
+    ) {
+      lines.push("");
+      lines.push("📊 *DETALHAMENTO COMERCIAL DA EMBALAGEM*");
+
+      item.priceBreakdown.lines.forEach((line: string) => {
+        lines.push(line);
+      });
+    }
 
     lines.push("");
   });
@@ -1150,6 +1705,7 @@ lines.push(`💲Valor total deste item: ${moneyBR(item.subtotal)}`);
 
   return lines.join("\n");
 }
+
 function hasExplicitCommercialUnit(raw: string): boolean {
   const q = normalize(raw);
 
@@ -1175,8 +1731,10 @@ function formatCheapestOptionsQuote(params: {
     options: any[];
     discountPercent?: number;
   }>;
+  showProductId?: boolean;
 }) {
   const lines: string[] = [];
+  const showProductId = params.showProductId !== false;
 
   lines.push("🔎 *OPÇÕES MAIS BARATAS*");
 
@@ -1187,9 +1745,11 @@ function formatCheapestOptionsQuote(params: {
   lines.push("");
 
   params.blocks.forEach((block) => {
-    lines.push(`*${block.raw}*`);
-    lines.push("");
-
+    /*
+     * Não exibimos block.raw aqui.
+     * Assim frases internas como "desconto 2%" continuam sendo processadas,
+     * mas não vazam para a lista que será copiada/enviada ao cliente.
+     */
     if (!block.options.length) {
       lines.push("Nenhuma opção encontrada para esse produto.");
       lines.push("");
@@ -1204,13 +1764,14 @@ function formatCheapestOptionsQuote(params: {
       const unit = String(option.sell_unit || option.unit || "UN").toUpperCase();
       const originalPrice = roundMoney(Number(option.price || 0));
       const finalPrice = applyDiscount(originalPrice, discountPercent);
+      const productCode = String(option?.code || "").trim();
+      const productIdSuffix =
+        showProductId && productCode ? ` • ID ${productCode}` : "";
 
-      lines.push(`${index + 1}º ${option.official_name}`);
-
+      lines.push(`${index + 1}º ${option.official_name}${productIdSuffix}`);
       lines.push(
         `   Vend. por: ${unit} • Preço: ${moneyBR(finalPrice)}`
       );
-
       lines.push("");
     });
 
@@ -1218,10 +1779,14 @@ function formatCheapestOptionsQuote(params: {
     lines.push("");
   });
 
-  lines.push("Escolha uma opção para transformar em cotação.");
-
-  return lines.join("\n");
+  /*
+   * Saída limpa: sem repetir o texto digitado e sem instrução interna.
+   * A quantidade solicitada ("10 mais baratas", por exemplo) continua
+   * determinando quantas opções são retornadas pelo optionLimit.
+   */
+  return lines.join("\n").trim();
 }
+
 function formatMixedQuote(params: {
   clientName?: string;
   optionBlocks: Array<{
@@ -1231,6 +1796,8 @@ function formatMixedQuote(params: {
   }>;
   items: any[];
   total: number;
+  displayMode?: string;
+  showProductId?: boolean;
 }) {
   const parts: string[] = [];
 
@@ -1239,6 +1806,7 @@ function formatMixedQuote(params: {
       formatCheapestOptionsQuote({
         clientName: params.clientName,
         blocks: params.optionBlocks,
+        showProductId: params.showProductId,
       })
     );
   }
@@ -1249,6 +1817,8 @@ function formatMixedQuote(params: {
         clientName: params.optionBlocks.length ? undefined : params.clientName,
         items: params.items,
         total: params.total,
+        displayMode: params.displayMode,
+        showProductId: params.showProductId,
       })
     );
   }
@@ -1412,6 +1982,8 @@ export async function POST(req: NextRequest) {
         clientName: body.clientName,
         items,
         total,
+        displayMode: body.displayMode,
+        showProductId: body.showProductId !== false,
       });
 
       return NextResponse.json({
@@ -1517,6 +2089,8 @@ export async function POST(req: NextRequest) {
         optionBlocks,
         items: autoItems,
         total,
+        displayMode: body.displayMode,
+        showProductId: body.showProductId !== false,
       });
 
       return NextResponse.json({

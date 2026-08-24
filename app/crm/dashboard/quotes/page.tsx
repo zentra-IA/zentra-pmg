@@ -70,7 +70,7 @@ const displayModes = [
   {
     value: "kg_unit_box",
     title: "KG + unidade + caixa",
-    desc: "Mostra cálculo completo para peça, KG e caixa.",
+    desc: "Detalha embalagem: caixa/fardo, unidades internas, peso e preço por KG.",
   },
   {
     value: "box_only",
@@ -87,7 +87,7 @@ const displayModes = [
 const DEFAULT_COMPANY_ID =
   process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID || "11111111-1111-4111-8111-111111111111";
 
-function formatEngineQuoteText(data: any, clientName?: string) {
+function formatEngineQuoteText(data: any, clientName?: string, displayMode = "client_clean", showProductId = true) {
   const items = Array.isArray(data?.items) ? data.items : [];
 
   if (!items.length) {
@@ -106,12 +106,21 @@ function formatEngineQuoteText(data: any, clientName?: string) {
 
   items.forEach((item: any, index: number) => {
     const product =
+      item?.productName ||
       item?.selected?.descricaoOriginal ||
       item?.selected?.descriptionOriginal ||
       item?.selected?.produto ||
       item?.selected?.product ||
+      item?.option?.official_name ||
       item?.input?.raw ||
       `Item ${index + 1}`;
+
+    const productCode = String(
+      item?.code || item?.option?.code || item?.selected?.code || ""
+    ).trim();
+
+    const productIdSuffix =
+      showProductId && productCode ? ` • ID ${productCode}` : "";
 
     const quantity = item?.convertedQuantity || item?.quantity || 1;
 
@@ -136,7 +145,7 @@ function formatEngineQuoteText(data: any, clientName?: string) {
 
     out.push("━━━━━━━━━━━━━━━━━━━━━━");
 
-    out.push(`*${product}*`);
+    out.push(`*${product}${productIdSuffix}*`);
 
     out.push("");
 
@@ -148,6 +157,17 @@ function formatEngineQuoteText(data: any, clientName?: string) {
 
     if (subtotal > 0) {
       out.push(`💰 Subtotal: ${moneyBR(subtotal)}`);
+    }
+
+    if (
+      displayMode === "kg_unit_box" &&
+      item?.priceBreakdown?.available &&
+      Array.isArray(item?.priceBreakdown?.lines) &&
+      item.priceBreakdown.lines.length
+    ) {
+      out.push("");
+      out.push("📊 *DETALHAMENTO COMERCIAL DA EMBALAGEM*");
+      item.priceBreakdown.lines.forEach((line: string) => out.push(line));
     }
 
     if (item?.needsReview) {
@@ -274,7 +294,7 @@ function customerLabel(c: Customer) {
 
 function optionSubtitle(option: any) {
   const parts = [
-    option.code ? `Cód. ${option.code}` : null,
+    option.code ? `ID ${option.code}` : null,
     option.brand ? `Marca: ${option.brand}` : null,
     option.category ? `Categoria: ${option.category}` : null,
     option.sell_unit ? `Vend. por: ${option.sell_unit}` : null,
@@ -305,6 +325,7 @@ export default function QuotesPage() {
     "3 peças mussarela imperador\n2 fardos farinha anaconda pizza\n3 requeijão coronata com amido\n2 requeijão scala\n1 presunto peperi\n2 bisnagas chocolate ao leite confeiteiro"
   );
   const [displayMode, setDisplayMode] = useState("client_clean");
+  const [showProductId, setShowProductId] = useState(true);
   const [loading, setLoading] = useState(false);
   const [quote, setQuote] = useState<GeneratedQuote | null>(null);
   const [tableDate, setTableDate] = useState("");
@@ -459,6 +480,7 @@ export default function QuotesPage() {
           clientName,
           clientId,
           displayMode,
+          showProductId,
         }),
       });
       const data = await res.json();
@@ -471,7 +493,7 @@ export default function QuotesPage() {
       if (Array.isArray(data.items)) {
         const normalizedQuote: GeneratedQuote = {
           ...data,
-          outputText: data.outputText || formatEngineQuoteText(data, clientName),
+          outputText: data.outputText || formatEngineQuoteText(data, clientName, displayMode, showProductId),
           total: Number(data.total || 0),
           tableDate: data.tableDate || tableDate || "Dia atual",
           items: data.items || [],
@@ -589,6 +611,7 @@ export default function QuotesPage() {
           clientName,
           clientId,
           displayMode,
+          showProductId,
           tableDate,
         }),
       });
@@ -641,6 +664,7 @@ export default function QuotesPage() {
             customerInternalCode: clientId,
             clientId,
             displayMode,
+            showProductId,
             tableDate: quote.tableDate || tableDate,
           },
         }),
@@ -816,6 +840,39 @@ export default function QuotesPage() {
                     <div className="mt-1 text-xs text-slate-500">{mode.desc}</div>
                   </button>
                 ))}
+              </div>
+
+              <div className="mt-5 border-t border-slate-100 pt-5">
+                <div className="text-sm font-black text-slate-900">ID do produto</div>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  Usa o código oficial da coluna COD da tabela PMG ao lado do produto.
+                </p>
+
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowProductId(true)}
+                    className={`rounded-2xl border px-3 py-3 text-sm font-black transition ${
+                      showProductId
+                        ? "border-emerald-400 bg-emerald-50 text-emerald-800"
+                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    Com ID
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowProductId(false)}
+                    className={`rounded-2xl border px-3 py-3 text-sm font-black transition ${
+                      !showProductId
+                        ? "border-emerald-400 bg-emerald-50 text-emerald-800"
+                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    Sem ID
+                  </button>
+                </div>
               </div>
             </div>
           </aside>
