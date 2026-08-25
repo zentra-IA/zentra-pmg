@@ -15,6 +15,9 @@ const APP_URL =
   process.env.APP_URL ||
   "http://localhost:3000";
 
+const MEDIA_BUCKET = "whatsapp-media";
+const MAX_INCOMING_MEDIA_BYTES = 100 * 1024 * 1024;
+
 function getSupabase() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -87,6 +90,12 @@ function normalizeText(value: any) {
     .trim();
 }
 
+function asObject(value: any): Record<string, any> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
+}
+
 function getIncomingMessageId(body: any) {
   return (
     body?.messageId ||
@@ -94,7 +103,69 @@ function getIncomingMessageId(body: any) {
     body?.id ||
     body?.key?.id ||
     body?.data?.key?.id ||
+    body?.data?.messageId ||
+    body?.data?.message_id ||
+    body?.data?.id ||
+    body?.data?.messages?.[0]?.key?.id ||
+    body?.messages?.[0]?.key?.id ||
+    body?.messageObject?.key?.id ||
+    body?.message_object?.key?.id ||
     null
+  );
+}
+
+function getIncomingRemoteJid(body: any) {
+  return (
+    body?.remoteJid ||
+    body?.remote_jid ||
+    body?.jid ||
+    body?.key?.remoteJid ||
+    body?.data?.remoteJid ||
+    body?.data?.remote_jid ||
+    body?.data?.jid ||
+    body?.data?.key?.remoteJid ||
+    body?.data?.messages?.[0]?.key?.remoteJid ||
+    body?.messages?.[0]?.key?.remoteJid ||
+    body?.messageObject?.key?.remoteJid ||
+    body?.message_object?.key?.remoteJid ||
+    null
+  );
+}
+
+function getIncomingPushName(body: any) {
+  return clean(
+    body?.pushName ||
+      body?.push_name ||
+      body?.name ||
+      body?.data?.pushName ||
+      body?.data?.push_name ||
+      body?.data?.name ||
+      body?.data?.messages?.[0]?.pushName ||
+      body?.messages?.[0]?.pushName ||
+      body?.messageObject?.pushName ||
+      body?.message_object?.pushName ||
+      ""
+  );
+}
+
+function getIncomingText(body: any) {
+  const root = unwrapIncomingMessage(getRootIncomingMessage(body));
+
+  return clean(
+    body?.message ||
+      body?.text ||
+      body?.body ||
+      body?.caption ||
+      body?.data?.text ||
+      body?.data?.body ||
+      body?.data?.caption ||
+      root?.conversation ||
+      root?.extendedTextMessage?.text ||
+      root?.imageMessage?.caption ||
+      root?.videoMessage?.caption ||
+      root?.documentMessage?.caption ||
+      root?.documentWithCaptionMessage?.message?.documentMessage?.caption ||
+      ""
   );
 }
 
@@ -105,44 +176,185 @@ type IncomingMedia = {
   mediaType: "image" | "video" | "audio" | "document" | "sticker" | null;
   fileName: string | null;
   caption: string | null;
+  ptt: boolean;
+  seconds: number | null;
+  encryptedWhatsappMedia: boolean;
 };
 
-function normalizeMediaType(value: any, mimeType?: string | null): IncomingMedia["mediaType"] {
+function normalizeMediaType(
+  value: any,
+  mimeType?: string | null
+): IncomingMedia["mediaType"] {
   const raw = clean(value).toLowerCase();
   const mime = clean(mimeType).toLowerCase();
 
   if (raw.includes("image") || mime.startsWith("image/")) return "image";
   if (raw.includes("video") || mime.startsWith("video/")) return "video";
-  if (raw.includes("audio") || raw.includes("ptt") || mime.startsWith("audio/")) return "audio";
+  if (
+    raw.includes("audio") ||
+    raw.includes("ptt") ||
+    raw.includes("voice") ||
+    mime.startsWith("audio/")
+  ) {
+    return "audio";
+  }
   if (raw.includes("sticker")) return "sticker";
-  if (raw.includes("document") || raw.includes("file") || mime) return "document";
+  if (
+    raw.includes("document") ||
+    raw.includes("file") ||
+    mime === "application/pdf"
+  ) {
+    return "document";
+  }
 
   return null;
 }
 
-function getNestedMediaMessage(body: any) {
-  const message =
-    body?.messageObject ||
-    body?.message_object ||
-    body?.data?.message ||
-    body?.data?.messages?.[0]?.message ||
-    body?.message?.message ||
-    body?.message ||
+function getRootIncomingMessage(body: any) {
+  const candidates = [
+    body?.messageObject?.message,
+    body?.message_object?.message,
+    body?.messageObject,
+    body?.message_object,
+    body?.data?.messages?.[0]?.message,
+    body?.messages?.[0]?.message,
+    body?.data?.message?.message,
+    body?.data?.message,
+    body?.message?.message,
+    body?.message,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+      return candidate;
+    }
+  }
+
+  return {};
+}
+
+function unwrapIncomingMessage(value: any): Record<string, any> {
+  let message = asObject(value);
+
+  for (let i = 0; i < 8; i++) {
+    const next =
+      message?.ephemeralMessage?.message ||
+      message?.viewOnceMessage?.message ||
+      message?.viewOnceMessageV2?.message ||
+      message?.viewOnceMessageV2Extension?.message ||
+      message?.documentWithCaptionMessage?.message ||
+      null;
+
+    if (!next || typeof next !== "object") break;
+    message = asObject(next);
+  }
+
+  return message;
+}
+
+function getNestedMediaEnvelope(body: any): {
+  type: IncomingMedia["mediaType"];
+  payload: Record<string, any>;
+} {
+  const message = unwrapIncomingMessage(getRootIncomingMessage(body));
+
+  const known: Array<[IncomingMedia["mediaType"], any]> = [
+    ["image", message?.imageMessage],
+    ["video", message?.videoMessage],
+    ["audio", message?.audioMessage],
+    ["document", message?.documentMessage],
+    ["sticker", message?.stickerMessage],
+  ];
+
+  for (const [type, payload] of known) {
+    if (payload && typeof payload === "object") {
+      return {
+        type,
+        payload: asObject(payload),
+      };
+    }
+  }
+
+  const directMedia =
+    body?.media ||
+    body?.mediaData ||
+    body?.media_data ||
+    body?.data?.media ||
+    body?.data?.mediaData ||
+    body?.data?.media_data ||
     {};
 
-  return (
-    message?.imageMessage ||
-    message?.videoMessage ||
-    message?.audioMessage ||
-    message?.documentMessage ||
-    message?.documentWithCaptionMessage?.message?.documentMessage ||
-    message?.stickerMessage ||
-    {}
+  const direct = asObject(directMedia);
+  const directType = normalizeMediaType(
+    direct?.type ||
+      direct?.mediaType ||
+      direct?.media_type ||
+      body?.mediaType ||
+      body?.media_type ||
+      body?.messageType ||
+      body?.message_type ||
+      body?.type,
+    direct?.mimetype || direct?.mimeType || direct?.mime_type
   );
+
+  return {
+    type: directType,
+    payload: direct,
+  };
+}
+
+function normalizeBase64Candidate(value: any): string | null {
+  if (!value) return null;
+
+  if (
+    typeof value === "object" &&
+    value?.type === "Buffer" &&
+    Array.isArray(value?.data)
+  ) {
+    try {
+      return Buffer.from(value.data).toString("base64");
+    } catch {
+      return null;
+    }
+  }
+
+  const raw = clean(value);
+  if (!raw) return null;
+
+  if (/^https?:\/\//i.test(raw)) return null;
+
+  if (raw.startsWith("data:")) {
+    const comma = raw.indexOf(",");
+    return comma >= 0 ? raw.slice(comma + 1) : null;
+  }
+
+  // Evita interpretar IDs e textos curtos como base64.
+  if (raw.length < 80) return null;
+
+  const compact = raw.replace(/\s+/g, "");
+
+  return /^[A-Za-z0-9+/=_-]+$/.test(compact)
+    ? compact.replace(/-/g, "+").replace(/_/g, "/")
+    : null;
+}
+
+function normalizeUrlCandidate(value: any): string | null {
+  const raw = clean(value);
+  if (!raw) return null;
+  return /^https?:\/\//i.test(raw) ? raw : null;
 }
 
 function extractIncomingMedia(body: any): IncomingMedia {
-  const nested = getNestedMediaMessage(body);
+  const envelope = getNestedMediaEnvelope(body);
+  const nested = envelope.payload;
+  const topMedia = asObject(
+    body?.media ||
+      body?.mediaData ||
+      body?.media_data ||
+      body?.data?.media ||
+      body?.data?.mediaData ||
+      body?.data?.media_data
+  );
 
   const mimeType =
     clean(
@@ -151,58 +363,108 @@ function extractIncomingMedia(body: any): IncomingMedia {
         body?.mime_type ||
         body?.mediaMimeType ||
         body?.media_mime_type ||
+        body?.data?.mimetype ||
+        body?.data?.mimeType ||
+        body?.data?.mime_type ||
+        topMedia?.mimetype ||
+        topMedia?.mimeType ||
+        topMedia?.mime_type ||
         nested?.mimetype ||
         nested?.mimeType ||
+        nested?.mime_type ||
         ""
     ) || null;
 
   const explicitType =
-    body?.mediaType ||
-    body?.media_type ||
-    body?.type ||
-    body?.messageType ||
-    body?.message_type ||
-    nested?.type ||
-    "";
+    envelope.type ||
+    normalizeMediaType(
+      body?.mediaType ||
+        body?.media_type ||
+        body?.messageType ||
+        body?.message_type ||
+        body?.type ||
+        body?.data?.mediaType ||
+        body?.data?.media_type ||
+        body?.data?.messageType ||
+        body?.data?.message_type ||
+        topMedia?.type ||
+        topMedia?.mediaType ||
+        topMedia?.media_type ||
+        nested?.type ||
+        "",
+      mimeType
+    );
 
   const url =
-    clean(
+    normalizeUrlCandidate(
       body?.mediaUrl ||
         body?.media_url ||
         body?.fileUrl ||
         body?.file_url ||
         body?.downloadUrl ||
         body?.download_url ||
-        body?.url ||
-        nested?.url ||
+        body?.audioUrl ||
+        body?.audio_url ||
+        body?.data?.mediaUrl ||
+        body?.data?.media_url ||
+        body?.data?.fileUrl ||
+        body?.data?.file_url ||
+        body?.data?.downloadUrl ||
+        body?.data?.download_url ||
+        body?.data?.audioUrl ||
+        body?.data?.audio_url ||
+        topMedia?.url ||
+        topMedia?.mediaUrl ||
+        topMedia?.media_url ||
+        topMedia?.downloadUrl ||
+        topMedia?.download_url ||
         nested?.mediaUrl ||
         nested?.media_url ||
+        nested?.downloadUrl ||
+        nested?.download_url ||
+        nested?.url ||
         ""
-    ) || null;
+    );
 
-  let base64 =
-    clean(
+  const base64 =
+    normalizeBase64Candidate(
       body?.base64 ||
         body?.mediaBase64 ||
         body?.media_base64 ||
         body?.fileBase64 ||
         body?.file_base64 ||
+        body?.audioBase64 ||
+        body?.audio_base64 ||
+        body?.data?.base64 ||
+        body?.data?.mediaBase64 ||
+        body?.data?.media_base64 ||
+        body?.data?.fileBase64 ||
+        body?.data?.file_base64 ||
+        body?.data?.audioBase64 ||
+        body?.data?.audio_base64 ||
+        topMedia?.base64 ||
+        topMedia?.data ||
+        topMedia?.buffer ||
         nested?.base64 ||
+        nested?.data ||
+        nested?.buffer ||
         ""
-    ) || null;
-
-  if (base64?.startsWith("data:")) {
-    const comma = base64.indexOf(",");
-    if (comma >= 0) base64 = base64.slice(comma + 1);
-  }
+    );
 
   const fileName =
     clean(
       body?.fileName ||
         body?.filename ||
         body?.file_name ||
+        body?.data?.fileName ||
+        body?.data?.filename ||
+        body?.data?.file_name ||
+        topMedia?.fileName ||
+        topMedia?.filename ||
+        topMedia?.file_name ||
         nested?.fileName ||
         nested?.filename ||
+        nested?.file_name ||
         ""
     ) || null;
 
@@ -211,17 +473,58 @@ function extractIncomingMedia(body: any): IncomingMedia {
       body?.caption ||
         body?.mediaCaption ||
         body?.media_caption ||
+        body?.data?.caption ||
+        body?.data?.mediaCaption ||
+        body?.data?.media_caption ||
+        topMedia?.caption ||
         nested?.caption ||
         ""
     ) || null;
+
+  const ptt =
+    body?.ptt === true ||
+    body?.isPtt === true ||
+    body?.is_ptt === true ||
+    body?.data?.ptt === true ||
+    topMedia?.ptt === true ||
+    nested?.ptt === true;
+
+  const secondsRaw =
+    body?.seconds ||
+    body?.duration ||
+    body?.durationSeconds ||
+    body?.data?.seconds ||
+    body?.data?.duration ||
+    topMedia?.seconds ||
+    topMedia?.duration ||
+    nested?.seconds ||
+    nested?.duration ||
+    null;
+
+  const secondsNumber = Number(secondsRaw);
+
+  const encryptedWhatsappMedia = Boolean(
+    nested?.mediaKey ||
+      nested?.mediaKeyTimestamp ||
+      nested?.fileEncSha256 ||
+      nested?.directPath
+  );
 
   return {
     url,
     base64,
     mimeType,
-    mediaType: normalizeMediaType(explicitType, mimeType),
+    mediaType:
+      explicitType ||
+      (ptt ? "audio" : null),
     fileName,
     caption,
+    ptt,
+    seconds:
+      Number.isFinite(secondsNumber) && secondsNumber >= 0
+        ? secondsNumber
+        : null,
+    encryptedWhatsappMedia,
   };
 }
 
@@ -280,16 +583,28 @@ async function persistIncomingMedia({
   messageId?: string | null;
   media: IncomingMedia;
 }) {
-  if (media.url) return media.url;
-  if (!media.base64) return null;
+  async function uploadBytes(
+    bytes: Buffer,
+    contentType?: string | null
+  ) {
+    if (!bytes.length) return null;
 
-  try {
-    const bytes = Buffer.from(media.base64, "base64");
-    const extension = extensionFromMime(media.mimeType, media.mediaType);
-    const safeMessageId = clean(messageId || crypto.randomUUID()).replace(
-      /[^a-zA-Z0-9_-]/g,
-      "_"
+    if (bytes.length > MAX_INCOMING_MEDIA_BYTES) {
+      console.error("MÍDIA RECEBIDA EXCEDE 100 MB:", {
+        messageId,
+        bytes: bytes.length,
+      });
+      return null;
+    }
+
+    const extension = extensionFromMime(
+      contentType || media.mimeType,
+      media.mediaType
     );
+
+    const safeMessageId = clean(
+      messageId || crypto.randomUUID()
+    ).replace(/[^a-zA-Z0-9_-]/g, "_");
 
     const objectPath = [
       companyId,
@@ -299,24 +614,104 @@ async function persistIncomingMedia({
     ].join("/");
 
     const { error: uploadError } = await supabase.storage
-      .from("whatsapp-media")
+      .from(MEDIA_BUCKET)
       .upload(objectPath, bytes, {
-        contentType: media.mimeType || "application/octet-stream",
+        contentType:
+          contentType ||
+          media.mimeType ||
+          "application/octet-stream",
         upsert: true,
       });
 
     if (uploadError) {
-      console.error("ERRO AO SALVAR MÍDIA RECEBIDA:", uploadError);
+      console.error(
+        "ERRO AO SALVAR MÍDIA RECEBIDA:",
+        uploadError
+      );
       return null;
     }
 
     const { data } = supabase.storage
-      .from("whatsapp-media")
+      .from(MEDIA_BUCKET)
       .getPublicUrl(objectPath);
 
     return data?.publicUrl || null;
+  }
+
+  try {
+    /*
+     * Prioridade 1: bytes/base64 já descriptografados pelo servidor WhatsApp.
+     * Esse é o formato ideal para áudio/PTT recebido.
+     */
+    if (media.base64) {
+      return uploadBytes(
+        Buffer.from(media.base64, "base64"),
+        media.mimeType
+      );
+    }
+
+    /*
+     * Prioridade 2: URL HTTP recebida.
+     * Quando for uma URL pública real, copiamos para o nosso Storage.
+     * Assim o histórico não depende de URL temporária/CORS do provedor.
+     */
+    if (media.url && !media.encryptedWhatsappMedia) {
+      try {
+        const response = await fetch(media.url, {
+          method: "GET",
+          cache: "no-store",
+        });
+
+        if (response.ok) {
+          const arrayBuffer = await response.arrayBuffer();
+
+          const uploaded = await uploadBytes(
+            Buffer.from(arrayBuffer),
+            response.headers.get("content-type") ||
+              media.mimeType
+          );
+
+          if (uploaded) return uploaded;
+        }
+      } catch (downloadError) {
+        console.warn(
+          "NÃO FOI POSSÍVEL COPIAR URL DE MÍDIA PARA O STORAGE:",
+          downloadError
+        );
+      }
+
+      // Mantém compatibilidade com URLs públicas já utilizadas pelo sistema.
+      return media.url;
+    }
+
+    /*
+     * audioMessage.url/directPath do WhatsApp/Baileys pode apontar para mídia
+     * criptografada. Sem os bytes descriptografados/base64, o navegador não
+     * consegue tocar esse arquivo diretamente.
+     */
+    if (
+      media.mediaType &&
+      media.encryptedWhatsappMedia
+    ) {
+      console.warn(
+        "WHATSAPP_MEDIA_ENCRYPTED_WITHOUT_DECRYPTED_BYTES:",
+        {
+          messageId: messageId || null,
+          mediaType: media.mediaType,
+          mimeType: media.mimeType,
+          hasUrl: Boolean(media.url),
+          ptt: media.ptt,
+          seconds: media.seconds,
+        }
+      );
+    }
+
+    return null;
   } catch (error) {
-    console.error("ERRO AO PROCESSAR MÍDIA RECEBIDA:", error);
+    console.error(
+      "ERRO AO PROCESSAR MÍDIA RECEBIDA:",
+      error
+    );
     return null;
   }
 }
@@ -933,6 +1328,10 @@ async function saveReceivedMessage(
     mediaType,
     mimeType,
     fileName,
+    caption,
+    ptt,
+    durationSeconds,
+    mediaPending,
     remoteJid,
     lid,
   }: {
@@ -947,6 +1346,10 @@ async function saveReceivedMessage(
     mediaType?: string | null;
     mimeType?: string | null;
     fileName?: string | null;
+    caption?: string | null;
+    ptt?: boolean;
+    durationSeconds?: number | null;
+    mediaPending?: boolean;
     remoteJid?: string | null;
     lid?: string | null;
   }
@@ -972,6 +1375,12 @@ async function saveReceivedMessage(
       media_type: mediaType || "text",
       mime_type: mimeType || null,
       file_name: fileName || null,
+      caption: caption || null,
+      ptt: Boolean(ptt),
+      duration_seconds:
+        durationSeconds ?? null,
+      media_pending:
+        Boolean(mediaPending),
       remote_jid: remoteJid || null,
       lid: lid || null,
     },
@@ -2960,7 +3369,7 @@ export async function POST(req: Request) {
       });
     }
 
-    const remoteJid = body.remoteJid || body.remote_jid || null;
+    const remoteJid = getIncomingRemoteJid(body);
 
     if (String(remoteJid || "").includes("@g.us")) {
       return NextResponse.json({
@@ -3013,21 +3422,19 @@ export async function POST(req: Request) {
 
     const email = clean(body.email || body.customer_email || "");
     const incomingMedia = extractIncomingMedia(body);
-    const explicitMessage = clean(
-      body.message ||
-        body.text ||
-        body.body ||
-        ""
-    );
+    const explicitMessage = getIncomingText(body);
     const message =
       explicitMessage ||
       incomingMedia.caption ||
       "";
-    const pushName = clean(body.pushName || body.name || "");
+    const pushName = getIncomingPushName(body);
 
     const resolved = await resolveCompanyBySession(
       supabase,
-      body.sessionId || body.session_id
+      body.sessionId ||
+        body.session_id ||
+        body?.data?.sessionId ||
+        body?.data?.session_id
     );
 
     const companyId = resolved.companyId;
@@ -3050,15 +3457,50 @@ export async function POST(req: Request) {
 
     const hasMedia = Boolean(
       mediaUrl ||
-        incomingMedia.url ||
-        incomingMedia.base64
+        incomingMedia.base64 ||
+        (
+          incomingMedia.url &&
+          !incomingMedia.encryptedWhatsappMedia
+        )
     );
+
+    const mediaDetected = Boolean(
+      incomingMedia.mediaType
+    );
+
+    if (
+      mediaDetected &&
+      !mediaUrl
+    ) {
+      console.warn(
+        "INCOMING_MEDIA_DETECTED_WITHOUT_PLAYABLE_URL:",
+        {
+          messageId: messageId || null,
+          mediaType:
+            incomingMedia.mediaType,
+          mimeType:
+            incomingMedia.mimeType,
+          hasRawUrl:
+            Boolean(incomingMedia.url),
+          hasBase64:
+            Boolean(incomingMedia.base64),
+          encryptedWhatsappMedia:
+            incomingMedia.encryptedWhatsappMedia,
+          ptt: incomingMedia.ptt,
+          seconds:
+            incomingMedia.seconds,
+        }
+      );
+    }
 
     const historyMessage =
       message ||
       mediaLabel(incomingMedia.mediaType);
 
-    if ((!phone && !lid) || (!message && !hasMedia)) {
+    if (
+      (!phone && !lid) ||
+      (!message && !hasMedia && !mediaDetected)
+    ) {
       return NextResponse.json(
         {
           success: false,
@@ -3261,6 +3703,15 @@ export async function POST(req: Request) {
       mediaType: incomingMedia.mediaType,
       mimeType: incomingMedia.mimeType,
       fileName: incomingMedia.fileName,
+      caption: incomingMedia.caption,
+      ptt: incomingMedia.ptt,
+      durationSeconds:
+        incomingMedia.seconds,
+      mediaPending:
+        Boolean(
+          incomingMedia.mediaType &&
+          !mediaUrl
+        ),
       remoteJid,
       lid,
     });

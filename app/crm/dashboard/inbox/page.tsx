@@ -198,6 +198,90 @@ function displayName(lead: any) {
   );
 }
 
+function phoneDigits(value: unknown) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function phoneFromLead(lead: any) {
+  const direct = phoneDigits(
+    lead?.phone ||
+      lead?.mobile ||
+      lead?.telefone
+  );
+
+  if (direct) return direct;
+
+  const remoteJid = String(
+    lead?.remote_jid || ""
+  );
+
+  if (remoteJid.includes("@s.whatsapp.net")) {
+    return phoneDigits(
+      remoteJid.split("@")[0]
+    );
+  }
+
+  return "";
+}
+
+function formatPhoneBR(value: unknown) {
+  let digits = phoneDigits(value);
+
+  if (!digits) return "";
+
+  if (digits.startsWith("55")) {
+    digits = digits.slice(2);
+  }
+
+  if (digits.length === 11) {
+    return `+55 (${digits.slice(0, 2)}) ${digits.slice(
+      2,
+      7
+    )}-${digits.slice(7)}`;
+  }
+
+  if (digits.length === 10) {
+    return `+55 (${digits.slice(0, 2)}) ${digits.slice(
+      2,
+      6
+    )}-${digits.slice(6)}`;
+  }
+
+  return `+${phoneDigits(value)}`;
+}
+
+function whatsappSessionId(lead: any): number | null {
+  const candidates = [
+    lead?.whatsapp_session_id,
+    lead?.last_message_session_id,
+    lead?.session_id,
+  ];
+
+  for (const value of candidates) {
+    const parsed = Number(value);
+
+    if (
+      Number.isInteger(parsed) &&
+      parsed >= 1 &&
+      parsed <= 5
+    ) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function formatRecordingTime(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+
+  return `${String(minutes).padStart(
+    2,
+    "0"
+  )}:${String(rest).padStart(2, "0")}`;
+}
+
 function renderMedia(message: any) {
   const media = getMediaData(message);
 
@@ -342,6 +426,37 @@ export default function InboxPage() {
   ] = useState<MediaDraft | null>(
     null
   );
+
+  const [
+    isRecording,
+    setIsRecording,
+  ] = useState(false);
+
+  const [
+    recordingSeconds,
+    setRecordingSeconds,
+  ] = useState(0);
+
+  const mediaRecorderRef =
+    useRef<MediaRecorder | null>(
+      null
+    );
+
+  const recordingStreamRef =
+    useRef<MediaStream | null>(
+      null
+    );
+
+  const recordingChunksRef =
+    useRef<Blob[]>([]);
+
+  const recordingTimerRef =
+    useRef<number | null>(
+      null
+    );
+
+  const discardRecordingRef =
+    useRef(false);
 
   const [mobileChatOpen, setMobileChatOpen] =
     useState(false);
@@ -901,6 +1016,262 @@ export default function InboxPage() {
     }
   }
 
+  function stopRecordingTimer() {
+    if (
+      recordingTimerRef.current !==
+      null
+    ) {
+      window.clearInterval(
+        recordingTimerRef.current
+      );
+
+      recordingTimerRef.current =
+        null;
+    }
+  }
+
+  function stopRecordingStream() {
+    recordingStreamRef.current
+      ?.getTracks()
+      .forEach((track) =>
+        track.stop()
+      );
+
+    recordingStreamRef.current =
+      null;
+  }
+
+  async function startRecording() {
+    if (
+      isRecording ||
+      sending
+    ) {
+      return;
+    }
+
+    if (
+      typeof navigator ===
+        "undefined" ||
+      !navigator.mediaDevices
+        ?.getUserMedia ||
+      typeof MediaRecorder ===
+        "undefined"
+    ) {
+      alert(
+        "Este navegador não permite gravar áudio pelo microfone."
+      );
+      return;
+    }
+
+    try {
+      clearMediaDraft();
+
+      const stream =
+        await navigator.mediaDevices.getUserMedia(
+          {
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+          }
+        );
+
+      const mimeCandidates = [
+        "audio/ogg;codecs=opus",
+        "audio/webm;codecs=opus",
+        "audio/webm",
+      ];
+
+      const mimeType =
+        mimeCandidates.find(
+          (candidate) =>
+            MediaRecorder.isTypeSupported(
+              candidate
+            )
+        ) || "";
+
+      const recorder = mimeType
+        ? new MediaRecorder(
+            stream,
+            {
+              mimeType,
+            }
+          )
+        : new MediaRecorder(
+            stream
+          );
+
+      recordingStreamRef.current =
+        stream;
+
+      mediaRecorderRef.current =
+        recorder;
+
+      recordingChunksRef.current =
+        [];
+
+      discardRecordingRef.current =
+        false;
+
+      recorder.ondataavailable = (
+        event
+      ) => {
+        if (event.data.size > 0) {
+          recordingChunksRef.current.push(
+            event.data
+          );
+        }
+      };
+
+      recorder.onstop = async () => {
+        const discard =
+          discardRecordingRef.current;
+
+        const chunks =
+          recordingChunksRef.current;
+
+        recordingChunksRef.current =
+          [];
+
+        stopRecordingTimer();
+        stopRecordingStream();
+
+        mediaRecorderRef.current =
+          null;
+
+        setIsRecording(false);
+        setRecordingSeconds(0);
+
+        if (
+          discard ||
+          !chunks.length
+        ) {
+          return;
+        }
+
+        try {
+          const type =
+            recorder.mimeType ||
+            mimeType ||
+            "audio/webm";
+
+          const extension =
+            type.includes("ogg")
+              ? "ogg"
+              : type.includes("mp4")
+                ? "m4a"
+                : "webm";
+
+          const blob = new Blob(
+            chunks,
+            {
+              type,
+            }
+          );
+
+          const file = new File(
+            [blob],
+            `audio-${Date.now()}.${extension}`,
+            {
+              type,
+            }
+          );
+
+          const base64 =
+            await fileToBase64(
+              file
+            );
+
+          setMediaDraft({
+            file,
+            base64,
+            kind: "audio",
+            previewUrl:
+              URL.createObjectURL(
+                blob
+              ),
+          });
+        } catch (error: any) {
+          alert(
+            error?.message ||
+              "Não foi possível preparar o áudio gravado."
+          );
+        }
+      };
+
+      recorder.start(250);
+
+      setRecordingSeconds(0);
+      setIsRecording(true);
+
+      recordingTimerRef.current =
+        window.setInterval(
+          () => {
+            setRecordingSeconds(
+              (current) =>
+                current + 1
+            );
+          },
+          1000
+        );
+    } catch (error: any) {
+      stopRecordingTimer();
+      stopRecordingStream();
+
+      setIsRecording(false);
+      setRecordingSeconds(0);
+
+      alert(
+        error?.name ===
+          "NotAllowedError"
+          ? "Permita o acesso ao microfone no navegador para gravar áudio."
+          : error?.message ||
+              "Não foi possível iniciar a gravação."
+      );
+    }
+  }
+
+  function finishRecording() {
+    const recorder =
+      mediaRecorderRef.current;
+
+    if (
+      !recorder ||
+      recorder.state ===
+        "inactive"
+    ) {
+      return;
+    }
+
+    discardRecordingRef.current =
+      false;
+
+    recorder.stop();
+  }
+
+  function cancelRecording() {
+    const recorder =
+      mediaRecorderRef.current;
+
+    discardRecordingRef.current =
+      true;
+
+    if (
+      recorder &&
+      recorder.state !==
+        "inactive"
+    ) {
+      recorder.stop();
+      return;
+    }
+
+    stopRecordingTimer();
+    stopRecordingStream();
+    setIsRecording(false);
+    setRecordingSeconds(0);
+  }
+
   function clearMediaDraft() {
     setMediaDraft(
       (current) => {
@@ -985,6 +1356,28 @@ export default function InboxPage() {
       }
     };
   }, [mediaDraft?.previewUrl]);
+
+  useEffect(() => {
+    return () => {
+      discardRecordingRef.current =
+        true;
+
+      const recorder =
+        mediaRecorderRef.current;
+
+      if (
+        recorder &&
+        recorder.state !==
+          "inactive"
+      ) {
+        recorder.stop();
+      }
+
+      stopRecordingTimer();
+      stopRecordingStream();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <main className="inbox-page">
@@ -1092,9 +1485,38 @@ export default function InboxPage() {
                     <span>
                       {lead.last_message ||
                         lead.lastMessage ||
-                        lead.phone ||
                         "-"}
                     </span>
+
+                    <div className="conversation-contact-meta">
+                      {phoneFromLead(
+                        lead
+                      ) ? (
+                        <em>
+                          📱{" "}
+                          {formatPhoneBR(
+                            phoneFromLead(
+                              lead
+                            )
+                          )}
+                        </em>
+                      ) : (
+                        <em>
+                          📱 Número não identificado
+                        </em>
+                      )}
+
+                      {whatsappSessionId(
+                        lead
+                      ) && (
+                        <em className="wa-session-mini">
+                          WhatsApp{" "}
+                          {whatsappSessionId(
+                            lead
+                          )}
+                        </em>
+                      )}
+                    </div>
 
                     <small>
                       {STATUS_LABELS[
@@ -1190,11 +1612,35 @@ export default function InboxPage() {
                     </div>
                   </div>
 
-                  <span>
-                    {selectedLead.phone ||
-                      selectedLead.email ||
-                      "Contato PMG"}
-                  </span>
+                  <div className="contact-meta-row">
+                    <span className="contact-phone">
+                      📱{" "}
+                      {phoneFromLead(
+                        selectedLead
+                      )
+                        ? formatPhoneBR(
+                            phoneFromLead(
+                              selectedLead
+                            )
+                          )
+                        : "Número não identificado"}
+                    </span>
+
+                    {whatsappSessionId(
+                      selectedLead
+                    ) ? (
+                      <span className="whatsapp-session-badge">
+                        WhatsApp{" "}
+                        {whatsappSessionId(
+                          selectedLead
+                        )}
+                      </span>
+                    ) : (
+                      <span className="whatsapp-session-badge unknown">
+                        WhatsApp não identificado
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 <div className="ai-control">
@@ -1401,6 +1847,32 @@ export default function InboxPage() {
                 </div>
               )}
 
+              {isRecording && (
+                <div className="recording-bar">
+                  <div className="recording-status">
+                    <span className="recording-dot" />
+                    <strong>
+                      Gravando áudio
+                    </strong>
+                    <span>
+                      {formatRecordingTime(
+                        recordingSeconds
+                      )}
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="recording-cancel"
+                    onClick={
+                      cancelRecording
+                    }
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              )}
+
               <footer className="composer">
                 <input
                   ref={fileInputRef}
@@ -1416,8 +1888,42 @@ export default function InboxPage() {
                     fileInputRef.current?.click()
                   }
                   title="Anexar arquivo"
+                  disabled={
+                    isRecording
+                  }
                 >
                   ＋
+                </button>
+
+                <button
+                  type="button"
+                  className={`record-button ${
+                    isRecording
+                      ? "recording"
+                      : ""
+                  }`}
+                  onClick={
+                    isRecording
+                      ? finishRecording
+                      : startRecording
+                  }
+                  disabled={
+                    sending
+                  }
+                  title={
+                    isRecording
+                      ? "Parar gravação"
+                      : "Gravar áudio"
+                  }
+                  aria-label={
+                    isRecording
+                      ? "Parar gravação"
+                      : "Gravar áudio"
+                  }
+                >
+                  {isRecording
+                    ? "■"
+                    : "🎤"}
                 </button>
 
                 <textarea
@@ -1431,9 +1937,14 @@ export default function InboxPage() {
                     handleComposerKeyDown
                   }
                   placeholder={
-                    mediaDraft
-                      ? "Adicione uma legenda..."
-                      : "Digite uma resposta comercial..."
+                    isRecording
+                      ? "Gravando áudio..."
+                      : mediaDraft
+                        ? "Adicione uma legenda..."
+                        : "Digite uma resposta comercial..."
+                  }
+                  disabled={
+                    isRecording
                   }
                   rows={2}
                 />
@@ -1445,6 +1956,7 @@ export default function InboxPage() {
                   }
                   disabled={
                     sending ||
+                    isRecording ||
                     (!text.trim() &&
                       !mediaDraft)
                   }
@@ -1856,6 +2368,29 @@ export default function InboxPage() {
           white-space: nowrap;
         }
 
+        .conversation-contact-meta {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 5px 8px;
+          margin-top: 5px;
+        }
+
+        .conversation-contact-meta em {
+          color: #64748b;
+          font-size: 10px;
+          font-style: normal;
+          font-weight: 750;
+        }
+
+        .conversation-contact-meta .wa-session-mini {
+          border-radius: 999px;
+          padding: 2px 6px;
+          color: #047857;
+          background: #d1fae5;
+          font-weight: 900;
+        }
+
         .conversation-copy small {
           margin-top: 5px;
           color: #2563eb;
@@ -1968,6 +2503,36 @@ export default function InboxPage() {
           font-size: 12px;
           text-overflow: ellipsis;
           white-space: nowrap;
+        }
+
+        .contact-meta-row {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 6px;
+          margin-top: 4px;
+        }
+
+        .contact-meta-row .contact-phone {
+          color: #475569;
+          font-weight: 800;
+        }
+
+        .contact-meta-row .whatsapp-session-badge {
+          display: inline-flex;
+          align-items: center;
+          width: fit-content;
+          border-radius: 999px;
+          padding: 4px 8px;
+          color: #047857;
+          background: #d1fae5;
+          font-size: 10px;
+          font-weight: 950;
+        }
+
+        .contact-meta-row .whatsapp-session-badge.unknown {
+          color: #64748b;
+          background: #f1f5f9;
         }
 
         .ai-control {
@@ -2207,9 +2772,58 @@ export default function InboxPage() {
           font-weight: 900;
         }
 
+        .recording-bar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          border-top: 1px solid #fecaca;
+          padding: 10px 14px;
+          background: #fff7f7;
+        }
+
+        .recording-status {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          color: #991b1b;
+          font-size: 13px;
+        }
+
+        .recording-dot {
+          width: 10px;
+          height: 10px;
+          border-radius: 999px;
+          background: #dc2626;
+          animation: recording-pulse 1s ease-in-out infinite;
+        }
+
+        .recording-cancel {
+          border: 0;
+          padding: 6px 9px;
+          color: #b91c1c;
+          background: transparent;
+          font: inherit;
+          font-size: 12px;
+          font-weight: 900;
+          cursor: pointer;
+        }
+
+        @keyframes recording-pulse {
+          0%,
+          100% {
+            opacity: 1;
+          }
+
+          50% {
+            opacity: 0.35;
+          }
+        }
+
         .composer {
           display: grid;
           grid-template-columns:
+            auto
             auto
             minmax(0, 1fr)
             auto;
@@ -2239,6 +2853,43 @@ export default function InboxPage() {
           background: #fff;
           font-size: 24px;
           cursor: pointer;
+        }
+
+        .attach-button:disabled {
+          opacity: 0.45;
+          cursor: not-allowed;
+        }
+
+        .record-button {
+          display: grid;
+          place-items: center;
+          width: 44px;
+          height: 44px;
+          border: 1px solid #bbf7d0;
+          border-radius: 14px;
+          color: #047857;
+          background: #f0fdf4;
+          font-size: 19px;
+          cursor: pointer;
+          transition:
+            transform 0.15s ease,
+            background 0.15s ease;
+        }
+
+        .record-button:hover {
+          transform: translateY(-1px);
+          background: #dcfce7;
+        }
+
+        .record-button.recording {
+          border-color: #fecaca;
+          color: #b91c1c;
+          background: #fee2e2;
+        }
+
+        .record-button:disabled {
+          opacity: 0.45;
+          cursor: not-allowed;
         }
 
         .button {
@@ -2541,6 +3192,7 @@ export default function InboxPage() {
 
           .composer {
             grid-template-columns:
+              auto
               auto
               minmax(0, 1fr);
           }

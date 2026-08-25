@@ -336,6 +336,13 @@ export default function QuotesPage() {
   const [currentConfirmIndex, setCurrentConfirmIndex] = useState(0);
   const [manualSearch, setManualSearch] = useState("");
   const [searching, setSearching] = useState(false);
+  const [optionSort, setOptionSort] = useState<
+    "relevance" | "az" | "za" | "price_asc" | "price_desc"
+  >("relevance");
+  const [addMoreOpen, setAddMoreOpen] = useState(false);
+  const [addMoreText, setAddMoreText] = useState("");
+  const [addingMore, setAddingMore] = useState(false);
+  const [addMoreStatus, setAddMoreStatus] = useState("");
   const [status, setStatus] = useState("");
   const [savedStatus, setSavedStatus] = useState("");
   const [priceUploading, setPriceUploading] = useState(false);
@@ -366,8 +373,41 @@ export default function QuotesPage() {
   const currentGroup = candidateGroups[currentConfirmIndex];
   const filteredCurrentOptions = useMemo(() => {
     if (!currentGroup) return [];
-    return locallyFilterOptions(currentGroup.options || [], manualSearch || currentGroup.searchText || "");
-  }, [currentGroup, manualSearch]);
+
+    const filtered = locallyFilterOptions(
+      currentGroup.options || [],
+      manualSearch || currentGroup.searchText || ""
+    );
+
+    if (optionSort === "relevance") return filtered;
+
+    return [...filtered].sort((a, b) => {
+      const nameA = String(a?.official_name || a?.product_name_from_pdf || "").trim();
+      const nameB = String(b?.official_name || b?.product_name_from_pdf || "").trim();
+      const priceA = Number(a?.price ?? a?.unitPrice ?? 0);
+      const priceB = Number(b?.price ?? b?.unitPrice ?? 0);
+
+      if (optionSort === "az") {
+        return nameA.localeCompare(nameB, "pt-BR", { sensitivity: "base" });
+      }
+
+      if (optionSort === "za") {
+        return nameB.localeCompare(nameA, "pt-BR", { sensitivity: "base" });
+      }
+
+      if (optionSort === "price_asc") {
+        if (priceA !== priceB) return priceA - priceB;
+        return nameA.localeCompare(nameB, "pt-BR", { sensitivity: "base" });
+      }
+
+      if (optionSort === "price_desc") {
+        if (priceA !== priceB) return priceB - priceA;
+        return nameA.localeCompare(nameB, "pt-BR", { sensitivity: "base" });
+      }
+
+      return 0;
+    });
+  }, [currentGroup, manualSearch, optionSort]);
 
   const progress = candidateGroups.length ? Math.round(((currentConfirmIndex + 1) / candidateGroups.length) * 100) : 0;
 
@@ -582,6 +622,90 @@ export default function QuotesPage() {
       alert(err?.message || "Erro ao pesquisar.");
     } finally {
       setSearching(false);
+    }
+  }
+
+
+  async function addMoreItemsToConfirmation() {
+    const extraText = addMoreText.trim();
+
+    if (!extraText) {
+      setAddMoreStatus("Digite pelo menos um produto para adicionar.");
+      return;
+    }
+
+    setAddingMore(true);
+    setAddMoreStatus("Buscando os novos itens no catálogo...");
+
+    try {
+      const res = await fetch("/api/quotes/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyId: DEFAULT_COMPANY_ID,
+          customerId: customerId || null,
+          rawText: extraText,
+          requestText: extraText,
+          clientName,
+          clientId,
+          displayMode,
+          showProductId,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!data.success) {
+        setAddMoreStatus(data.error || "Erro ao adicionar novos itens.");
+        return;
+      }
+
+      const newGroups = Array.isArray(data.candidateGroups)
+        ? data.candidateGroups
+        : [];
+
+      const newAutoItems = Array.isArray(data.autoItems)
+        ? data.autoItems
+        : Array.isArray(data.items)
+          ? data.items
+          : [];
+
+      if (!newGroups.length && !newAutoItems.length) {
+        setAddMoreStatus(
+          "Nenhum item pôde ser adicionado automaticamente. Tente uma descrição mais específica."
+        );
+        return;
+      }
+
+      const currentLength = candidateGroups.length;
+
+      if (newGroups.length) {
+        setCandidateGroups((prev) => [
+          ...prev,
+          ...newGroups.map((group: CandidateGroup, index: number) => ({
+            ...group,
+            index: currentLength + index,
+          })),
+        ]);
+      }
+
+      if (newAutoItems.length) {
+        setAutoItems((prev) => [...prev, ...newAutoItems]);
+      }
+
+      setRequestText((prev) =>
+        prev.trim() ? `${prev.trim()}\n${extraText}` : extraText
+      );
+
+      setAddMoreText("");
+      setAddMoreOpen(false);
+      setAddMoreStatus(
+        `${newGroups.length + newAutoItems.length} item(ns) adicionado(s) à cotação.`
+      );
+    } catch (err: any) {
+      setAddMoreStatus(err?.message || "Erro ao adicionar novos itens.");
+    } finally {
+      setAddingMore(false);
     }
   }
 
@@ -1089,6 +1213,51 @@ export default function QuotesPage() {
                   </button>
                 </div>
 
+                <div className="rounded-[1.5rem] border border-emerald-200 bg-emerald-50 p-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddMoreOpen((value) => !value);
+                      setAddMoreStatus("");
+                    }}
+                    className="w-full rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-black text-white transition hover:bg-emerald-700"
+                  >
+                    {addMoreOpen ? "Cancelar adição" : "+ Adicionar mais itens"}
+                  </button>
+
+                  {addMoreOpen && (
+                    <div className="mt-3">
+                      <label className="text-xs font-black uppercase text-emerald-800">
+                        Novos itens
+                      </label>
+                      <textarea
+                        value={addMoreText}
+                        onChange={(e) => setAddMoreText(e.target.value)}
+                        rows={4}
+                        placeholder={"Ex.:\n2 farinha de trigo\n1 caixa requeijão"}
+                        className="mt-2 w-full resize-y rounded-2xl border border-emerald-200 bg-white px-4 py-3 text-sm outline-none focus:border-emerald-500"
+                      />
+                      <p className="mt-2 text-xs leading-5 text-emerald-800">
+                        Uma linha por item. Eles entram no mesmo checklist e na mesma cotação.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={addMoreItemsToConfirmation}
+                        disabled={addingMore || !addMoreText.trim()}
+                        className="mt-3 w-full rounded-2xl bg-slate-950 px-4 py-3 text-sm font-black text-white disabled:opacity-50"
+                      >
+                        {addingMore ? "Adicionando..." : "Buscar e adicionar"}
+                      </button>
+                    </div>
+                  )}
+
+                  {addMoreStatus && (
+                    <div className="mt-3 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-emerald-800">
+                      {addMoreStatus}
+                    </div>
+                  )}
+                </div>
+
                 <button
                   onClick={() => {
                     updateCurrentGroup({ skipped: true, selectedCode: null, selectedOptionId: null });
@@ -1101,9 +1270,43 @@ export default function QuotesPage() {
               </aside>
 
               <section className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="font-black">Produtos encontrados</h4>
-                  <span className="text-xs font-bold text-slate-500">{filteredCurrentOptions.length} opções</span>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h4 className="font-black">Produtos encontrados</h4>
+                    <span className="text-xs font-bold text-slate-500">
+                      {filteredCurrentOptions.length} opções
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <label
+                      htmlFor="quote-option-sort"
+                      className="text-xs font-black uppercase text-slate-500"
+                    >
+                      Ordenar
+                    </label>
+                    <select
+                      id="quote-option-sort"
+                      value={optionSort}
+                      onChange={(e) =>
+                        setOptionSort(
+                          e.target.value as
+                            | "relevance"
+                            | "az"
+                            | "za"
+                            | "price_asc"
+                            | "price_desc"
+                        )
+                      }
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:border-emerald-500"
+                    >
+                      <option value="relevance">Mais relevantes</option>
+                      <option value="az">Nome A → Z</option>
+                      <option value="za">Nome Z → A</option>
+                      <option value="price_asc">Menor preço</option>
+                      <option value="price_desc">Maior preço</option>
+                    </select>
+                  </div>
                 </div>
 
                 <div className="max-h-[560px] space-y-3 overflow-y-auto pr-1">

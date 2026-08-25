@@ -92,6 +92,82 @@ function normalizePhone(value: unknown) {
   return digits;
 }
 
+function getLeadPhone(lead: any) {
+  const direct = normalizePhone(
+    lead?.phone ||
+      lead?.mobile ||
+      lead?.telefone
+  );
+
+  if (direct) return direct;
+
+  const remoteJid = clean(
+    lead?.remote_jid
+  );
+
+  // Em JIDs tradicionais o número vem antes de @s.whatsapp.net.
+  // @lid não contém necessariamente o telefone real, então não inventamos.
+  if (
+    remoteJid &&
+    remoteJid.includes("@s.whatsapp.net")
+  ) {
+    return normalizePhone(
+      remoteJid.split("@")[0]
+    );
+  }
+
+  return "";
+}
+
+function normalizeSessionId(value: unknown): number | null {
+  const parsed = Number(value);
+
+  if (
+    Number.isInteger(parsed) &&
+    parsed >= 1 &&
+    parsed <= 5
+  ) {
+    return parsed;
+  }
+
+  return null;
+}
+
+function getMessageSessionId(message: any): number | null {
+  const payload = asObject(
+    message?.payload
+  );
+
+  const direct = normalizeSessionId(
+    message?.session_id ||
+      message?.sessionId ||
+      payload?.session_id ||
+      payload?.sessionId ||
+      payload?.whatsapp_session_id
+  );
+
+  if (direct) return direct;
+
+  const fullSessionId = clean(
+    payload?.full_session_id ||
+      payload?.fullSessionId
+  );
+
+  if (fullSessionId) {
+    const match = fullSessionId.match(
+      /(?:^|[-_:])([1-5])$/
+    );
+
+    if (match) {
+      return normalizeSessionId(
+        match[1]
+      );
+    }
+  }
+
+  return null;
+}
+
 function normalizeStatus(value: unknown) {
   const status = clean(
     value || "novo"
@@ -146,10 +222,15 @@ function getMessageMedia(message: any) {
   return {
     media_url:
       clean(
-        payload.media_url ||
+        message?.media_url ||
+          payload.media_url ||
           payload.mediaUrl ||
+          payload.audio_url ||
+          payload.audioUrl ||
           payload.file_url ||
-          payload.fileUrl
+          payload.fileUrl ||
+          payload.public_url ||
+          payload.publicUrl
       ) || null,
     media_type:
       clean(
@@ -213,6 +294,8 @@ function normalizeMessage(message: any) {
     owner_user_id:
       getMessageOwnerId(message) ||
       null,
+    session_id:
+      getMessageSessionId(message),
     ...getMessageMedia(message),
   };
 }
@@ -221,11 +304,11 @@ function normalizeLead(lead: any) {
   return {
     ...lead,
     status: normalizeStatus(lead?.status),
-    phone: normalizePhone(
-      lead?.phone ||
-        lead?.mobile ||
-        lead?.telefone
-    ),
+    phone: getLeadPhone(lead),
+    whatsapp_session_id:
+      normalizeSessionId(
+        lead?.session_id
+      ),
     unread_count: Number(
       lead?.unread_count || 0
     ),
@@ -672,6 +755,15 @@ async function listConversations(
           "text",
         last_message_media_url:
           latest?.media_url ||
+          null,
+        last_message_session_id:
+          latest?.session_id ||
+          null,
+        whatsapp_session_id:
+          latest?.session_id ||
+          normalizeSessionId(
+            lead?.session_id
+          ) ||
           null,
       };
     }
