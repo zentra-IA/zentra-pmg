@@ -2,9 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { requireCompanyAccess } from "@/lib/server-company";
 import {
-  COMMERCIAL_PIPELINE,
-  normalizeCommercialStatus,
-} from "@/lib/crm/commercial-pipeline";
+  normalizeKanbanStatusOrNovo,
+} from "@/lib/crm/kanban-status";
 
 
 export const dynamic = "force-dynamic";
@@ -55,7 +54,7 @@ function normalizePhone(value: any) {
 }
 
 function normalizeStatus(value: any) {
-  return normalizeCommercialStatus(value);
+  return normalizeKanbanStatusOrNovo(value);
 }
 
 function normalizeRole(value: any): AccessRole {
@@ -72,6 +71,78 @@ function normalizeLead(lead: any) {
     ...lead,
     status: normalizeStatus(lead.status),
   };
+}
+
+function hasWhatsappIdentity(lead: any) {
+  return Boolean(
+    clean(lead?.whatsapp_lid) ||
+      clean(lead?.remote_jid)
+  );
+}
+
+async function loadLatestMessagesForLeads(
+  supabase: any,
+  access: LeadsAccess,
+  leadIds: string[]
+) {
+  const latest = new Map<string, any>();
+
+  if (!leadIds.length) {
+    return latest;
+  }
+
+  let query = supabase
+    .from("messages")
+    .select(
+      "lead_id, content, created_at, direction, extension, owner_user_id"
+    )
+    .eq("company_id", access.companyId)
+    .in("lead_id", leadIds)
+    .order("created_at", {
+      ascending: false,
+    })
+    .limit(
+      Math.min(
+        Math.max(leadIds.length * 20, 1000),
+        5000
+      )
+    );
+
+  /*
+   * Mantém o mesmo isolamento do Inbox:
+   * o vendedor considera somente mensagens da própria carteira.
+   */
+  if (access.isSeller) {
+    query = query.eq(
+      "owner_user_id",
+      access.userId
+    );
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error(
+      "CRM LEADS - erro ao carregar histórico de mensagens:",
+      error
+    );
+    return latest;
+  }
+
+  for (const message of data || []) {
+    const leadId = clean(
+      message?.lead_id
+    );
+
+    if (
+      leadId &&
+      !latest.has(leadId)
+    ) {
+      latest.set(leadId, message);
+    }
+  }
+
+  return latest;
 }
 
 async function requireLeadsAccess(req: NextRequest): Promise<LeadsAccess> {
@@ -249,13 +320,6 @@ export async function GET(req: NextRequest) {
       query = query.eq("owner_user_id", access.userId);
     }
 
-    if (statusParam && statusParam !== "todos") {
-      query = query.eq(
-        "status",
-        normalizeStatus(statusParam)
-      );
-    }
-
     if (batchId) {
       query = query.eq("batch_id", batchId);
     }
@@ -279,19 +343,101 @@ export async function GET(req: NextRequest) {
     }
 
     /*
-     * Leads criados apenas por @lid e sem telefone/e-mail não devem
-     * aparecer como cards operacionais.
+     * V8 — o Kanban representa CONVERSAS/OPORTUNIDADES, não apenas
+     * contatos que vieram de planilha ou disparo.
+     *
+     * Antes, um lead recebido pelo WhatsApp somente como @lid era removido
+     * daqui por não possuir telefone/e-mail. Resultado: aparecia no Inbox,
+     * mas sumia do Kanban.
+     *
+     * Agora um lead aparece quando possuir pelo menos uma identidade útil
+     * OU quando existir conversa real no histórico.
      */
-    const safeRows = (data || []).filter((lead: any) => {
-      const hasPhone = Boolean(clean(lead.phone));
-      const hasEmail = Boolean(clean(lead.email));
-      return hasPhone || hasEmail;
-    });
+    const normalizedRows = (data || []).map(
+      normalizeLead
+    );
+
+    const latestMessages =
+      await loadLatestMessagesForLeads(
+        supabase,
+        access,
+        normalizedRows.map((lead: any) =>
+          String(lead.id)
+        )
+      );
+
+    let visibleRows = normalizedRows
+      .filter((lead: any) => {
+        const hasPhone = Boolean(
+          clean(lead?.phone)
+        );
+        const hasEmail = Boolean(
+          clean(lead?.email)
+        );
+        const hasLastMessage = Boolean(
+          clean(lead?.last_message)
+        );
+        const hasWhatsapp =
+          hasWhatsappIdentity(lead);
+        const hasConversation =
+          latestMessages.has(
+            String(lead.id)
+          );
+
+        return (
+          hasPhone ||
+          hasEmail ||
+          hasWhatsapp ||
+          hasLastMessage ||
+          hasConversation
+        );
+      })
+      .map((lead: any) => {
+        const latest = latestMessages.get(
+          String(lead.id)
+        );
+
+        return {
+          ...lead,
+          last_message:
+            clean(lead?.last_message) ||
+            clean(latest?.content) ||
+            null,
+          last_message_at:
+            lead?.last_message_at ||
+            latest?.created_at ||
+            null,
+          has_inbox_conversation:
+            Boolean(latest) ||
+            Boolean(
+              clean(lead?.last_message)
+            ),
+        };
+      });
+
+    /*
+     * O filtro de status é aplicado depois da normalização.
+     * Assim registros antigos também entram na coluna correta.
+     */
+    if (
+      statusParam &&
+      statusParam !== "todos"
+    ) {
+      const wantedStatus =
+        normalizeStatus(statusParam);
+
+      visibleRows = visibleRows.filter(
+        (lead: any) =>
+          normalizeStatus(
+            lead?.status
+          ) === wantedStatus
+      );
+    }
 
     const leads = await loadJobsAndBatches(
       supabase,
       access.companyId,
-      safeRows.map(normalizeLead)
+      visibleRows
     );
 
     return NextResponse.json({

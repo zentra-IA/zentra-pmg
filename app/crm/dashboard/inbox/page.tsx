@@ -8,22 +8,18 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  KANBAN_STATUS_OPTIONS,
+  normalizeKanbanStatusOrNovo,
+} from "@/lib/crm/kanban-status";
 
-const STATUS_LABELS: Record<string, string> = {
-  novo: "Novo",
-  prospect: "Prospect",
-  campanha: "Em campanha",
-  enviado: "Enviado",
-  respondeu: "Respondeu",
-  cotacao: "Cotação",
-  comprou: "Comprou",
-  pedido: "Pedido",
-  cliente_ativo: "Cliente ativo",
-  cliente_risco: "Cliente em risco",
-  inativo: "Inativo",
-  reagendar_futuro: "Contatar depois",
-  sem_interesse: "Sem interesse",
-};
+const STATUS_LABELS: Record<string, string> =
+  Object.fromEntries(
+    KANBAN_STATUS_OPTIONS.map((item) => [
+      item.value,
+      `${item.icon} ${item.label}`,
+    ])
+  );
 
 const ACCEPTED_MEDIA =
   "image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.txt";
@@ -38,17 +34,7 @@ type MediaDraft = {
 };
 
 function normalizeStatus(status?: string | null) {
-  const map: Record<string, string> = {
-    respondido: "respondeu",
-    interesse: "cotacao",
-    finalizado: "comprou",
-  };
-
-  const normalized = String(
-    status || "novo"
-  ).toLowerCase();
-
-  return map[normalized] || normalized;
+  return normalizeKanbanStatusOrNovo(status);
 }
 
 function isMine(message: any) {

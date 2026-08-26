@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { requireCompanyAccess } from "@/lib/server-company";
+import {
+  KANBAN_STATUS_VALUES,
+  normalizeKanbanStatus,
+} from "@/lib/crm/kanban-status";
 
 export const dynamic = "force-dynamic";
 
@@ -13,21 +17,7 @@ export const dynamic = "force-dynamic";
  * app/crm/dashboard/page.tsx
  * app/api/whatsapp/incoming
  */
-const ALLOWED_STATUSES = [
-  "novo",
-  "enviado",
-  "respondeu",
-  "primeiro_contato",
-  "em_negociacao",
-  "cotacao_enviada",
-  "pedido_fechado",
-  "pos_venda",
-  "cliente_ativo",
-  "cliente_inativo",
-  "campanha",
-  "sem_interesse",
-  "perdido",
-];
+const ALLOWED_STATUSES = KANBAN_STATUS_VALUES;
 
 /*
  * Compatibilidade com registros/status antigos.
@@ -35,48 +25,7 @@ const ALLOWED_STATUSES = [
  * Assim não quebramos contatos que ainda possam ter
  * valores utilizados por versões anteriores do sistema.
  */
-const LEGACY_TO_NEW: Record<string, string> = {
-  // Resposta
-  respondido: "respondeu",
-  cliente_respondeu: "respondeu",
 
-  // Interesse / negociação
-  interesse: "em_negociacao",
-  negociacao: "em_negociacao",
-  quer_cotacao: "em_negociacao",
-  quer_agendar_entrevista: "em_negociacao",
-
-  // Cotação
-  proposta: "cotacao_enviada",
-  cotacao: "cotacao_enviada",
-  orcamento_enviado: "cotacao_enviada",
-  agendamento: "cotacao_enviada",
-  entrevista: "cotacao_enviada",
-  entrevista_agendada: "cotacao_enviada",
-  entrevista_confirmada: "cotacao_enviada",
-
-  // Venda / fechamento
-  pedido: "pedido_fechado",
-  contratado: "pedido_fechado",
-  aprovado: "pedido_fechado",
-  finalizado: "pedido_fechado",
-  hired: "pedido_fechado",
-  finished: "pedido_fechado",
-  approved: "pedido_fechado",
-
-  // Retomar
-  reagendar_futuro: "cliente_inativo",
-  reativar_futuro: "cliente_inativo",
-  banco_talentos: "cliente_inativo",
-
-  // Perdidos
-  nao_aprovado: "perdido",
-  nao_compareceu: "perdido",
-  descartado: "perdido",
-  reprovado: "perdido",
-  rejected: "perdido",
-  falta: "perdido",
-};
 
 function getSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -101,13 +50,7 @@ function clean(value: any) {
  * Normaliza status vindos do frontend ou de versões antigas.
  */
 function normalizeStatus(value: any) {
-  const raw = clean(value)
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[\s-]+/g, "_");
-
-  return LEGACY_TO_NEW[raw] || raw;
+  return normalizeKanbanStatus(value);
 }
 
 function safeDate(value: any) {
@@ -189,7 +132,10 @@ export async function PATCH(req: NextRequest) {
      * Agora valida contra os mesmos status
      * utilizados pelo Kanban comercial.
      */
-    if (!ALLOWED_STATUSES.includes(status)) {
+    if (
+      !status ||
+      !ALLOWED_STATUSES.includes(status)
+    ) {
       return NextResponse.json(
         {
           error: "Status inválido.",

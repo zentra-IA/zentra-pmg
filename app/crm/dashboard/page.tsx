@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import NextActionModal from "@/components/crm/next-action/NextActionModal";
+import { normalizeKanbanStatusOrNovo } from "@/lib/crm/kanban-status";
 
 const STAGES = [
   {
@@ -87,48 +88,8 @@ const STAGES = [
   },
 ];
 
-const LEGACY_STATUS_MAP: Record<string, string> = {
-  new: "novo",
-  novo_lead: "novo",
-  primeiro_contato: "respondeu",
-  respondido: "respondeu",
-  cliente_respondeu: "respondeu",
-
-  interesse: "em_negociacao",
-  negociacao: "em_negociacao",
-  quer_cotacao: "em_negociacao",
-  quer_agendar_entrevista: "em_negociacao",
-
-  proposta: "cotacao_enviada",
-  cotacao: "cotacao_enviada",
-  orcamento_enviado: "cotacao_enviada",
-  entrevista: "cotacao_enviada",
-  entrevista_agendada: "cotacao_enviada",
-  agendado: "cotacao_enviada",
-
-  contratado: "pedido_fechado",
-  aprovado: "pedido_fechado",
-  finalizado: "pedido_fechado",
-  cliente_ativo: "pedido_fechado",
-  pos_venda: "pedido_fechado",
-
-  reagendar_futuro: "cliente_inativo",
-  reativar_futuro: "cliente_inativo",
-  banco_talentos: "cliente_inativo",
-
-  nao_aprovado: "perdido",
-  descartado: "perdido",
-};
-
 function normalizeStatus(status?: string | null) {
-  const value = String(status || "novo")
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[\s-]+/g, "_");
-
-  return LEGACY_STATUS_MAP[value] || value || "novo";
+  return normalizeKanbanStatusOrNovo(status);
 }
 
 function getStage(status?: string | null) {
@@ -163,7 +124,7 @@ function formatDate(date: string) {
 }
 
 function formatPhone(phone?: string | null) {
-  if (!phone) return "-";
+  if (!phone) return "";
 
   const digits = String(phone).replace(/\D/g, "");
 
@@ -172,6 +133,39 @@ function formatPhone(phone?: string | null) {
   }
 
   return phone;
+}
+
+function formatLeadContact(lead: any) {
+  const direct = formatPhone(
+    lead?.phone ||
+      lead?.mobile ||
+      lead?.telefone
+  );
+
+  if (direct) return direct;
+
+  const remoteJid = String(
+    lead?.remote_jid || ""
+  );
+
+  if (
+    remoteJid.includes("@s.whatsapp.net")
+  ) {
+    const phone = formatPhone(
+      remoteJid.split("@")[0]
+    );
+
+    if (phone) return phone;
+  }
+
+  if (
+    lead?.whatsapp_lid ||
+    remoteJid.includes("@lid")
+  ) {
+    return "WhatsApp • número não identificado";
+  }
+
+  return "Contato via Inbox";
 }
 
 function shortText(text?: string | null, max = 90) {
@@ -548,7 +542,7 @@ function LeadCard({
             {lead.name || "Contato WhatsApp"}
           </h3>
           <p className="mt-1 text-xs font-bold text-slate-500">
-            {formatPhone(lead.phone)}
+            {formatLeadContact(lead)}
           </p>
         </div>
 

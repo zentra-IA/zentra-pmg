@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { requireCompany } from "@/lib/server-company";
+import {
+  KANBAN_STATUS_VALUES,
+  normalizeKanbanStatusOrNovo,
+} from "@/lib/crm/kanban-status";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -9,30 +13,8 @@ const MAX_CONVERSATIONS = 300;
 const MAX_MESSAGES_PER_CONVERSATION = 1000;
 const MAX_CUSTOM_NAME_LENGTH = 120;
 
-const COMMERCIAL_STATUSES = [
-  "novo",
-  "campanha",
-  "enviado",
-  "respondeu",
-  "cotacao",
-  "pedido",
-  "reagendar_futuro",
-  "sem_interesse",
+const COMMERCIAL_STATUSES = KANBAN_STATUS_VALUES;
 
-  // Compatibilidade com registros antigos.
-  "respondido",
-  "interesse",
-  "quer_agendar_entrevista",
-  "entrevista_agendada",
-  "entrevista_confirmada",
-  "reativar_futuro",
-  "finalizado",
-  "contratado",
-  "selecionado_vaga",
-  "aprovado",
-  "nao_aprovado",
-  "nao_compareceu",
-];
 
 type AccessContext = {
   companyId: string;
@@ -169,26 +151,7 @@ function getMessageSessionId(message: any): number | null {
 }
 
 function normalizeStatus(value: unknown) {
-  const status = clean(
-    value || "novo"
-  ).toLowerCase();
-
-  const aliases: Record<string, string> = {
-    respondido: "respondeu",
-    interesse: "cotacao",
-    quer_agendar_entrevista: "cotacao",
-    entrevista_agendada: "pedido",
-    entrevista_confirmada: "pedido",
-    contratado: "pedido",
-    finalizado: "pedido",
-    reativar_futuro: "reagendar_futuro",
-    selecionado_vaga: "cotacao",
-    aprovado: "pedido",
-    nao_aprovado: "sem_interesse",
-    nao_compareceu: "reagendar_futuro",
-  };
-
-  return aliases[status] || status || "novo";
+  return normalizeKanbanStatusOrNovo(value);
 }
 
 function asObject(value: unknown) {
@@ -789,7 +752,7 @@ async function listConversations(
       conversations.filter(
         (lead) =>
           COMMERCIAL_STATUSES.includes(
-            clean(lead.status)
+            normalizeStatus(lead.status)
           ) ||
           Boolean(
             latestMessages.get(

@@ -1,6 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import {
+  KANBAN_STATUS_OPTIONS,
+  getKanbanStatusLabel,
+  normalizeKanbanStatus,
+} from "@/lib/crm/kanban-status";
 
 const CAMPAIGN_INTENTS = [
   {
@@ -95,60 +100,11 @@ const AI_INTENTS = [
 
 const KANBAN_STATUS = [
   { value: "", label: "Não alterar etapa" },
-  { value: "novo", label: "Novo lead" },
-  { value: "enviado", label: "Mensagem enviada" },
-  { value: "respondeu", label: "Cliente respondeu" },
-  { value: "em_negociacao", label: "Quer cotação" },
-  { value: "cotacao_enviada", label: "Cotação enviada" },
-  { value: "campanha", label: "Em campanha" },
-  { value: "cliente_inativo", label: "Retomar depois" },
-  { value: "pedido_fechado", label: "Pedido fechado" },
-  { value: "sem_interesse", label: "Sem interesse agora" },
-  { value: "perdido", label: "Perdido" },
+  ...KANBAN_STATUS_OPTIONS.map((item) => ({
+    value: item.value,
+    label: `${item.icon} ${item.label}`,
+  })),
 ];
-
-const KANBAN_STATUS_ALIASES: Record<string, string> = {
-  new: "novo",
-  novo_lead: "novo",
-  primeiro_contato: "respondeu",
-  respondido: "respondeu",
-  cliente_respondeu: "respondeu",
-  interesse: "em_negociacao",
-  negociacao: "em_negociacao",
-  quer_cotacao: "em_negociacao",
-  proposta: "cotacao_enviada",
-  cotacao: "cotacao_enviada",
-  orcamento_enviado: "cotacao_enviada",
-  em_campanha: "campanha",
-  campanha_ativa: "campanha",
-  retomar_depois: "cliente_inativo",
-  reativacao: "cliente_inativo",
-  cliente_ativo: "pedido_fechado",
-  pos_venda: "pedido_fechado",
-  finalizado: "pedido_fechado",
-  descartado: "perdido",
-};
-
-function normalizeKanbanStatus(value?: string | null) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[\s-]+/g, "_");
-
-  return KANBAN_STATUS_ALIASES[normalized] || normalized;
-}
-
-function getKanbanStatusLabel(value?: string | null) {
-  const normalized = normalizeKanbanStatus(value);
-
-  return (
-    KANBAN_STATUS.find((item) => item.value === normalized)?.label ||
-    normalized ||
-    "Não alterar etapa"
-  );
-}
 
 const VARIABLES = [
   { label: "Cliente", value: "{cliente}" },
@@ -563,7 +519,7 @@ setNextStep("");
     setTriggerKeywords(getTemplateTriggers(item));
 
     setMatchType(item.match_type || "contains");
-    setKanbanStatus(normalizeKanbanStatus(item.kanban_status));
+    setKanbanStatus(normalizeKanbanStatus(item.kanban_status) || "");
     setMediaUrl(item.media_url || "");
     setMediaType(item.media_type || "text");
     setFlowMode(item.flow_mode || "global");
@@ -866,18 +822,38 @@ if (!editingId && flowMode === "sequence") {
                   <option value="starts_with">Mensagem começa com</option>
                 </select>
 
+              </>
+            )}
+
+            {type === "ai" && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 md:col-span-2">
+                <label className="mb-2 block text-sm font-black text-slate-900">
+                  Mover o card no Kanban quando esta automação disparar
+                </label>
+
                 <select
                   value={kanbanStatus}
-                  onChange={(e) => setKanbanStatus(e.target.value)}
+                  onChange={(e) =>
+                    setKanbanStatus(e.target.value)
+                  }
                   className="input"
                 >
                   {KANBAN_STATUS.map((item) => (
-                    <option key={item.value || "none"} value={item.value}>
+                    <option
+                      key={item.value || "none"}
+                      value={item.value}
+                    >
                       {item.label}
                     </option>
                   ))}
                 </select>
-              </>
+
+                <p className="mt-2 text-xs text-slate-600">
+                  Se escolher uma etapa, ela tem prioridade sobre a detecção
+                  automática. “Não alterar etapa” deixa o sistema usar apenas
+                  o comportamento automático da conversa.
+                </p>
+              </div>
             )}
 
             <input

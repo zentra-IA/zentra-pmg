@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import {
+  normalizeKanbanStatus,
+} from "@/lib/crm/kanban-status";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -909,75 +912,35 @@ function detectSalesIntent(message: string) {
 }
 
 function statusFromIntent(intent: string) {
+  /*
+   * V8:
+   * Uma mensagem RECEBIDA nunca significa "cotação enviada".
+   * "Cotação enviada" é uma ação nossa e deve vir do kanban_status
+   * configurado na automação ou de uma movimentação manual.
+   */
   const map: Record<string, string> = {
     SEM_INTERESSE: "sem_interesse",
     CLIENTE_QUER_COMPRAR: "em_negociacao",
-    COTACAO: "cotacao_enviada",
+    COTACAO: "em_negociacao",
     NEGOCIACAO: "em_negociacao",
-    ENTREGA: "pos_venda",
-    TRANSFERIR_VENDEDOR: "em_negociacao",
+    ENTREGA: "respondeu",
+    TRANSFERIR_VENDEDOR: "respondeu",
     RESPONDEU: "respondeu",
   };
 
   return map[intent] || "respondeu";
 }
 
-const ALLOWED_KANBAN_STATUS = [
-  "novo",
-  "enviado",
-  "respondeu",
-  "primeiro_contato",
-  "em_negociacao",
-  "cotacao_enviada",
-  "pedido_fechado",
-  "pos_venda",
-  "cliente_ativo",
-  "cliente_inativo",
-  "campanha",
-  "sem_interesse",
-  "perdido",
-];
-
-const LEGACY_KANBAN_STATUS_MAP: Record<string, string> = {
-  respondido: "respondeu",
-  interesse: "em_negociacao",
-  agendamento: "cotacao_enviada",
-  pedido: "pedido_fechado",
-  reativar_futuro: "cliente_inativo",
-  finalizado: "pedido_fechado",
-};
-
-const KANBAN_RANK: Record<string, number> = {
-  novo: 0,
-  campanha: 1,
-  enviado: 2,
-  respondeu: 3,
-  primeiro_contato: 4,
-  em_negociacao: 5,
-  cotacao_enviada: 6,
-  pedido_fechado: 7,
-  pos_venda: 8,
-  cliente_ativo: 9,
-  cliente_inativo: 9,
-  sem_interesse: 10,
-  perdido: 10,
-};
-
+/*
+ * Status que representam encerramento explícito.
+ * "cliente_inativo" não fica bloqueado: se a pessoa voltar a escrever,
+ * ela deve voltar ao atendimento.
+ */
 const LOCKED_KANBAN_STATUS = new Set([
   "pedido_fechado",
-  "cliente_ativo",
-  "cliente_inativo",
   "sem_interesse",
   "perdido",
 ]);
-
-function normalizeKanbanStatus(value: any) {
-  const raw = clean(value || "").toLowerCase();
-  if (!raw) return null;
-
-  const normalized = LEGACY_KANBAN_STATUS_MAP[raw] || raw;
-  return ALLOWED_KANBAN_STATUS.includes(normalized) ? normalized : null;
-}
 
 function getTemplateKanbanStatus(template: any) {
   return normalizeKanbanStatus(
@@ -996,16 +959,46 @@ function chooseKanbanStatus(
   candidateValue: any,
   explicit = false
 ) {
-  const current = normalizeKanbanStatus(currentValue) || "novo";
-  const candidate = normalizeKanbanStatus(candidateValue);
+  const current =
+    normalizeKanbanStatus(currentValue) ||
+    "novo";
+
+  const candidate =
+    normalizeKanbanStatus(candidateValue);
 
   if (!candidate) return current;
-  if (LOCKED_KANBAN_STATUS.has(current) && !explicit) return current;
+
+  /*
+   * O destino configurado na tela "Mensagens" é autoridade.
+   * Se a automação diz para mover o card, move exatamente para lá.
+   */
   if (explicit) return candidate;
 
-  return (KANBAN_RANK[candidate] || 0) >= (KANBAN_RANK[current] || 0)
-    ? candidate
-    : current;
+  /*
+   * Mesmo um contato encerrado pode iniciar uma NOVA oportunidade.
+   * Pedido de preço/cotação/negociação reabre para "Quer cotação".
+   */
+  if (
+    LOCKED_KANBAN_STATUS.has(current) &&
+    candidate === "em_negociacao"
+  ) {
+    return candidate;
+  }
+
+  /*
+   * Respostas genéricas curtas não desmontam um fechamento/perda.
+   * O bloco de respostas curtas mais abaixo também preserva o fluxo.
+   */
+  if (LOCKED_KANBAN_STATUS.has(current)) {
+    return current;
+  }
+
+  /*
+   * Para etapas ativas não usamos ranking crescente.
+   * O status representa o estado ATUAL da conversa:
+   * enviado/campanha/cotação enviada -> cliente respondeu -> "respondeu".
+   */
+  return candidate;
 }
 
 async function updateLeadKanbanStatus({
@@ -3926,6 +3919,12 @@ export async function POST(req: Request) {
         ? "em_negociacao"
         : null;
 
+    /*
+     * PRIORIDADE V8:
+     * 1. kanban_status salvo na automação em "Mensagens";
+     * 2. intenção comercial forte detectada;
+     * 3. status de resposta já aplicado quando a mensagem entrou.
+     */
     const requestedKanbanStatus =
       explicitTemplateStatus ||
       fallbackSalesStatus;
