@@ -28,8 +28,9 @@ type Prospect = {
 type Usage = {
   used: number;
   limit: number;
-  remaining: number;
+  remaining: number | null;
   month?: string;
+  unlimited?: boolean;
 };
 
 const styles = {
@@ -336,11 +337,14 @@ export default function RadarPage() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const [view, setView] = useState("NEW");
-  const [limit, setLimit] = useState(100);
+  const [limit, setLimit] = useState(0);
   const [sortBy, setSortBy] = useState("createdAt");
   const [sortDir, setSortDir] = useState("desc");
 
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [pageNumber, setPageNumber] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
   const [revealing, setRevealing] = useState(false);
   const [creatingDialer, setCreatingDialer] = useState(false);
   const [prospects, setProspects] = useState<Prospect[]>([]);
@@ -404,7 +408,7 @@ export default function RadarPage() {
     setCreditMin("");
     setCreditMax("");
     setView("NEW");
-    setLimit(100);
+    setLimit(0);
     setSortBy("createdAt");
     setSortDir("desc");
     setSelected([]);
@@ -443,9 +447,13 @@ export default function RadarPage() {
     setMessage(`Filtro preparado: limite de crédito a partir de ${formatMoney(minimum)}. Clique em Buscar.`);
   }
 
-  async function search() {
-    setLoading(true);
-    setMessage("");
+  async function search(pageToLoad = 1, append = false) {
+    if (append) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+      setMessage("");
+    }
 
     try {
       const params = new URLSearchParams({
@@ -472,6 +480,7 @@ export default function RadarPage() {
         creditMax,
         view,
         limit: String(limit),
+        page: String(pageToLoad),
         sortBy,
         sortDir,
       });
@@ -486,14 +495,42 @@ export default function RadarPage() {
         throw new Error(data.error || "Erro ao buscar oportunidades.");
       }
 
-      setProspects(data.prospects || []);
-      setUsage(data.usage || { used: 0, limit: 0, remaining: 0 });
+      const incoming = Array.isArray(data.prospects) ? data.prospects : [];
+
+      setProspects((current) => {
+        if (!append) return incoming;
+
+        const byId = new Map<string, Prospect>();
+
+        for (const item of [...current, ...incoming]) {
+          byId.set(item.id, item);
+        }
+
+        return Array.from(byId.values());
+      });
+
+      setUsage(
+        data.usage || {
+          used: 0,
+          limit: 0,
+          remaining: null,
+          unlimited: true,
+        }
+      );
+      setPageNumber(pageToLoad);
+      setHasMore(Boolean(data.hasMore));
       setSelected([]);
     } catch (error: any) {
       setMessage(error?.message || "Erro ao buscar oportunidades.");
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
+  }
+
+  async function loadMore() {
+    if (loadingMore || !hasMore || limit !== 0) return;
+    await search(pageNumber + 1, true);
   }
 
   useEffect(() => {
@@ -724,7 +761,7 @@ export default function RadarPage() {
             Importar base
           </button>
 
-          <button style={styles.primary} onClick={search} disabled={loading}>
+          <button style={styles.primary} onClick={() => search(1, false)} disabled={loading}>
             {loading ? "Buscando..." : "Buscar oportunidades"}
           </button>
         </div>
@@ -739,9 +776,13 @@ export default function RadarPage() {
         <Metric label="Visualizados" value={visualized} />
         <Metric label="Não visualizados" value={notVisualized} />
         <Metric
-          label="Limite mensal"
-          value={usage.remaining}
-          hint={`${usage.used} usados de ${usage.limit}`}
+          label="Contatos"
+          value={usage.unlimited || usage.limit === 0 ? "Ilimitado" : usage.remaining}
+          hint={
+            usage.unlimited || usage.limit === 0
+              ? `${usage.used} visualizados`
+              : `${usage.used} usados de ${usage.limit}`
+          }
         />
       </section>
 
@@ -880,6 +921,7 @@ export default function RadarPage() {
               value={limit}
               onChange={(e) => setLimit(Number(e.target.value))}
             >
+              <option value={0}>Sem limite (em lotes)</option>
               <option value={25}>25 resultados</option>
               <option value={50}>50 resultados</option>
               <option value={100}>100 resultados</option>
@@ -1108,7 +1150,7 @@ export default function RadarPage() {
         </div>
 
         <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
-          <button style={styles.primary} onClick={search} disabled={loading}>
+          <button style={styles.primary} onClick={() => search(1, false)} disabled={loading}>
             {loading ? "Buscando..." : "Buscar"}
           </button>
 
@@ -1159,6 +1201,19 @@ export default function RadarPage() {
             }}
           >
             {message}
+          </div>
+        ) : null}
+
+        {limit === 0 && hasMore ? (
+          <div style={{ marginTop: 14 }}>
+            <button
+              type="button"
+              style={styles.secondary}
+              onClick={loadMore}
+              disabled={loadingMore}
+            >
+              {loadingMore ? "Carregando mais..." : "Carregar mais 250"}
+            </button>
           </div>
         ) : null}
       </section>

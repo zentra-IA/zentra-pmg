@@ -3345,6 +3345,159 @@ async function findLead({
   return lead;
 }
 
+
+async function applyIncomingMessageEdit({
+  supabase,
+  companyId,
+  userId,
+  originalMessageId,
+  editedText,
+  editEventMessageId,
+}: {
+  supabase: any;
+  companyId: string;
+  userId: string;
+  originalMessageId: string;
+  editedText: string;
+  editEventMessageId?: string | null;
+}) {
+  const normalizedOriginalId = clean(originalMessageId);
+  const normalizedText = clean(editedText);
+
+  if (!normalizedOriginalId || !normalizedText) {
+    return {
+      found: false,
+      updated: false,
+      leadId: null,
+    };
+  }
+
+  const { data: rows, error: findError } = await supabase
+    .from("messages")
+    .select("id, lead_id, content, payload, created_at")
+    .eq("company_id", companyId)
+    .eq("owner_user_id", userId)
+    .eq("direction", "received")
+    .contains("payload", {
+      message_id: normalizedOriginalId,
+    })
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (findError) {
+    console.error("[MESSAGE_EDIT] Erro ao localizar mensagem original:", {
+      companyId,
+      userId,
+      originalMessageId: normalizedOriginalId,
+      error: findError,
+    });
+
+    throw new Error(
+      `Não foi possível localizar a mensagem original: ${findError.message}`
+    );
+  }
+
+  const original = rows?.[0];
+
+  if (!original) {
+    console.warn("[MESSAGE_EDIT] Mensagem original não encontrada:", {
+      companyId,
+      userId,
+      originalMessageId: normalizedOriginalId,
+    });
+
+    return {
+      found: false,
+      updated: false,
+      leadId: null,
+    };
+  }
+
+  const previousPayload = asObject(original.payload);
+  const editedAt = new Date().toISOString();
+
+  const { error: updateError } = await supabase
+    .from("messages")
+    .update({
+      content: normalizedText,
+      event: "message_edited",
+      payload: {
+        ...previousPayload,
+        edited: true,
+        edited_at: editedAt,
+        edit_event_message_id: editEventMessageId || null,
+      },
+    })
+    .eq("id", original.id)
+    .eq("company_id", companyId)
+    .eq("owner_user_id", userId);
+
+  if (updateError) {
+    console.error("[MESSAGE_EDIT] Erro ao atualizar mensagem:", {
+      messageId: original.id,
+      originalMessageId: normalizedOriginalId,
+      error: updateError,
+    });
+
+    throw new Error(
+      `Não foi possível atualizar a mensagem editada: ${updateError.message}`
+    );
+  }
+
+  /*
+   * Se a mensagem editada ainda for a última mensagem recebida do lead,
+   * atualiza também o preview do Inbox. Não altera unread_count, Kanban,
+   * last_message_at nem automações.
+   */
+  if (original.lead_id) {
+    const { data: latestRows, error: latestError } = await supabase
+      .from("messages")
+      .select("id")
+      .eq("company_id", companyId)
+      .eq("owner_user_id", userId)
+      .eq("lead_id", original.lead_id)
+      .eq("direction", "received")
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (latestError) {
+      console.error("[MESSAGE_EDIT] Erro ao verificar última mensagem:", {
+        leadId: original.lead_id,
+        error: latestError,
+      });
+    } else if (latestRows?.[0]?.id === original.id) {
+      const { error: leadUpdateError } = await supabase
+        .from("leads")
+        .update({
+          last_message: normalizedText,
+          updated_at: editedAt,
+        })
+        .eq("id", original.lead_id)
+        .eq("company_id", companyId)
+        .eq("owner_user_id", userId);
+
+      if (leadUpdateError) {
+        console.error("[MESSAGE_EDIT] Mensagem atualizada, mas preview do lead falhou:", {
+          leadId: original.lead_id,
+          error: leadUpdateError,
+        });
+      }
+    }
+  }
+
+  console.log("[MESSAGE_EDIT] Mensagem atualizada:", {
+    originalMessageId: normalizedOriginalId,
+    messageRowId: original.id,
+    leadId: original.lead_id || null,
+  });
+
+  return {
+    found: true,
+    updated: true,
+    leadId: original.lead_id || null,
+  };
+}
+
 export async function POST(req: Request) {
   try {
     const supabase = getSupabase();
@@ -3439,6 +3592,58 @@ export async function POST(req: Request) {
       userId,
       sessionId
     );
+
+    /*
+     * Edição de mensagem recebida do WhatsApp.
+     *
+     * Esse evento atualiza somente a mensagem já existente e retorna antes
+     * de toda a lógica normal de entrada. Assim não cria duplicata, não
+     * incrementa unread_count, não move Kanban e não dispara chatbot.
+     */
+    const incomingEvent = clean(
+      body?.event ||
+        body?.eventType ||
+        body?.event_type ||
+        ""
+    ).toLowerCase();
+
+    if (incomingEvent === "message_edit") {
+      const originalMessageId = clean(
+        body?.originalMessageId ||
+          body?.original_message_id ||
+          ""
+      );
+
+      const editedText = getIncomingText(body);
+
+      if (!originalMessageId || !editedText) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Edição sem ID original ou novo texto.",
+          },
+          { status: 400 }
+        );
+      }
+
+      const editResult = await applyIncomingMessageEdit({
+        supabase,
+        companyId,
+        userId,
+        originalMessageId,
+        editedText,
+        editEventMessageId: messageId,
+      });
+
+      return NextResponse.json({
+        success: true,
+        action: editResult.updated
+          ? "message_edited"
+          : "message_edit_original_not_found",
+        original_message_id: originalMessageId,
+        lead_id: editResult.leadId,
+      });
+    }
 
     const mediaUrl = await persistIncomingMedia({
       supabase,

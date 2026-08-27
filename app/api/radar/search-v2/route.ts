@@ -89,11 +89,6 @@ async function getUsage(
   const clientId = access.userId;
   const month = currentMonthKey();
 
-  const defaultLimit =
-    Number(access.userRadarMonthlyLimit || 0) ||
-    Number(access.planRadarLimit || 0) ||
-    500;
-
   const usage = await prisma.prospectUsage.upsert({
     where: {
       company_id_clientId_month: {
@@ -108,7 +103,7 @@ async function getUsage(
       branch_id: access.branchId || null,
       clientId,
       month,
-      monthlyLimit: defaultLimit,
+      monthlyLimit: 0,
       used: 0,
     },
   });
@@ -117,11 +112,9 @@ async function getUsage(
     clientId,
     month,
     used: usage.used,
-    limit: usage.monthlyLimit || defaultLimit,
-    remaining: Math.max(
-      0,
-      (usage.monthlyLimit || defaultLimit) - usage.used
-    ),
+    limit: 0,
+    remaining: null,
+    unlimited: true,
   };
 }
 
@@ -186,7 +179,12 @@ export async function GET(req: NextRequest) {
         ? Number(creditMaxRaw.replace(",", "."))
         : undefined;
 
-    const requestedLimit = Number(searchParams.get("limit") || 100);
+    const rawLimit = searchParams.get("limit");
+    const requestedLimit =
+      rawLimit === "0"
+        ? 0
+        : Number(rawLimit || 100);
+
     const requestedPage = Number(searchParams.get("page") || 1);
 
     const view =
@@ -213,9 +211,29 @@ export async function GET(req: NextRequest) {
 
     const exportedIds = exports.map((item) => item.prospectId);
 
-    const take = Math.max(1, Math.min(requestedLimit, 500));
-    const page = Math.max(1, Number.isFinite(requestedPage) ? requestedPage : 1);
-    const skip = (page - 1) * take;
+    const unlimited = requestedLimit === 0;
+
+    /*
+     * "Sem limite" comercial não significa carregar a base inteira em RAM.
+     * No modo ilimitado, entregamos lotes de 250 registros.
+     */
+    const SAFE_BATCH_SIZE = 250;
+
+    const page = Math.max(
+      1,
+      Number.isFinite(requestedPage) ? requestedPage : 1
+    );
+
+    const boundedTake = Math.max(
+      1,
+      Math.min(
+        Number.isFinite(requestedLimit) ? requestedLimit : 100,
+        500
+      )
+    );
+
+    const pageSize = unlimited ? SAFE_BATCH_SIZE : boundedTake;
+    const skip = (page - 1) * pageSize;
 
     const currentSnapshot = await prisma.radar_snapshots.findFirst({
       where: {
@@ -359,18 +377,32 @@ export async function GET(req: NextRequest) {
       ...(extraAnd.length ? { AND: extraAnd } : {}),
     } as any;
 
-    const [prospectsRaw, totalFound] = await Promise.all([
-      prisma.prospect.findMany({
-        where: prospectWhere,
-        orderBy: getSort(sortBy, sortDir),
-        skip,
-        take,
-      }),
+    /*
+     * Consulta segura:
+     * - nunca carrega a base inteira;
+     * - no modo ilimitado busca 251 para saber se existe próximo lote;
+     * - evita Promise.all entre findMany/count para não disputar pool pequeno.
+     */
+    const rawRows = await prisma.prospect.findMany({
+      where: prospectWhere,
+      orderBy: getSort(sortBy, sortDir),
+      skip,
+      take: unlimited ? pageSize + 1 : pageSize,
+    });
 
-      prisma.prospect.count({
-        where: prospectWhere,
-      }),
-    ]);
+    const hasMore = unlimited
+      ? rawRows.length > pageSize
+      : false;
+
+    const prospectsRaw = unlimited
+      ? rawRows.slice(0, pageSize)
+      : rawRows;
+
+    const totalFound = unlimited
+      ? null
+      : await prisma.prospect.count({
+          where: prospectWhere,
+        });
 
     const exportedSet = new Set(exportedIds);
 
@@ -410,8 +442,12 @@ export async function GET(req: NextRequest) {
       total: prospects.length,
       totalFound,
       page,
-      limit: take,
-      totalPages: Math.max(1, Math.ceil(totalFound / take)),
+      limit: unlimited ? 0 : pageSize,
+      batchSize: pageSize,
+      hasMore,
+      totalPages: unlimited
+        ? null
+        : Math.max(1, Math.ceil(Number(totalFound || 0) / pageSize)),
       usage,
       snapshot: currentSnapshot
         ? {

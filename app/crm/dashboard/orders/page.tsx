@@ -133,6 +133,13 @@ export default function OrdersPage() {
   const [comparison, setComparison] = useState<any>(null);
   const [orders, setOrders] = useState<any[]>([]);
   const [performance, setPerformance] = useState<any>(null);
+  const [performancePeriod, setPerformancePeriod] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [goalEditing, setGoalEditing] = useState(false);
+  const [goalValue, setGoalValue] = useState("");
+  const [savingGoal, setSavingGoal] = useState(false);
   const [deliverySummary, setDeliverySummary] = useState<any>(null);
   const [loadingOcr, setLoadingOcr] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -177,10 +184,64 @@ export default function OrdersPage() {
     setLoadingOrders(false);
   }
 
-  async function loadPerformance() {
-    const res = await fetch("/api/crm/performance", { cache: "no-store" });
+  async function loadPerformance(period = performancePeriod) {
+    const [year, month] = period.split("-").map(Number);
+
+    const params = new URLSearchParams({
+      year: String(year),
+      month: String(month),
+    });
+
+    const res = await fetch(`/api/crm/performance?${params.toString()}`, {
+      cache: "no-store",
+    });
+
     const data = await res.json();
-    if (!data.error) setPerformance(data);
+
+    if (!data.error) {
+      setPerformance(data);
+      setGoalValue(String(Number(data?.seller?.goal_amount || 0)));
+    }
+  }
+
+  async function saveMonthlyGoal() {
+    const [year, month] = performancePeriod.split("-").map(Number);
+    const normalized = Number(
+      String(goalValue || "0").replace(/\./g, "").replace(",", ".")
+    );
+
+    if (!Number.isFinite(normalized) || normalized < 0) {
+      alert("Informe uma meta válida.");
+      return;
+    }
+
+    setSavingGoal(true);
+
+    try {
+      const res = await fetch("/api/crm/performance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          year,
+          month,
+          goal_amount: normalized,
+          seller_id: performance?.scope?.seller_id || undefined,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Erro ao salvar meta.");
+      }
+
+      setGoalEditing(false);
+      await loadPerformance(performancePeriod);
+    } catch (error: any) {
+      alert(error?.message || "Erro ao salvar meta.");
+    } finally {
+      setSavingGoal(false);
+    }
   }
 
   async function loadDeliverySummary() {
@@ -195,7 +256,11 @@ export default function OrdersPage() {
   }, [filters.period, filters.from, filters.to, filters.status, filters.orderBy, filters.limit]);
 
   useEffect(() => {
-    loadPerformance();
+    loadPerformance(performancePeriod);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [performancePeriod]);
+
+  useEffect(() => {
     loadDeliverySummary();
   }, []);
 
@@ -409,6 +474,29 @@ export default function OrdersPage() {
 
   const seller = performance?.seller || {};
   const progress = Number(seller.percent || 0);
+  const selectedPeriodStatus = String(seller.period_status || "current");
+  const history = Array.isArray(performance?.history) ? performance.history : [];
+
+  const performancePeriodOptions = useMemo(() => {
+    const options: Array<{ value: string; label: string }> = [];
+    const now = new Date();
+
+    for (let i = 0; i < 12; i += 1) {
+      const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const value = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      const label = date.toLocaleDateString("pt-BR", {
+        month: "long",
+        year: "numeric",
+      });
+
+      options.push({
+        value,
+        label: label.charAt(0).toUpperCase() + label.slice(1),
+      });
+    }
+
+    return options;
+  }, []);
 
   return (
     <main className="min-h-screen bg-[#F7F8FA] p-4 md:p-6">
@@ -448,6 +536,76 @@ export default function OrdersPage() {
           </div>
         </section>
 
+        <section className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+          <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-700">
+                Performance mensal
+              </p>
+              <h2 className="mt-1 text-lg font-black text-slate-950">
+                Meta e evolução de vendas
+              </h2>
+              <p className="mt-1 text-sm font-medium text-slate-500">
+                Consulte o mês atual ou meses anteriores e acompanhe quanto da meta foi atingido.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <select
+                value={performancePeriod}
+                onChange={(e) => {
+                  setPerformancePeriod(e.target.value);
+                  setGoalEditing(false);
+                }}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 outline-none focus:border-emerald-400"
+              >
+                {performancePeriodOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setGoalValue(String(Number(seller.goal_amount || 0)));
+                  setGoalEditing((current) => !current);
+                }}
+                className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-black text-white transition hover:bg-emerald-700"
+              >
+                {goalEditing ? "Cancelar" : "Definir minha meta"}
+              </button>
+            </div>
+          </div>
+
+          {goalEditing && (
+            <div className="mt-4 flex flex-col gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-4 sm:flex-row sm:items-end">
+              <label className="grid flex-1 gap-1">
+                <span className="text-xs font-black uppercase text-emerald-700">
+                  Meta do mês selecionado
+                </span>
+                <input
+                  value={goalValue}
+                  onChange={(e) => setGoalValue(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="100000"
+                  className="rounded-2xl border border-emerald-200 bg-white px-4 py-3 text-sm font-black text-slate-900 outline-none focus:border-emerald-500"
+                />
+              </label>
+
+              <button
+                type="button"
+                onClick={saveMonthlyGoal}
+                disabled={savingGoal}
+                className="rounded-2xl bg-slate-950 px-5 py-3 text-sm font-black text-white transition hover:bg-slate-800 disabled:opacity-60"
+              >
+                {savingGoal ? "Salvando..." : "Salvar meta"}
+              </button>
+            </div>
+          )}
+        </section>
+
         <section className="grid gap-4 md:grid-cols-4">
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <p className="text-xs font-black uppercase text-slate-400">Vendido no mês</p>
@@ -468,21 +626,114 @@ export default function OrdersPage() {
           </div>
 
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-xs font-black uppercase text-slate-400">Falta vender</p>
-            <strong className="mt-2 block text-2xl font-black text-red-600">{money(seller.remaining)}</strong>
+            <p className="text-xs font-black uppercase text-slate-400">
+              {Number(seller.exceeded || 0) > 0 ? "Meta superada" : selectedPeriodStatus === "past" ? "Faltou para meta" : "Falta vender"}
+            </p>
+            <strong
+              className={`mt-2 block text-2xl font-black ${
+                Number(seller.exceeded || 0) > 0
+                  ? "text-emerald-700"
+                  : "text-red-600"
+              }`}
+            >
+              {money(
+                Number(seller.exceeded || 0) > 0
+                  ? seller.exceeded
+                  : seller.remaining
+              )}
+            </strong>
             <p className="mt-1 text-xs font-bold text-slate-500">
-              Necessário/dia: {money(seller.daily_needed)}
+              {selectedPeriodStatus === "current"
+                ? `Necessário/dia: ${money(seller.daily_needed)}`
+                : selectedPeriodStatus === "past"
+                  ? "Resultado fechado do período"
+                  : "Mês futuro"}
             </p>
           </div>
 
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-xs font-black uppercase text-slate-400">Projeção do mês</p>
+            <p className="text-xs font-black uppercase text-slate-400">
+              {selectedPeriodStatus === "current" ? "Projeção do mês" : "Resultado do mês"}
+            </p>
             <strong className="mt-2 block text-2xl font-black text-emerald-700">
-              {money(seller.projected_month_total)}
+              {money(
+                selectedPeriodStatus === "current"
+                  ? seller.projected_month_total
+                  : seller.total_sales
+              )}
             </strong>
             <p className="mt-1 text-xs font-bold text-slate-500">
               Média diária: {money(seller.daily_average)}
             </p>
+          </div>
+        </section>
+
+        <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-700">
+              Evolução
+            </p>
+            <h2 className="mt-1 text-lg font-black text-slate-950">
+              Meta batida nos últimos meses
+            </h2>
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+            {history.map((item: any) => {
+              const label = new Date(item.year, item.month - 1, 1).toLocaleDateString(
+                "pt-BR",
+                { month: "short", year: "2-digit" }
+              );
+
+              const itemPercent = Number(item.percent || 0);
+              const hit = itemPercent >= 100;
+
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => setPerformancePeriod(item.key)}
+                  className={`rounded-2xl border p-4 text-left transition ${
+                    item.key === performancePeriod
+                      ? "border-emerald-300 bg-emerald-50"
+                      : "border-slate-100 bg-slate-50 hover:border-emerald-200"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-black uppercase text-slate-500">
+                      {label}
+                    </span>
+                    <span
+                      className={`rounded-full px-2 py-1 text-[10px] font-black ${
+                        hit
+                          ? "bg-emerald-100 text-emerald-700"
+                          : item.goal_amount > 0
+                            ? "bg-amber-100 text-amber-700"
+                            : "bg-slate-200 text-slate-500"
+                      }`}
+                    >
+                      {hit ? "Meta batida" : item.goal_amount > 0 ? "Em evolução" : "Sem meta"}
+                    </span>
+                  </div>
+
+                  <strong className="mt-3 block text-xl font-black text-slate-950">
+                    {itemPercent.toFixed(1)}%
+                  </strong>
+
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-white">
+                    <div
+                      className="h-full rounded-full bg-emerald-600"
+                      style={{ width: `${Math.min(itemPercent, 100)}%` }}
+                    />
+                  </div>
+
+                  <div className="mt-3 text-[11px] font-bold leading-5 text-slate-500">
+                    <div>Vendido: {money(item.total_sales)}</div>
+                    <div>Meta: {money(item.goal_amount)}</div>
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </section>
 

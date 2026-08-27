@@ -18,11 +18,6 @@ async function getUsage(
   const clientId = access.userId;
   const month = currentMonthKey();
 
-  const defaultLimit =
-    Number(access.userRadarMonthlyLimit || 0) ||
-    Number(access.planRadarLimit || 0) ||
-    500;
-
   const usage = await prisma.prospectUsage.upsert({
     where: {
       company_id_clientId_month: {
@@ -37,7 +32,7 @@ async function getUsage(
       branch_id: access.branchId || null,
       clientId,
       month,
-      monthlyLimit: defaultLimit,
+      monthlyLimit: 0,
       used: 0,
     },
   });
@@ -46,11 +41,9 @@ async function getUsage(
     clientId,
     month,
     used: usage.used,
-    limit: usage.monthlyLimit || defaultLimit,
-    remaining: Math.max(
-      0,
-      (usage.monthlyLimit || defaultLimit) - usage.used
-    ),
+    limit: 0,
+    remaining: null,
+    unlimited: true,
   };
 }
 
@@ -177,17 +170,6 @@ export async function POST(req: NextRequest) {
 
     const newIds = validIds.filter((id) => !alreadyIds.has(id));
 
-    if (newIds.length > usage.remaining) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Limite mensal insuficiente. Disponível: ${usage.remaining}`,
-          usage,
-        },
-        { status: 400 }
-      );
-    }
-
     if (newIds.length) {
       await prisma.$transaction(async (tx) => {
         for (const prospectId of newIds) {
@@ -202,6 +184,10 @@ export async function POST(req: NextRequest) {
           });
         }
 
+        /*
+         * Mantemos apenas a contagem histórica de uso para métricas.
+         * Não existe mais bloqueio por cota mensal.
+         */
         await tx.prospectUsage.update({
           where: {
             company_id_clientId_month: {
