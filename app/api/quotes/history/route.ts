@@ -35,8 +35,8 @@ function normalizeQuoteItem(item: any) {
     cleanString(item?.codigo);
 
   const name =
-    cleanString(item?.name) ||
     cleanString(item?.productName) ||
+    cleanString(item?.name) ||
     cleanString(item?.product) ||
     cleanString(item?.officialName) ||
     cleanString(item?.descricao) ||
@@ -55,25 +55,102 @@ function normalizeQuoteItem(item: any) {
   );
 
   const unitPrice = asNumber(
-    item?.unitPrice ?? item?.price ?? item?.precoUnitario,
+    item?.unitPrice ??
+      item?.discountedUnitPrice ??
+      item?.price ??
+      item?.precoUnitario,
     0
+  );
+
+  const originalUnitPrice = asNumber(
+    item?.originalUnitPrice,
+    unitPrice
+  );
+
+  const discountedUnitPrice = asNumber(
+    item?.discountedUnitPrice,
+    unitPrice
+  );
+
+  const discountPercent = asNumber(
+    item?.discountPercent,
+    0
+  );
+
+  const discountAmountPerUnit = asNumber(
+    item?.discountAmountPerUnit,
+    Math.max(0, originalUnitPrice - discountedUnitPrice)
+  );
+
+  const totalDiscountAmount = asNumber(
+    item?.totalDiscountAmount,
+    discountAmountPerUnit * quantity
   );
 
   const total = asNumber(
     item?.subtotal ?? item?.total ?? item?.totalItem,
-    unitPrice * quantity
+    discountedUnitPrice * quantity
   );
 
   return {
     code,
     name,
-    category: cleanString(item?.category ?? item?.categoria),
-    subcategory: cleanString(item?.subcategory ?? item?.subcategoria),
-    brand: cleanString(item?.brand ?? item?.marca),
+
+    raw: cleanString(item?.raw),
+
+    category: cleanString(
+      item?.category ?? item?.categoria
+    ),
+
+    subcategory: cleanString(
+      item?.subcategory ?? item?.subcategoria
+    ),
+
+    brand: cleanString(
+      item?.brand ?? item?.marca
+    ),
+
     quantity,
     unit,
-    unitPrice,
+
+    billedQuantity: asNumber(
+      item?.billedQuantity,
+      quantity
+    ),
+
+    tableUnit: cleanString(item?.tableUnit),
+
+    originalUnitPrice,
+    discountedUnitPrice,
+
+    unitPrice: discountedUnitPrice,
+
+    originalTableUnitPrice: asNumber(
+      item?.originalTableUnitPrice,
+      0
+    ),
+
+    tableUnitPrice: asNumber(
+      item?.tableUnitPrice,
+      0
+    ),
+
+    discountPercent,
+    discountAmountPerUnit,
+    totalDiscountAmount,
+
+    equivalentText: cleanString(
+      item?.equivalentText
+    ),
+
+    subtotal: total,
     total,
+
+    priceBreakdown:
+      item?.priceBreakdown &&
+      typeof item.priceBreakdown === "object"
+        ? item.priceBreakdown
+        : null,
   };
 }
 
@@ -88,6 +165,21 @@ function formatCurrency(value: number) {
     style: "currency",
     currency: "BRL",
   });
+}
+
+function generateQuoteNumber() {
+  const now = new Date();
+
+  const yy = String(now.getFullYear()).slice(-2);
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+
+  const token = Math.random()
+    .toString(36)
+    .slice(2, 6)
+    .toUpperCase();
+
+  return `COT-${yy}${mm}${dd}-${token}`;
 }
 
 export async function GET(req: NextRequest) {
@@ -208,21 +300,6 @@ export async function POST(req: NextRequest) {
         body.name
     );
 
-    if (
-      !incomingCustomerId &&
-      !customerInternalCode &&
-      !customerName
-    ) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Selecione ou informe um cliente antes de salvar o histórico.",
-        },
-        { status: 400 }
-      );
-    }
-
     const rawItems = Array.isArray(body.items) ? body.items : [];
     const items = rawItems
       .map(normalizeQuoteItem)
@@ -320,28 +397,65 @@ export async function POST(req: NextRequest) {
         ? userId
         : resolvedCustomer?.seller_id || userId;
 
+    const quoteNumber = generateQuoteNumber();
+
+    const customerDisplayName =
+      customerName ||
+      customerInternalCode ||
+      "Cliente não identificado";
+
+    const itemsWithDiscount = items.filter(
+      (item) => Number(item.discountPercent || 0) > 0
+    );
+
+    const totalDiscountAmount = items.reduce(
+      (sum, item) =>
+        sum + Number(item.totalDiscountAmount || 0),
+      0
+    );
+
     const metadata = {
       source: "quotes_ai",
       type: "quote_history",
       status: "quoted",
+
+      quoteNumber,
+
       companyId,
       userId: authenticatedUserId,
+
       customerId,
       customerInternalCode,
-      customerName,
+
+      customerName: customerDisplayName,
+      customerIdentified: Boolean(
+        customerId ||
+          customerInternalCode ||
+          customerName
+      ),
+
       title:
         cleanString(body.title) ||
-        `Cotação ${
-          customerName || customerInternalCode || ""
-        }`.trim(),
+        `${quoteNumber} • ${customerDisplayName}`,
+
       requestText: cleanString(body.requestText),
       outputText: cleanString(body.outputText),
+
       total,
+
+      totalDiscountAmount,
+      itemsWithDiscount: itemsWithDiscount.length,
+
       tableDate: cleanString(body.tableDate),
-      priceDisplayMode: cleanString(body.priceDisplayMode),
+      priceDisplayMode: cleanString(
+        body.priceDisplayMode
+      ),
+
       items,
       itemCount: items.length,
+
       createdAt: new Date().toISOString(),
+
       metadata: body.metadata || {},
     };
 

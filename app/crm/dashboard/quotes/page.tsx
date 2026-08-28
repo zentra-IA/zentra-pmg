@@ -39,6 +39,52 @@ type Customer = {
   segment?: string | null;
 };
 
+
+type SavedQuoteItem = {
+  code?: string | null;
+  name?: string | null;
+  raw?: string | null;
+  quantity?: number;
+  unit?: string | null;
+  billedQuantity?: number;
+  tableUnit?: string | null;
+  originalUnitPrice?: number;
+  discountedUnitPrice?: number;
+  unitPrice?: number;
+  originalTableUnitPrice?: number;
+  tableUnitPrice?: number;
+  discountPercent?: number;
+  discountAmountPerUnit?: number;
+  totalDiscountAmount?: number;
+  equivalentText?: string | null;
+  subtotal?: number;
+  total?: number;
+  priceBreakdown?: any;
+};
+
+type SavedQuote = {
+  id: string;
+  quoteNumber?: string | null;
+  createdAt?: string | null;
+  customerId?: string | null;
+  customerInternalCode?: string | null;
+  customerName?: string | null;
+  customerIdentified?: boolean;
+  requestText?: string | null;
+  outputText?: string | null;
+  total?: number;
+  totalDiscountAmount?: number;
+  itemsWithDiscount?: number;
+  tableDate?: string | null;
+  priceDisplayMode?: string | null;
+  itemCount?: number;
+  items?: SavedQuoteItem[];
+  metadata?: {
+    showProductId?: boolean;
+    [key: string]: any;
+  } | null;
+};
+
 const unitOptions = [
   ["", "Usar padrão do produto"],
   ["kg", "KG"],
@@ -311,6 +357,73 @@ function optionPrices(option: any) {
   return parts.join(" | ");
 }
 
+function getDiscountedSavedItems(saved: SavedQuote): SavedQuoteItem[] {
+  const items = Array.isArray(saved.items) ? saved.items : [];
+
+  return items.filter(
+    (item) => Number(item.discountPercent || 0) > 0
+  );
+}
+
+function getSavedQuoteDiscountAmount(saved: SavedQuote): number {
+  const stored = Number(saved.totalDiscountAmount || 0);
+
+  if (stored > 0) return stored;
+
+  return getDiscountedSavedItems(saved).reduce(
+    (sum, item) =>
+      sum + Number(item.totalDiscountAmount || 0),
+    0
+  );
+}
+
+function formatPercentBR(value: number | undefined | null) {
+  return Number(value || 0).toLocaleString("pt-BR", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+}
+
+function formatSavedQuoteDate(value?: string | null) {
+  if (!value) return "Data não informada";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  return date.toLocaleString("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+}
+
+function buildRequestFromSavedQuote(saved: SavedQuote) {
+  const original = String(saved.requestText || "").trim();
+  if (original) return original;
+
+  const items = Array.isArray(saved.items) ? saved.items : [];
+
+  return items
+    .map((item) => {
+      const quantity = Number(item.quantity || 1);
+      const unit = String(item.unit || "").trim();
+      const name = String(item.name || item.code || "produto").trim();
+      const discount = Number(item.discountPercent || 0);
+
+      return [
+        quantity,
+        unit,
+        name,
+        discount > 0 ? `desconto ${discount}%` : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+    })
+    .join("\n");
+}
+
 export default function QuotesPage() {
   const [clientName, setClientName] = useState("");
   const [clientId, setClientId] = useState("");
@@ -348,9 +461,24 @@ export default function QuotesPage() {
   const [priceUploading, setPriceUploading] = useState(false);
   const [priceUploadStatus, setPriceUploadStatus] = useState("");
 
+  const [activeTab, setActiveTab] = useState<"new" | "saved">("new");
+  const [savedQuotes, setSavedQuotes] = useState<SavedQuote[]>([]);
+  const [savedQuotesLoading, setSavedQuotesLoading] = useState(false);
+  const [savedQuotesError, setSavedQuotesError] = useState("");
+  const [savedQuoteSearch, setSavedQuoteSearch] = useState("");
+  const [savedQuotePeriod, setSavedQuotePeriod] = useState("all");
+  const [savedQuoteDiscount, setSavedQuoteDiscount] = useState("all");
+  const [openedSavedQuote, setOpenedSavedQuote] = useState<SavedQuote | null>(null);
+
   useEffect(() => {
     fetchCustomers();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === "saved") {
+      fetchSavedQuotes();
+    }
+  }, [activeTab]);
 
   async function fetchCustomers(q = "") {
     try {
@@ -369,6 +497,63 @@ export default function QuotesPage() {
       .filter((c) => normalizeQuoteText([c.legal_name, c.trade_name, c.internal_code, c.erp_code, c.document, c.whatsapp].join(" ")).includes(q))
       .slice(0, 10);
   }, [customerSearch, customers]);
+
+  const filteredSavedQuotes = useMemo(() => {
+    const query = normalizeQuoteText(savedQuoteSearch);
+    const now = Date.now();
+
+    return savedQuotes.filter((saved) => {
+      if (query) {
+        const itemText = (saved.items || [])
+          .map((item) => [item.code, item.name, item.raw].filter(Boolean).join(" "))
+          .join(" ");
+
+        const haystack = normalizeQuoteText(
+          [
+            saved.quoteNumber,
+            saved.customerName,
+            saved.customerInternalCode,
+            saved.requestText,
+            itemText,
+          ]
+            .filter(Boolean)
+            .join(" ")
+        );
+
+        const tokens = query.split(/\s+/).filter(Boolean);
+        if (!tokens.every((token) => haystack.includes(token))) {
+          return false;
+        }
+      }
+
+      const discountedItems = getDiscountedSavedItems(saved);
+
+      if (savedQuoteDiscount === "with") {
+        if (discountedItems.length <= 0) return false;
+      }
+
+      if (savedQuoteDiscount === "without") {
+        if (discountedItems.length > 0) return false;
+      }
+
+      if (savedQuotePeriod !== "all") {
+        const days = Number(savedQuotePeriod);
+        const createdAt = saved.createdAt ? new Date(saved.createdAt).getTime() : NaN;
+
+        if (!Number.isFinite(createdAt)) return false;
+
+        const minDate = now - days * 24 * 60 * 60 * 1000;
+        if (createdAt < minDate) return false;
+      }
+
+      return true;
+    });
+  }, [
+    savedQuotes,
+    savedQuoteSearch,
+    savedQuotePeriod,
+    savedQuoteDiscount,
+  ]);
 
   const currentGroup = candidateGroups[currentConfirmIndex];
   const filteredCurrentOptions = useMemo(() => {
@@ -762,9 +947,88 @@ export default function QuotesPage() {
     setStatus("Cotação copiada. Agora é só colar no WhatsApp.");
   }
 
+  async function fetchSavedQuotes() {
+    setSavedQuotesLoading(true);
+    setSavedQuotesError("");
+
+    try {
+      const res = await fetch("/api/quotes/history?limit=500", {
+        cache: "no-store",
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        setSavedQuotes([]);
+        setSavedQuotesError(
+          data.error || "Erro ao carregar cotações salvas."
+        );
+        return;
+      }
+
+      setSavedQuotes(
+        Array.isArray(data.quotes) ? data.quotes : []
+      );
+    } catch (err: any) {
+      setSavedQuotes([]);
+      setSavedQuotesError(
+        err?.message || "Erro ao carregar cotações salvas."
+      );
+    } finally {
+      setSavedQuotesLoading(false);
+    }
+  }
+
+  function reuseSavedQuote(saved: SavedQuote) {
+    const rebuiltRequest = buildRequestFromSavedQuote(saved);
+
+    setRequestText(rebuiltRequest);
+
+    if (saved.customerIdentified) {
+      setCustomerId(saved.customerId || "");
+      setClientId(saved.customerInternalCode || "");
+      setClientName(saved.customerName || "");
+      setCustomerSearch(saved.customerName || "");
+    } else {
+      setCustomerId("");
+      setClientId("");
+      setClientName("");
+      setCustomerSearch("");
+    }
+
+    if (saved.priceDisplayMode) {
+      setDisplayMode(saved.priceDisplayMode);
+    }
+
+    if (typeof saved.metadata?.showProductId === "boolean") {
+      setShowProductId(saved.metadata.showProductId);
+    }
+
+    setQuote(null);
+    setCandidateGroups([]);
+    setAutoItems([]);
+    setSavedStatus("");
+    setStatus(
+      `Cotação ${saved.quoteNumber || ""} carregada. Clique em "Buscar e confirmar produtos" para recalcular com a tabela atual.`
+    );
+    setActiveTab("new");
+    setOpenedSavedQuote(null);
+
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }
+
+  async function copySavedQuote(saved: SavedQuote) {
+    const text = String(saved.outputText || "").trim();
+    if (!text) return;
+
+    await navigator.clipboard.writeText(text);
+  }
+
   async function saveQuote() {
     if (!quote) return;
-    setSavedStatus("Salvando histórico...");
+    setSavedStatus("Salvando cotação...");
     try {
       const res = await fetch("/api/quotes/history", {
         method: "POST",
@@ -794,7 +1058,15 @@ export default function QuotesPage() {
         }),
       });
       const data = await res.json();
-      setSavedStatus(data.success ? "Histórico salvo com sucesso." : data.error || "Erro ao salvar.");
+      setSavedStatus(
+        data.success
+          ? `${data.quote?.quoteNumber || "Cotação"} salva com sucesso.`
+          : data.error || "Erro ao salvar cotação."
+      );
+
+      if (data.success) {
+        await fetchSavedQuotes();
+      }
     } catch (err: any) {
       setSavedStatus(err?.message || "Erro ao salvar.");
     }
@@ -829,6 +1101,36 @@ export default function QuotesPage() {
           </div>
         </header>
 
+        <section className="rounded-[2rem] border border-slate-200 bg-white p-2 shadow-sm">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveTab("new")}
+              className={`rounded-[1.35rem] px-4 py-3 text-sm font-black transition ${
+                activeTab === "new"
+                  ? "bg-slate-950 text-white shadow-sm"
+                  : "bg-white text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              Nova cotação
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("saved")}
+              className={`rounded-[1.35rem] px-4 py-3 text-sm font-black transition ${
+                activeTab === "saved"
+                  ? "bg-emerald-600 text-white shadow-sm"
+                  : "bg-white text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              Cotações salvas
+            </button>
+          </div>
+        </section>
+
+        {activeTab === "new" ? (
+          <>
         <section className="rounded-[2rem] border border-emerald-200 bg-gradient-to-br from-emerald-50 to-white p-5 shadow-sm sm:p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
@@ -1088,12 +1390,234 @@ export default function QuotesPage() {
                 onClick={saveQuote}
                 className="rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm font-black text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Salvar histórico
+                Salvar cotação
               </button>
               {savedStatus && <p className="text-center text-xs font-semibold text-slate-500">{savedStatus}</p>}
             </div>
           </aside>
         </section>
+          </>
+        ) : (
+          <section className="space-y-5">
+            <div className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <div className="inline-flex rounded-full bg-emerald-50 px-3 py-1 text-xs font-black uppercase tracking-wide text-emerald-700">
+                    Biblioteca comercial
+                  </div>
+                  <h2 className="mt-3 text-2xl font-black text-slate-950">
+                    Cotações salvas
+                  </h2>
+                  <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-500">
+                    Busque por cliente, número da cotação, código ou produto. Abra a versão original ou carregue a mesma base para recotar com os preços atuais.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={fetchSavedQuotes}
+                  disabled={savedQuotesLoading}
+                  className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-black text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                >
+                  {savedQuotesLoading ? "Atualizando..." : "Atualizar lista"}
+                </button>
+              </div>
+
+              <div className="mt-6 grid gap-3 lg:grid-cols-[minmax(0,1fr)_180px_190px]">
+                <input
+                  value={savedQuoteSearch}
+                  onChange={(e) => setSavedQuoteSearch(e.target.value)}
+                  placeholder="Buscar cliente, COT-..., produto ou código"
+                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-emerald-500 focus:bg-white"
+                />
+
+                <select
+                  value={savedQuotePeriod}
+                  onChange={(e) => setSavedQuotePeriod(e.target.value)}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:border-emerald-500"
+                >
+                  <option value="all">Todo período</option>
+                  <option value="7">Últimos 7 dias</option>
+                  <option value="30">Últimos 30 dias</option>
+                  <option value="90">Últimos 90 dias</option>
+                </select>
+
+                <select
+                  value={savedQuoteDiscount}
+                  onChange={(e) => setSavedQuoteDiscount(e.target.value)}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:border-emerald-500"
+                >
+                  <option value="all">Todos os descontos</option>
+                  <option value="with">Com desconto</option>
+                  <option value="without">Sem desconto</option>
+                </select>
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-2 text-xs font-bold text-slate-500">
+                <span className="rounded-full bg-slate-100 px-3 py-1.5">
+                  {filteredSavedQuotes.length} cotação(ões)
+                </span>
+                <span className="rounded-full bg-slate-100 px-3 py-1.5">
+                  Busca também dentro dos itens
+                </span>
+              </div>
+
+              {savedQuotesError && (
+                <div className="mt-4 rounded-2xl border border-red-100 bg-red-50 p-4 text-sm font-semibold text-red-700">
+                  {savedQuotesError}
+                </div>
+              )}
+            </div>
+
+            {savedQuotesLoading && !savedQuotes.length ? (
+              <div className="rounded-[2rem] border border-slate-200 bg-white p-10 text-center text-sm font-semibold text-slate-500 shadow-sm">
+                Carregando cotações...
+              </div>
+            ) : filteredSavedQuotes.length ? (
+              <div className="grid gap-4 xl:grid-cols-2">
+                {filteredSavedQuotes.map((saved) => {
+                  const items = Array.isArray(saved.items) ? saved.items : [];
+                  const discountedItems = getDiscountedSavedItems(saved);
+                  const totalDiscountAmount = getSavedQuoteDiscountAmount(saved);
+
+                  const firstItems = items
+                    .slice(0, 3)
+                    .map((item) => item.name || item.code)
+                    .filter(Boolean);
+
+                  return (
+                    <article
+                      key={saved.id}
+                      className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm"
+                    >
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="inline-flex rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">
+                            {saved.quoteNumber || `Cotação ${saved.id.slice(0, 8)}`}
+                          </div>
+
+                          <h3 className="mt-3 truncate text-lg font-black text-slate-950">
+                            {saved.customerName || "Cliente não identificado"}
+                          </h3>
+
+                          <p className="mt-1 text-xs font-semibold text-slate-500">
+                            {formatSavedQuoteDate(saved.createdAt)}
+                          </p>
+                        </div>
+
+                        <div className="rounded-2xl bg-slate-950 px-4 py-3 text-right text-white">
+                          <p className="text-[10px] font-bold uppercase text-slate-300">
+                            Total
+                          </p>
+                          <p className="text-sm font-black">
+                            {moneyBR(saved.total || 0)}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 flex flex-wrap gap-2 text-xs font-bold">
+                        <span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-600">
+                          {Number(saved.itemCount || items.length)} item(ns)
+                        </span>
+
+                        {discountedItems.length > 0 ? (
+                          <span className="rounded-full bg-amber-50 px-3 py-1.5 text-amber-700">
+                            {discountedItems.length} com desconto
+                          </span>
+                        ) : (
+                          <span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-500">
+                            Sem desconto
+                          </span>
+                        )}
+
+                        {totalDiscountAmount > 0 && (
+                          <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-700">
+                            Desconto interno {moneyBR(totalDiscountAmount)}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                        <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">
+                          Itens
+                        </p>
+
+                        <p className="mt-2 text-sm leading-6 text-slate-700">
+                          {firstItems.length
+                            ? firstItems.join(" • ")
+                            : "Itens não disponíveis no histórico antigo."}
+                          {items.length > 3 ? ` • +${items.length - 3}` : ""}
+                        </p>
+                      </div>
+
+                      {discountedItems.length > 0 && (
+                        <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-[10px] font-black uppercase tracking-wide text-amber-700">
+                              Condições internas
+                            </p>
+                            <span className="text-[10px] font-bold text-amber-700">
+                              Não aparece ao cliente
+                            </span>
+                          </div>
+
+                          <div className="mt-3 space-y-2">
+                            {discountedItems.slice(0, 3).map((item, index) => (
+                              <div
+                                key={`${item.code || item.name || "item"}-${index}`}
+                                className="flex items-start justify-between gap-3 text-xs"
+                              >
+                                <span className="min-w-0 font-semibold text-slate-700">
+                                  {item.name || item.code || `Item ${index + 1}`}
+                                </span>
+                                <span className="shrink-0 rounded-full bg-white px-2.5 py-1 font-black text-amber-700">
+                                  {formatPercentBR(item.discountPercent)}%
+                                </span>
+                              </div>
+                            ))}
+
+                            {discountedItems.length > 3 && (
+                              <p className="text-xs font-bold text-amber-700">
+                                +{discountedItems.length - 3} item(ns) com desconto
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="mt-4 grid grid-cols-2 gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setOpenedSavedQuote(saved)}
+                          className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 transition hover:bg-slate-50"
+                        >
+                          Abrir original
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => reuseSavedQuote(saved)}
+                          className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-black text-white transition hover:bg-emerald-700"
+                        >
+                          Usar novamente
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="rounded-[2rem] border border-dashed border-slate-300 bg-white p-10 text-center shadow-sm">
+                <h3 className="text-lg font-black text-slate-900">
+                  Nenhuma cotação encontrada
+                </h3>
+                <p className="mt-2 text-sm text-slate-500">
+                  Ajuste os filtros ou salve uma nova cotação.
+                </p>
+              </div>
+            )}
+          </section>
+        )}
       </div>
 
       {quickCustomerOpen && (
@@ -1362,6 +1886,197 @@ export default function QuotesPage() {
                   </button>
                 </div>
               </section>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {openedSavedQuote && (
+        <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-950/50 p-3 backdrop-blur-sm">
+          <div className="mx-auto my-4 max-w-5xl rounded-[2rem] bg-white shadow-2xl">
+            <div className="border-b border-slate-100 p-5 sm:p-6">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="inline-flex rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">
+                    {openedSavedQuote.quoteNumber || "Cotação salva"}
+                  </div>
+
+                  <h3 className="mt-3 text-2xl font-black text-slate-950">
+                    {openedSavedQuote.customerName || "Cliente não identificado"}
+                  </h3>
+
+                  <p className="mt-1 text-sm font-semibold text-slate-500">
+                    {formatSavedQuoteDate(openedSavedQuote.createdAt)}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setOpenedSavedQuote(null)}
+                  className="rounded-full border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600"
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
+
+            <div className="grid gap-5 p-5 sm:p-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+              <section>
+                <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-400">
+                    Versão original enviada
+                  </p>
+
+                  {openedSavedQuote.outputText ? (
+                    <pre className="mt-4 whitespace-pre-wrap break-words font-sans text-sm leading-6 text-slate-800">
+                      {openedSavedQuote.outputText}
+                    </pre>
+                  ) : (
+                    <p className="mt-4 text-sm text-slate-500">
+                      Esta cotação antiga não possui o texto final armazenado.
+                    </p>
+                  )}
+                </div>
+
+                {getDiscountedSavedItems(openedSavedQuote).length > 0 && (
+                  <div className="mt-4 rounded-[1.5rem] border border-amber-200 bg-amber-50 p-4">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-wide text-amber-700">
+                          Condições comerciais internas
+                        </p>
+                        <p className="mt-1 text-xs font-semibold text-amber-800">
+                          Informação exclusiva do vendedor. Não entra na cópia enviada ao cliente.
+                        </p>
+                      </div>
+
+                      {getSavedQuoteDiscountAmount(openedSavedQuote) > 0 && (
+                        <div className="rounded-xl bg-white px-3 py-2 text-right">
+                          <p className="text-[10px] font-bold uppercase text-slate-400">
+                            Desconto total
+                          </p>
+                          <p className="text-sm font-black text-amber-700">
+                            {moneyBR(getSavedQuoteDiscountAmount(openedSavedQuote))}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mt-4 space-y-3">
+                      {getDiscountedSavedItems(openedSavedQuote).map((item, index) => (
+                        <div
+                          key={`${item.code || item.name || "item"}-${index}`}
+                          className="rounded-2xl border border-amber-100 bg-white p-4"
+                        >
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0">
+                              <p className="text-sm font-black text-slate-900">
+                                {item.name || item.code || `Item ${index + 1}`}
+                              </p>
+                              {item.code && (
+                                <p className="mt-1 text-xs font-semibold text-slate-500">
+                                  ID {item.code}
+                                </p>
+                              )}
+                            </div>
+
+                            <span className="shrink-0 rounded-full bg-amber-100 px-3 py-1.5 text-sm font-black text-amber-800">
+                              {formatPercentBR(item.discountPercent)}%
+                            </span>
+                          </div>
+
+                          <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+                            <div className="rounded-xl bg-slate-50 p-3">
+                              <p className="font-bold uppercase text-slate-400">
+                                Preço original
+                              </p>
+                              <p className="mt-1 font-black text-slate-800">
+                                {moneyBR(item.originalUnitPrice || 0)}
+                              </p>
+                            </div>
+
+                            <div className="rounded-xl bg-slate-50 p-3">
+                              <p className="font-bold uppercase text-slate-400">
+                                Preço final
+                              </p>
+                              <p className="mt-1 font-black text-slate-800">
+                                {moneyBR(
+                                  item.discountedUnitPrice ??
+                                    item.unitPrice ??
+                                    0
+                                )}
+                              </p>
+                            </div>
+
+                            <div className="rounded-xl bg-slate-50 p-3">
+                              <p className="font-bold uppercase text-slate-400">
+                                Desconto no item
+                              </p>
+                              <p className="mt-1 font-black text-amber-700">
+                                {moneyBR(item.totalDiscountAmount || 0)}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </section>
+
+              <aside className="space-y-4">
+                <div className="rounded-[1.5rem] bg-slate-950 p-5 text-white">
+                  <p className="text-xs font-bold uppercase text-slate-300">
+                    Total salvo
+                  </p>
+                  <p className="mt-1 text-2xl font-black">
+                    {moneyBR(openedSavedQuote.total || 0)}
+                  </p>
+
+                  <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded-xl bg-white/10 p-3">
+                      <p className="text-slate-300">Itens</p>
+                      <p className="mt-1 font-black">
+                        {openedSavedQuote.itemCount ||
+                          openedSavedQuote.items?.length ||
+                          0}
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl bg-white/10 p-3">
+                      <p className="text-slate-300">Desconto</p>
+                      <p className="mt-1 font-black">
+                        {getDiscountedSavedItems(openedSavedQuote).length} item(ns)
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={!openedSavedQuote.outputText}
+                  onClick={() => copySavedQuote(openedSavedQuote)}
+                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"
+                >
+                  Copiar versão do cliente
+                </button>
+
+                <p className="-mt-2 text-center text-[11px] font-semibold leading-4 text-slate-500">
+                  Copia somente a versão enviada. Os descontos internos não são incluídos.
+                </p>
+
+                <button
+                  type="button"
+                  onClick={() => reuseSavedQuote(openedSavedQuote)}
+                  className="w-full rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-black text-white transition hover:bg-emerald-700"
+                >
+                  Criar nova baseada nesta
+                </button>
+
+                <div className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50 p-4 text-xs leading-5 text-emerald-800">
+                  A cotação original permanece intacta. Ao reutilizar, você volta ao Cotador e recalcula usando a tabela de preço atual.
+                </div>
+              </aside>
             </div>
           </div>
         </div>
