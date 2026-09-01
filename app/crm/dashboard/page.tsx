@@ -175,6 +175,17 @@ function shortText(text?: string | null, max = 90) {
   return `${value.slice(0, max)}...`;
 }
 
+type ViewMode = "kanban" | "list";
+
+type SortKey =
+  | "name"
+  | "phone"
+  | "status"
+  | "days"
+  | "updated";
+
+type SortDirection = "asc" | "desc";
+
 export default function DashboardPage() {
   const [leads, setLeads] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -183,6 +194,14 @@ export default function DashboardPage() {
   const [selectedStage, setSelectedStage] = useState("todos");
   const [selectedLead, setSelectedLead] = useState<any>(null);
   const [nextActionOpen, setNextActionOpen] = useState(false);
+
+  const [viewMode, setViewMode] = useState<ViewMode>("kanban");
+  const [listNameFilter, setListNameFilter] = useState("");
+  const [listContactFilter, setListContactFilter] = useState("");
+  const [listMessageFilter, setListMessageFilter] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("updated");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [selectedRows, setSelectedRows] = useState<string[]>([]);
 
   async function loadDashboard() {
     try {
@@ -217,6 +236,26 @@ export default function DashboardPage() {
 
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("zentra-dashboard-view");
+
+      if (saved === "kanban" || saved === "list") {
+        setViewMode(saved);
+      }
+    } catch {
+      // A preferência local é opcional.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("zentra-dashboard-view", viewMode);
+    } catch {
+      // O dashboard continua funcionando mesmo sem localStorage.
+    }
+  }, [viewMode]);
 
   const filteredLeads = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -265,6 +304,87 @@ export default function DashboardPage() {
 
     return result;
   }, [filteredLeads]);
+
+  const listLeads = useMemo(() => {
+    const nameTerm = listNameFilter.trim().toLowerCase();
+    const contactTerm = listContactFilter.trim().toLowerCase();
+    const messageTerm = listMessageFilter.trim().toLowerCase();
+
+    const rows = filteredLeads.filter((lead) => {
+      if (
+        nameTerm &&
+        !String(lead?.name || "").toLowerCase().includes(nameTerm)
+      ) {
+        return false;
+      }
+
+      if (
+        contactTerm &&
+        ![
+          lead?.phone,
+          lead?.mobile,
+          lead?.telefone,
+          lead?.email,
+          lead?.remote_jid,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(contactTerm)
+      ) {
+        return false;
+      }
+
+      if (
+        messageTerm &&
+        !String(lead?.last_message || "")
+          .toLowerCase()
+          .includes(messageTerm)
+      ) {
+        return false;
+      }
+
+      return true;
+    });
+
+    return [...rows].sort((a, b) => {
+      let valueA: string | number = "";
+      let valueB: string | number = "";
+
+      if (sortKey === "name") {
+        valueA = String(a?.name || "").toLowerCase();
+        valueB = String(b?.name || "").toLowerCase();
+      } else if (sortKey === "phone") {
+        valueA = formatLeadContact(a).toLowerCase();
+        valueB = formatLeadContact(b).toLowerCase();
+      } else if (sortKey === "status") {
+        valueA = getStage(a?.status).label.toLowerCase();
+        valueB = getStage(b?.status).label.toLowerCase();
+      } else if (sortKey === "days") {
+        valueA = daysStopped(a);
+        valueB = daysStopped(b);
+      } else {
+        valueA = new Date(getLastDate(a) || 0).getTime();
+        valueB = new Date(getLastDate(b) || 0).getTime();
+      }
+
+      const comparison =
+        typeof valueA === "number" && typeof valueB === "number"
+          ? valueA - valueB
+          : String(valueA).localeCompare(String(valueB), "pt-BR", {
+              sensitivity: "base",
+            });
+
+      return sortDirection === "asc" ? comparison : -comparison;
+    });
+  }, [
+    filteredLeads,
+    listNameFilter,
+    listContactFilter,
+    listMessageFilter,
+    sortKey,
+    sortDirection,
+  ]);
 
   const stats = useMemo(() => {
     return {
@@ -319,6 +439,57 @@ export default function DashboardPage() {
     setNextActionOpen(true);
   }
 
+  function changeViewMode(mode: ViewMode) {
+    setViewMode(mode);
+    setSelectedRows([]);
+  }
+
+  function changeSort(nextKey: SortKey) {
+    if (sortKey === nextKey) {
+      setSortDirection((current) =>
+        current === "asc" ? "desc" : "asc"
+      );
+      return;
+    }
+
+    setSortKey(nextKey);
+    setSortDirection("asc");
+  }
+
+  function toggleRow(id: string) {
+    setSelectedRows((current) =>
+      current.includes(id)
+        ? current.filter((item) => item !== id)
+        : [...current, id]
+    );
+  }
+
+  function toggleAllVisible() {
+    const visibleIds = listLeads.map((lead) => String(lead.id));
+    const allSelected =
+      visibleIds.length > 0 &&
+      visibleIds.every((id) => selectedRows.includes(id));
+
+    if (allSelected) {
+      setSelectedRows((current) =>
+        current.filter((id) => !visibleIds.includes(id))
+      );
+      return;
+    }
+
+    setSelectedRows((current) => [
+      ...new Set([...current, ...visibleIds]),
+    ]);
+  }
+
+  function clearListFilters() {
+    setSearch("");
+    setSelectedStage("todos");
+    setListNameFilter("");
+    setListContactFilter("");
+    setListMessageFilter("");
+  }
+
   return (
     <main className="min-h-screen text-slate-900">
       <section className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl">
@@ -335,7 +506,7 @@ export default function DashboardPage() {
                     Zentra Sales AI
                   </p>
                   <h1 className="text-2xl font-black tracking-tight text-slate-950 sm:text-4xl">
-                    Kanban Comercial
+                    Funil Comercial
                   </h1>
                 </div>
               </div>
@@ -358,7 +529,7 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="mt-5 grid gap-3 md:grid-cols-[1fr_230px_150px]">
+          <div className="mt-5 grid gap-3 xl:grid-cols-[minmax(320px,1fr)_230px_250px_150px]">
             <input
               className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 outline-none placeholder:text-slate-400 shadow-sm focus:border-[#0f7a3a] focus:ring-4 focus:ring-green-100"
               placeholder="Buscar por cliente, telefone, e-mail, cidade, empresa ou última mensagem..."
@@ -379,6 +550,32 @@ export default function DashboardPage() {
                 </option>
               ))}
             </select>
+
+            <div className="grid grid-cols-2 rounded-2xl border border-slate-200 bg-slate-100 p-1 shadow-sm">
+              <button
+                type="button"
+                onClick={() => changeViewMode("kanban")}
+                className={`rounded-xl px-3 py-2.5 text-sm font-black transition ${
+                  viewMode === "kanban"
+                    ? "bg-white text-[#0f7a3a] shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                ▦ Kanban
+              </button>
+
+              <button
+                type="button"
+                onClick={() => changeViewMode("list")}
+                className={`rounded-xl px-3 py-2.5 text-sm font-black transition ${
+                  viewMode === "list"
+                    ? "bg-white text-[#0f7a3a] shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                ☷ Lista
+              </button>
+            </div>
 
             <button
               className="rounded-2xl border border-green-200 bg-green-50 px-4 py-3 text-sm font-black text-[#0f7a3a] transition hover:bg-green-100 disabled:opacity-60"
@@ -403,7 +600,8 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      <section className="mx-auto max-w-[1800px] px-4 pb-8 sm:px-6 lg:px-8">
+      {viewMode === "kanban" ? (
+        <section className="mx-auto max-w-[1800px] px-4 pb-8 sm:px-6 lg:px-8">
         <div className="overflow-x-auto pb-4">
           <div className="flex min-w-max gap-4">
             {STAGES.map((stage) => {
@@ -468,7 +666,253 @@ export default function DashboardPage() {
             })}
           </div>
         </div>
-      </section>
+        </section>
+
+      ) : (
+        <section className="mx-auto max-w-[1800px] px-4 pb-8 sm:px-6 lg:px-8">
+          <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-xl shadow-slate-900/5">
+            <div className="flex flex-col gap-3 border-b border-slate-200 bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-lg font-black text-slate-950">
+                    Lista comercial
+                  </h2>
+                  <span className="rounded-full border border-green-200 bg-green-50 px-2.5 py-1 text-xs font-black text-[#0f7a3a]">
+                    {listLeads.length} registro(s)
+                  </span>
+                  {selectedRows.length > 0 && (
+                    <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-black text-blue-700">
+                      {selectedRows.length} selecionado(s)
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-xs font-medium text-slate-500">
+                  Visual de planilha com filtros por coluna, ordenação e edição rápida de status.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={clearListFilters}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 transition hover:bg-slate-50"
+              >
+                Limpar filtros
+              </button>
+            </div>
+
+            <div className="max-h-[calc(100vh-280px)] overflow-auto">
+              <table className="w-full min-w-[1250px] border-collapse text-left">
+                <thead className="sticky top-0 z-10 bg-slate-100/95 backdrop-blur">
+                  <tr className="border-b border-slate-200">
+                    <th className="w-12 border-r border-slate-200 px-3 py-3 text-center">
+                      <input
+                        type="checkbox"
+                        aria-label="Selecionar todos os registros visíveis"
+                        checked={
+                          listLeads.length > 0 &&
+                          listLeads.every((lead) =>
+                            selectedRows.includes(String(lead.id))
+                          )
+                        }
+                        onChange={toggleAllVisible}
+                        className="h-4 w-4 rounded border-slate-300 accent-[#0f7a3a]"
+                      />
+                    </th>
+
+                    <SortableTableHeader label="Cliente" active={sortKey === "name"} direction={sortDirection} onClick={() => changeSort("name")} />
+                    <SortableTableHeader label="Contato" active={sortKey === "phone"} direction={sortDirection} onClick={() => changeSort("phone")} />
+                    <SortableTableHeader label="Status" active={sortKey === "status"} direction={sortDirection} onClick={() => changeSort("status")} />
+
+                    <th className="min-w-[320px] border-r border-slate-200 px-3 py-3 text-[11px] font-black uppercase tracking-wider text-slate-600">
+                      Última mensagem
+                    </th>
+
+                    <SortableTableHeader label="Parado há" active={sortKey === "days"} direction={sortDirection} onClick={() => changeSort("days")} />
+                    <SortableTableHeader label="Atualizado" active={sortKey === "updated"} direction={sortDirection} onClick={() => changeSort("updated")} />
+
+                    <th className="min-w-[190px] px-3 py-3 text-[11px] font-black uppercase tracking-wider text-slate-600">
+                      Ações
+                    </th>
+                  </tr>
+
+                  <tr className="border-b border-slate-200 bg-white">
+                    <th className="border-r border-slate-200 px-3 py-2" />
+                    <th className="border-r border-slate-200 px-2 py-2">
+                      <input
+                        value={listNameFilter}
+                        onChange={(event) => setListNameFilter(event.target.value)}
+                        placeholder="Filtrar cliente..."
+                        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 outline-none focus:border-[#0f7a3a] focus:ring-2 focus:ring-green-100"
+                      />
+                    </th>
+                    <th className="border-r border-slate-200 px-2 py-2">
+                      <input
+                        value={listContactFilter}
+                        onChange={(event) => setListContactFilter(event.target.value)}
+                        placeholder="Filtrar contato..."
+                        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 outline-none focus:border-[#0f7a3a] focus:ring-2 focus:ring-green-100"
+                      />
+                    </th>
+                    <th className="border-r border-slate-200 px-2 py-2">
+                      <select
+                        value={selectedStage}
+                        onChange={(event) => setSelectedStage(event.target.value)}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-bold text-slate-700 outline-none focus:border-[#0f7a3a] focus:ring-2 focus:ring-green-100"
+                      >
+                        <option value="todos">Todos</option>
+                        {STAGES.map((stage) => (
+                          <option key={stage.key} value={stage.key}>
+                            {stage.label}
+                          </option>
+                        ))}
+                      </select>
+                    </th>
+                    <th className="border-r border-slate-200 px-2 py-2">
+                      <input
+                        value={listMessageFilter}
+                        onChange={(event) => setListMessageFilter(event.target.value)}
+                        placeholder="Filtrar mensagem..."
+                        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 outline-none focus:border-[#0f7a3a] focus:ring-2 focus:ring-green-100"
+                      />
+                    </th>
+                    <th className="border-r border-slate-200 px-2 py-2 text-center text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      Ordenar no título
+                    </th>
+                    <th className="border-r border-slate-200 px-2 py-2 text-center text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      Ordenar no título
+                    </th>
+                    <th className="px-2 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      Acesso rápido
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {listLeads.map((lead, index) => {
+                    const stage = getStage(lead.status);
+                    const stoppedDays = daysStopped(lead);
+                    const isSelected = selectedRows.includes(String(lead.id));
+
+                    return (
+                      <tr
+                        key={lead.id}
+                        className={`border-b border-slate-100 transition ${
+                          isSelected
+                            ? "bg-green-50/70"
+                            : index % 2 === 0
+                              ? "bg-white hover:bg-green-50/30"
+                              : "bg-slate-50/55 hover:bg-green-50/30"
+                        }`}
+                      >
+                        <td className="border-r border-slate-100 px-3 py-3 text-center">
+                          <input
+                            type="checkbox"
+                            aria-label={`Selecionar ${lead.name || "contato"}`}
+                            checked={isSelected}
+                            onChange={() => toggleRow(String(lead.id))}
+                            className="h-4 w-4 rounded border-slate-300 accent-[#0f7a3a]"
+                          />
+                        </td>
+
+                        <td className="min-w-[220px] border-r border-slate-100 px-3 py-3">
+                          <div className="font-black text-slate-900">
+                            {lead.name || "Contato WhatsApp"}
+                          </div>
+                          {lead.email && (
+                            <div className="mt-1 text-xs font-medium text-slate-500">
+                              {lead.email}
+                            </div>
+                          )}
+                        </td>
+
+                        <td className="min-w-[190px] border-r border-slate-100 px-3 py-3">
+                          <div className="text-sm font-bold text-slate-700">
+                            {formatLeadContact(lead)}
+                          </div>
+                        </td>
+
+                        <td className="min-w-[220px] border-r border-slate-100 px-3 py-2.5">
+                          <select
+                            disabled={movingId === lead.id}
+                            value={normalizeStatus(lead.status)}
+                            onChange={(event) => moveLead(lead.id, event.target.value)}
+                            className={`w-full rounded-lg border px-2.5 py-2 text-xs font-black outline-none transition disabled:opacity-50 ${stage.badge}`}
+                          >
+                            {STAGES.map((item) => (
+                              <option key={item.key} value={item.key}>
+                                {item.label}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+
+                        <td className="max-w-[360px] border-r border-slate-100 px-3 py-3">
+                          <div
+                            className="truncate text-sm font-medium text-slate-600"
+                            title={String(lead.last_message || "")}
+                          >
+                            {lead.last_message ? shortText(lead.last_message, 95) : "—"}
+                          </div>
+                        </td>
+
+                        <td className="min-w-[120px] border-r border-slate-100 px-3 py-3 text-center">
+                          <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-black ${
+                            stoppedDays >= 3
+                              ? "bg-amber-50 text-amber-700"
+                              : "bg-slate-100 text-slate-600"
+                          }`}>
+                            {stoppedDays} dia(s)
+                          </span>
+                        </td>
+
+                        <td className="min-w-[150px] border-r border-slate-100 px-3 py-3 text-sm font-semibold text-slate-600">
+                          {formatDate(getLastDate(lead))}
+                        </td>
+
+                        <td className="min-w-[190px] px-3 py-2.5">
+                          <div className="flex items-center gap-2">
+                            <Link
+                              href={`/crm/dashboard/inbox?leadId=${lead.id}`}
+                              className="rounded-lg bg-gradient-to-r from-[#0f7a3a] to-[#d71920] px-3 py-2 text-xs font-black text-white shadow-sm transition hover:brightness-105"
+                            >
+                              Conversa
+                            </Link>
+                            <button
+                              type="button"
+                              onClick={() => openLeadNextAction(lead)}
+                              className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-black text-blue-700 transition hover:bg-blue-100"
+                            >
+                              Próxima ação
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {!listLeads.length && (
+                    <tr>
+                      <td colSpan={8} className="px-6 py-16 text-center">
+                        <div className="mx-auto max-w-sm">
+                          <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-green-50 text-xl font-black text-[#0f7a3a]">
+                            ☷
+                          </div>
+                          <p className="text-sm font-black text-slate-700">
+                            Nenhum registro encontrado.
+                          </p>
+                          <p className="mt-1 text-xs font-medium text-slate-500">
+                            Ajuste os filtros para visualizar outros clientes.
+                          </p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      )}
 
       <NextActionModal
         open={nextActionOpen}
@@ -517,6 +961,33 @@ function MetricCard({
       </div>
       <div className="mt-2 text-3xl font-black">{value}</div>
     </div>
+  );
+}
+
+function SortableTableHeader({
+  label,
+  active,
+  direction,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  direction: SortDirection;
+  onClick: () => void;
+}) {
+  return (
+    <th className="min-w-[145px] border-r border-slate-200 px-3 py-3">
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex w-full items-center justify-between gap-2 text-left text-[11px] font-black uppercase tracking-wider text-slate-600 transition hover:text-[#0f7a3a]"
+      >
+        <span>{label}</span>
+        <span className={active ? "text-[#0f7a3a]" : "text-slate-300"}>
+          {active ? (direction === "asc" ? "▲" : "▼") : "↕"}
+        </span>
+      </button>
+    </th>
   );
 }
 
