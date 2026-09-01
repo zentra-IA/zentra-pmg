@@ -126,6 +126,126 @@ function catalogBadge(item: OrderItem) {
   };
 }
 
+function normalizeOrderSearch(value: any) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(
+      /\b(mussarela|mucarela|mozarela|mozzarella)\b/g,
+      "mucarela"
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function smartSearchPrefix(value: string) {
+  const raw = String(value || "").trim();
+  const match = raw.match(
+    /^(produto|item|cliente|pedido|vendedor)\s*[:#-]?\s+(.+)$/i
+  );
+
+  if (!match) {
+    return {
+      scope: "",
+      value: raw,
+    };
+  }
+
+  const scopeMap: Record<string, string> = {
+    produto: "product",
+    item: "product",
+    cliente: "customer",
+    pedido: "order",
+    vendedor: "seller",
+  };
+
+  return {
+    scope:
+      scopeMap[match[1].toLowerCase()] || "",
+    value: match[2].trim(),
+  };
+}
+
+function matchedOrderItems(
+  order: any,
+  appliedFilters: any
+) {
+  const items =
+    order?.items ||
+    order?.SalesOrderItem ||
+    [];
+
+  const explicitProduct = String(
+    appliedFilters?.product || ""
+  ).trim();
+
+  const productCode = String(
+    appliedFilters?.productCode || ""
+  ).trim();
+
+  const smart = smartSearchPrefix(
+    String(appliedFilters?.q || "")
+  );
+
+  const selectedScope = String(
+    appliedFilters?.searchIn || "all"
+  );
+
+  let smartProductQuery = "";
+
+  if (smart.scope === "product") {
+    smartProductQuery = smart.value;
+  } else if (
+    !smart.scope &&
+    ["all", "product"].includes(selectedScope)
+  ) {
+    smartProductQuery = smart.value;
+  }
+
+  const productQuery =
+    explicitProduct || smartProductQuery;
+
+  if (!productQuery && !productCode) {
+    return [];
+  }
+
+  const terms = normalizeOrderSearch(productQuery)
+    .split(/\s+/)
+    .filter(Boolean);
+
+  const normalizedCode =
+    normalizeOrderSearch(productCode);
+
+  return items.filter((item: any) => {
+    const name = normalizeOrderSearch(
+      item?.name ||
+        item?.product_name ||
+        ""
+    );
+
+    const code = normalizeOrderSearch(
+      item?.code ||
+        item?.product_code ||
+        ""
+    );
+
+    const haystack = `${name} ${code}`.trim();
+
+    const matchesProduct =
+      !terms.length ||
+      terms.every((term) =>
+        haystack.includes(term)
+      );
+
+    const matchesCode =
+      !normalizedCode ||
+      code.includes(normalizedCode);
+
+    return matchesProduct && matchesCode;
+  });
+}
+
 export default function OrdersPage() {
   const [file, setFile] = useState<File | null>(null);
   const [typedOrder, setTypedOrder] = useState("");
@@ -163,25 +283,140 @@ export default function OrdersPage() {
     from: "",
     to: "",
     q: "",
+    searchIn: "all",
     status: "",
     orderBy: "created_desc",
+    customer: "",
+    seller: "",
+    product: "",
+    productCode: "",
+    payment: "",
+    minTotal: "",
+    maxTotal: "",
     limit: "80",
   });
 
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] =
+    useState(false);
+
+  const [ordersSummary, setOrdersSummary] = useState({
+    order_count: 0,
+    total_sales: 0,
+    average_ticket: 0,
+  });
+
+  const [appliedFilters, setAppliedFilters] =
+    useState(filters);
+
   const totalItems = useMemo(() => extracted?.items?.length || 0, [extracted]);
+
+  const activeAdvancedFilters = useMemo(() => {
+    return [
+      filters.customer,
+      filters.seller,
+      filters.product,
+      filters.productCode,
+      filters.payment,
+      filters.minTotal,
+      filters.maxTotal,
+    ].filter((value) => String(value || "").trim()).length;
+  }, [
+    filters.customer,
+    filters.seller,
+    filters.product,
+    filters.productCode,
+    filters.payment,
+    filters.minTotal,
+    filters.maxTotal,
+  ]);
 
   async function loadOrders() {
     setLoadingOrders(true);
 
-    const params = new URLSearchParams();
-    Object.entries(filters).forEach(([key, value]) => {
-      if (value) params.set(key, value);
-    });
+    try {
+      const params = new URLSearchParams();
 
-    const res = await fetch(`/api/crm/orders?${params.toString()}`, { cache: "no-store" });
-    const data = await res.json();
-    setOrders(Array.isArray(data.orders) ? data.orders : []);
-    setLoadingOrders(false);
+      Object.entries(filters).forEach(
+        ([key, value]) => {
+          if (String(value || "").trim()) {
+            params.set(key, String(value));
+          }
+        }
+      );
+
+      const res = await fetch(
+        `/api/crm/orders?${params.toString()}`,
+        { cache: "no-store" }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(
+          data.error ||
+            "Erro ao carregar pedidos."
+        );
+      }
+
+      setOrders(
+        Array.isArray(data.orders)
+          ? data.orders
+          : []
+      );
+
+      setOrdersSummary({
+        order_count: Number(
+          data?.summary?.order_count || 0
+        ),
+        total_sales: Number(
+          data?.summary?.total_sales || 0
+        ),
+        average_ticket: Number(
+          data?.summary?.average_ticket || 0
+        ),
+      });
+
+      setAppliedFilters({ ...filters });
+    } catch (error: any) {
+      console.error(
+        "ERRO AO FILTRAR PEDIDOS:",
+        error
+      );
+
+      setOrders([]);
+      setOrdersSummary({
+        order_count: 0,
+        total_sales: 0,
+        average_ticket: 0,
+      });
+
+      alert(
+        error?.message ||
+          "Erro ao carregar pedidos."
+      );
+    } finally {
+      setLoadingOrders(false);
+    }
+  }
+
+  function clearOrderFilters() {
+    setFilters({
+      period: "",
+      from: "",
+      to: "",
+      q: "",
+      searchIn: "all",
+      status: "",
+      orderBy: "created_desc",
+      customer: "",
+      seller: "",
+      product: "",
+      productCode: "",
+      payment: "",
+      minTotal: "",
+      maxTotal: "",
+      limit: "80",
+    });
   }
 
   async function loadPerformance(period = performancePeriod) {
@@ -1202,21 +1437,74 @@ export default function OrdersPage() {
         </section>
 
         <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
-            <div>
-              <h2 className="text-xl font-black text-slate-950">Histórico de pedidos</h2>
-              <p className="text-sm font-medium text-slate-500">
-                Filtre por data, cliente, vendedor, produto, status e valor.
-              </p>
+          <div className="flex flex-col gap-5">
+            <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-start">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-xl font-black text-slate-950">
+                    Histórico de pedidos
+                  </h2>
+
+                  {activeAdvancedFilters > 0 && (
+                    <span className="rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-black text-emerald-700">
+                      {activeAdvancedFilters} filtro(s) avançado(s)
+                    </span>
+                  )}
+                </div>
+
+                <p className="mt-1 text-sm font-medium text-slate-500">
+                  Busca inteligente por pedido, cliente, vendedor e produtos comprados.
+                </p>
+
+                <p className="mt-1 text-xs font-bold text-slate-400">
+                  Exemplos: “muçarela imperador”, “produto: farinha 101”, “cliente: Trevo”, “vendedor: Emilia” ou “pedido: 12345”.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAdvancedFiltersOpen(
+                      (current) => !current
+                    )
+                  }
+                  className={`rounded-2xl border px-4 py-2.5 text-xs font-black transition ${
+                    advancedFiltersOpen
+                      ? "border-emerald-300 bg-emerald-50 text-emerald-700"
+                      : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                  }`}
+                >
+                  ⚙ Filtros avançados
+                  {activeAdvancedFilters > 0
+                    ? ` (${activeAdvancedFilters})`
+                    : ""}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={clearOrderFilters}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-black text-slate-600 transition hover:bg-slate-50"
+                >
+                  Limpar filtros
+                </button>
+              </div>
             </div>
 
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-7">
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[170px_170px_170px_190px_1fr_130px]">
               <select
                 value={filters.period}
-                onChange={(e) => setFilters({ ...filters, period: e.target.value, from: "", to: "" })}
+                onChange={(e) =>
+                  setFilters({
+                    ...filters,
+                    period: e.target.value,
+                    from: "",
+                    to: "",
+                  })
+                }
                 className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm font-bold outline-none focus:border-emerald-400"
               >
-                <option value="">Todos</option>
+                <option value="">Todo período</option>
                 <option value="today">Hoje</option>
                 <option value="yesterday">Ontem</option>
                 <option value="7d">Últimos 7 dias</option>
@@ -1225,24 +1513,43 @@ export default function OrdersPage() {
 
               <input
                 type="date"
+                title="Entrega a partir de"
                 value={filters.from}
-                onChange={(e) => setFilters({ ...filters, from: e.target.value, period: "" })}
+                onChange={(e) =>
+                  setFilters({
+                    ...filters,
+                    from: e.target.value,
+                    period: "",
+                  })
+                }
                 className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm font-bold outline-none focus:border-emerald-400"
               />
 
               <input
                 type="date"
+                title="Entrega até"
                 value={filters.to}
-                onChange={(e) => setFilters({ ...filters, to: e.target.value, period: "" })}
+                onChange={(e) =>
+                  setFilters({
+                    ...filters,
+                    to: e.target.value,
+                    period: "",
+                  })
+                }
                 className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm font-bold outline-none focus:border-emerald-400"
               />
 
               <select
                 value={filters.status}
-                onChange={(e) => setFilters({ ...filters, status: e.target.value })}
+                onChange={(e) =>
+                  setFilters({
+                    ...filters,
+                    status: e.target.value,
+                  })
+                }
                 className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm font-bold outline-none focus:border-emerald-400"
               >
-                <option value="">Status</option>
+                <option value="">Todos os status</option>
                 <option value="registrado">Registrado</option>
                 <option value="conferido">Conferido</option>
                 <option value="entregue">Entregue</option>
@@ -1252,7 +1559,12 @@ export default function OrdersPage() {
 
               <select
                 value={filters.orderBy}
-                onChange={(e) => setFilters({ ...filters, orderBy: e.target.value })}
+                onChange={(e) =>
+                  setFilters({
+                    ...filters,
+                    orderBy: e.target.value,
+                  })
+                }
                 className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm font-bold outline-none focus:border-emerald-400"
               >
                 <option value="created_desc">Mais recentes</option>
@@ -1261,38 +1573,286 @@ export default function OrdersPage() {
                 <option value="value_asc">Menor valor</option>
               </select>
 
-              <input
-                value={filters.q}
-                onChange={(e) => setFilters({ ...filters, q: e.target.value })}
-                onKeyDown={(e) => e.key === "Enter" && loadOrders()}
-                placeholder="Buscar..."
+              <select
+                value={filters.limit}
+                onChange={(e) =>
+                  setFilters({
+                    ...filters,
+                    limit: e.target.value,
+                  })
+                }
                 className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm font-bold outline-none focus:border-emerald-400"
-              />
+              >
+                <option value="40">40 resultados</option>
+                <option value="80">80 resultados</option>
+                <option value="120">120 resultados</option>
+                <option value="200">200 resultados</option>
+              </select>
+            </div>
+
+            <div className="grid gap-2 md:grid-cols-[190px_1fr_140px]">
+              <select
+                value={filters.searchIn}
+                onChange={(e) =>
+                  setFilters({
+                    ...filters,
+                    searchIn: e.target.value,
+                  })
+                }
+                className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-black text-slate-700 outline-none focus:border-emerald-400"
+              >
+                <option value="all">🔎 Buscar em tudo</option>
+                <option value="product">📦 Só produtos</option>
+                <option value="customer">👤 Só clientes</option>
+                <option value="order">🧾 Só nº pedido</option>
+                <option value="seller">💼 Só vendedor</option>
+              </select>
+
+              <div className="relative">
+                <input
+                  value={filters.q}
+                  onChange={(e) =>
+                    setFilters({
+                      ...filters,
+                      q: e.target.value,
+                    })
+                  }
+                  onKeyDown={(e) =>
+                    e.key === "Enter" &&
+                    loadOrders()
+                  }
+                  placeholder="Busca inteligente: produto, cliente, vendedor, nº do pedido, documento, pagamento..."
+                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-12 text-sm font-bold outline-none focus:border-emerald-400 focus:ring-4 focus:ring-emerald-50"
+                />
+
+                {filters.q && (
+                  <button
+                    type="button"
+                    aria-label="Limpar busca"
+                    onClick={() =>
+                      setFilters({
+                        ...filters,
+                        q: "",
+                      })
+                    }
+                    className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full px-2 py-1 text-xs font-black text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
 
               <button
                 onClick={loadOrders}
-                className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-black text-white transition hover:bg-slate-800"
+                disabled={loadingOrders}
+                className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-black text-white transition hover:bg-slate-800 disabled:opacity-60"
               >
-                Filtrar
+                {loadingOrders
+                  ? "Buscando..."
+                  : "Filtrar"}
               </button>
             </div>
+
+            {advancedFiltersOpen && (
+              <div className="rounded-3xl border border-emerald-100 bg-emerald-50/40 p-4">
+                <div className="mb-3">
+                  <strong className="text-sm font-black text-slate-900">
+                    Filtros avançados
+                  </strong>
+                  <p className="mt-1 text-xs font-bold text-slate-500">
+                    Combine vários campos. Ex.: produto “muçarela imperador” + cliente “Trevo” + valor mínimo R$ 500.
+                  </p>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <label className="grid gap-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                      Produto
+                    </span>
+                    <input
+                      value={filters.product}
+                      onChange={(e) =>
+                        setFilters({
+                          ...filters,
+                          product: e.target.value,
+                        })
+                      }
+                      onKeyDown={(e) =>
+                        e.key === "Enter" &&
+                        loadOrders()
+                      }
+                      placeholder="Ex: muçarela imperador"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold outline-none focus:border-emerald-400"
+                    />
+                  </label>
+
+                  <label className="grid gap-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                      Código do produto
+                    </span>
+                    <input
+                      value={filters.productCode}
+                      onChange={(e) =>
+                        setFilters({
+                          ...filters,
+                          productCode: e.target.value,
+                        })
+                      }
+                      onKeyDown={(e) =>
+                        e.key === "Enter" &&
+                        loadOrders()
+                      }
+                      placeholder="Código / SKU"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold outline-none focus:border-emerald-400"
+                    />
+                  </label>
+
+                  <label className="grid gap-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                      Cliente
+                    </span>
+                    <input
+                      value={filters.customer}
+                      onChange={(e) =>
+                        setFilters({
+                          ...filters,
+                          customer: e.target.value,
+                        })
+                      }
+                      onKeyDown={(e) =>
+                        e.key === "Enter" &&
+                        loadOrders()
+                      }
+                      placeholder="Nome, ID ou documento"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold outline-none focus:border-emerald-400"
+                    />
+                  </label>
+
+                  <label className="grid gap-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                      Vendedor
+                    </span>
+                    <input
+                      value={filters.seller}
+                      onChange={(e) =>
+                        setFilters({
+                          ...filters,
+                          seller: e.target.value,
+                        })
+                      }
+                      onKeyDown={(e) =>
+                        e.key === "Enter" &&
+                        loadOrders()
+                      }
+                      placeholder="Nome ou código"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold outline-none focus:border-emerald-400"
+                    />
+                  </label>
+
+                  <label className="grid gap-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                      Pagamento
+                    </span>
+                    <input
+                      value={filters.payment}
+                      onChange={(e) =>
+                        setFilters({
+                          ...filters,
+                          payment: e.target.value,
+                        })
+                      }
+                      onKeyDown={(e) =>
+                        e.key === "Enter" &&
+                        loadOrders()
+                      }
+                      placeholder="Ex: boleto 28 dias"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold outline-none focus:border-emerald-400"
+                    />
+                  </label>
+
+                  <label className="grid gap-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                      Valor mínimo
+                    </span>
+                    <input
+                      value={filters.minTotal}
+                      onChange={(e) =>
+                        setFilters({
+                          ...filters,
+                          minTotal: e.target.value,
+                        })
+                      }
+                      onKeyDown={(e) =>
+                        e.key === "Enter" &&
+                        loadOrders()
+                      }
+                      inputMode="decimal"
+                      placeholder="Ex: 500"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold outline-none focus:border-emerald-400"
+                    />
+                  </label>
+
+                  <label className="grid gap-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                      Valor máximo
+                    </span>
+                    <input
+                      value={filters.maxTotal}
+                      onChange={(e) =>
+                        setFilters({
+                          ...filters,
+                          maxTotal: e.target.value,
+                        })
+                      }
+                      onKeyDown={(e) =>
+                        e.key === "Enter" &&
+                        loadOrders()
+                      }
+                      inputMode="decimal"
+                      placeholder="Ex: 5000"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold outline-none focus:border-emerald-400"
+                    />
+                  </label>
+
+                  <div className="flex items-end">
+                    <button
+                      type="button"
+                      onClick={loadOrders}
+                      disabled={loadingOrders}
+                      className="w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-black text-white transition hover:bg-emerald-700 disabled:opacity-60"
+                    >
+                      Aplicar combinação
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-3 rounded-2xl border border-emerald-100 bg-white/80 px-4 py-3 text-xs font-bold leading-5 text-slate-500">
+                  💡 A busca de produto considera os termos juntos no mesmo item e reconhece variações comuns como muçarela, mussarela e mucarela.
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="mt-5 grid gap-3 sm:grid-cols-3">
             <div className="rounded-2xl bg-slate-50 p-4">
               <span className="text-xs font-black uppercase text-slate-400">Pedidos filtrados</span>
-              <strong className="mt-1 block text-xl font-black text-slate-950">{orders.length}</strong>
+              <strong className="mt-1 block text-xl font-black text-slate-950">{ordersSummary.order_count}</strong>
+              {ordersSummary.order_count > orders.length && (
+                <span className="mt-1 block text-[11px] font-bold text-slate-400">
+                  Exibindo {orders.length} nesta consulta
+                </span>
+              )}
             </div>
             <div className="rounded-2xl bg-emerald-50 p-4">
               <span className="text-xs font-black uppercase text-emerald-700">Valor filtrado</span>
               <strong className="mt-1 block text-xl font-black text-emerald-800">
-                {money(orders.reduce((sum, o) => sum + Number(o.total || 0), 0))}
+                {money(ordersSummary.total_sales)}
               </strong>
             </div>
             <div className="rounded-2xl bg-red-50 p-4">
               <span className="text-xs font-black uppercase text-red-700">Ticket médio filtrado</span>
               <strong className="mt-1 block text-xl font-black text-red-700">
-                {money(orders.length ? orders.reduce((sum, o) => sum + Number(o.total || 0), 0) / orders.length : 0)}
+                {money(ordersSummary.average_ticket)}
               </strong>
             </div>
           </div>
@@ -1304,7 +1864,13 @@ export default function OrdersPage() {
               </div>
             )}
 
-            {!loadingOrders && orders.map((order) => (
+            {!loadingOrders && orders.map((order) => {
+              const matchedItems = matchedOrderItems(
+                order,
+                appliedFilters
+              );
+
+              return (
               <article
                 key={order.id}
                 className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-emerald-200 hover:shadow-md"
@@ -1374,6 +1940,45 @@ export default function OrdersPage() {
                   </div>
                 </div>
 
+                {matchedItems.length > 0 && (
+                  <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-emerald-700">
+                        🔎 Produto encontrado
+                      </span>
+
+                      {matchedItems
+                        .slice(0, 4)
+                        .map((item: any, index: number) => (
+                          <span
+                            key={
+                              item.id ||
+                              `${order.id}-match-${index}`
+                            }
+                            className="rounded-full border border-emerald-200 bg-white px-3 py-1 text-xs font-black text-emerald-800"
+                          >
+                            {item.name ||
+                              item.product_name ||
+                              "Produto"}
+                            {(item.code ||
+                              item.product_code)
+                              ? ` • ${
+                                  item.code ||
+                                  item.product_code
+                                }`
+                              : ""}
+                          </span>
+                        ))}
+
+                      {matchedItems.length > 4 && (
+                        <span className="text-xs font-black text-emerald-700">
+                          +{matchedItems.length - 4}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 <div className="mt-3 flex flex-wrap gap-2 text-xs font-black text-slate-500">
                   <span className="rounded-full bg-slate-50 px-3 py-1">
                     Produtos: {(order.items || order.SalesOrderItem || []).length}
@@ -1435,7 +2040,8 @@ export default function OrdersPage() {
                   </div>
                 )}
               </article>
-            ))}
+              );
+            })}
 
             {!loadingOrders && orders.length === 0 && (
               <div className="rounded-2xl border border-dashed border-slate-200 p-10 text-center text-sm font-bold text-slate-400">

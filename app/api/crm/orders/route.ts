@@ -70,36 +70,424 @@ function dateRangeFromParams(url: URL) {
 
 type CompanyAccess = Awaited<ReturnType<typeof requireCompanyAccess>>;
 
+type SearchScope =
+  | "all"
+  | "product"
+  | "customer"
+  | "order"
+  | "seller";
+
+function cleanSearch(value: string | null): string {
+  return String(value || "").trim();
+}
+
+function stripSearchAccents(value: string): string {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function searchTokens(value: string): string[] {
+  return cleanSearch(value)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2)
+    .slice(0, 8);
+}
+
+function productTokenVariants(token: string): string[] {
+  const normalized = stripSearchAccents(token);
+
+  if (
+    [
+      "mussarela",
+      "mucarela",
+      "mozarela",
+      "mozzarella",
+    ].includes(normalized)
+  ) {
+    return [
+      "mussarela",
+      "muçarela",
+      "mucarela",
+      "mozarela",
+      "mozzarella",
+    ];
+  }
+
+  if (normalized === "requeijao") {
+    return ["requeijao", "requeijão"];
+  }
+
+  return [token];
+}
+
+function parseSmartSearch(
+  rawQuery: string,
+  requestedScope: string
+): { query: string; scope: SearchScope } {
+  const query = cleanSearch(rawQuery);
+  const allowed: SearchScope[] = [
+    "all",
+    "product",
+    "customer",
+    "order",
+    "seller",
+  ];
+
+  let scope: SearchScope = allowed.includes(
+    requestedScope as SearchScope
+  )
+    ? (requestedScope as SearchScope)
+    : "all";
+
+  if (!query || scope !== "all") {
+    return { query, scope };
+  }
+
+  const prefix = query.match(
+    /^(produto|item|cliente|pedido|vendedor)\s*[:#-]?\s+(.+)$/i
+  );
+
+  if (!prefix) {
+    return { query, scope };
+  }
+
+  const prefixMap: Record<string, SearchScope> = {
+    produto: "product",
+    item: "product",
+    cliente: "customer",
+    pedido: "order",
+    vendedor: "seller",
+  };
+
+  return {
+    query: prefix[2].trim(),
+    scope: prefixMap[prefix[1].toLowerCase()] || "all",
+  };
+}
+
+function buildProductItemFilter(
+  productQuery: string,
+  productCode = ""
+) {
+  const conditions: any[] = [];
+
+  const tokens = searchTokens(productQuery);
+
+  for (const token of tokens) {
+    const variants = productTokenVariants(token);
+
+    conditions.push({
+      OR: variants.flatMap((variant) => [
+        {
+          product_name: {
+            contains: variant,
+            mode: "insensitive",
+          },
+        },
+        {
+          product_code: {
+            contains: variant,
+            mode: "insensitive",
+          },
+        },
+      ]),
+    });
+  }
+
+  if (productCode) {
+    conditions.push({
+      product_code: {
+        contains: productCode,
+        mode: "insensitive",
+      },
+    });
+  }
+
+  if (!conditions.length) return null;
+
+  return {
+    SalesOrderItem: {
+      some: {
+        AND: conditions,
+      },
+    },
+  };
+}
+
+function buildSmartSearchFilter(
+  query: string,
+  scope: SearchScope
+) {
+  if (!query) return null;
+
+  if (scope === "product") {
+    return buildProductItemFilter(query);
+  }
+
+  if (scope === "customer") {
+    return {
+      OR: [
+        {
+          customer_name: {
+            contains: query,
+            mode: "insensitive",
+          },
+        },
+        {
+          customer_internal_code: {
+            contains: query,
+            mode: "insensitive",
+          },
+        },
+        {
+          document: {
+            contains: query,
+            mode: "insensitive",
+          },
+        },
+      ],
+    };
+  }
+
+  if (scope === "order") {
+    return {
+      order_number: {
+        contains: query,
+        mode: "insensitive",
+      },
+    };
+  }
+
+  if (scope === "seller") {
+    return {
+      OR: [
+        {
+          seller_name: {
+            contains: query,
+            mode: "insensitive",
+          },
+        },
+        {
+          seller_code: {
+            contains: query,
+            mode: "insensitive",
+          },
+        },
+      ],
+    };
+  }
+
+  const productFilter = buildProductItemFilter(query);
+
+  return {
+    OR: [
+      {
+        order_number: {
+          contains: query,
+          mode: "insensitive",
+        },
+      },
+      {
+        customer_name: {
+          contains: query,
+          mode: "insensitive",
+        },
+      },
+      {
+        document: {
+          contains: query,
+          mode: "insensitive",
+        },
+      },
+      {
+        customer_internal_code: {
+          contains: query,
+          mode: "insensitive",
+        },
+      },
+      {
+        seller_name: {
+          contains: query,
+          mode: "insensitive",
+        },
+      },
+      {
+        seller_code: {
+          contains: query,
+          mode: "insensitive",
+        },
+      },
+      {
+        payment_terms: {
+          contains: query,
+          mode: "insensitive",
+        },
+      },
+      ...(productFilter ? [productFilter] : []),
+    ],
+  };
+}
+
 function buildWhere(req: NextRequest, access: CompanyAccess) {
   const url = new URL(req.url);
-  const q = url.searchParams.get("q") || "";
-  const status = url.searchParams.get("status") || "";
-  const sellerParam = url.searchParams.get("seller_id") || "";
+
+  const rawQuery = cleanSearch(url.searchParams.get("q"));
+  const searchIn = cleanSearch(
+    url.searchParams.get("searchIn")
+  );
+
+  const status = cleanSearch(url.searchParams.get("status"));
+  const sellerParam = cleanSearch(
+    url.searchParams.get("seller_id")
+  );
+
+  const customer = cleanSearch(
+    url.searchParams.get("customer")
+  );
+  const seller = cleanSearch(
+    url.searchParams.get("seller")
+  );
+  const product = cleanSearch(
+    url.searchParams.get("product")
+  );
+  const productCode = cleanSearch(
+    url.searchParams.get("productCode")
+  );
+  const payment = cleanSearch(
+    url.searchParams.get("payment")
+  );
+
+  const minTotal = toDecimal(
+    url.searchParams.get("minTotal")
+  );
+  const maxTotal = toDecimal(
+    url.searchParams.get("maxTotal")
+  );
+
   const role = String(access.userRole || "").toUpperCase();
   const deliveryRange = dateRangeFromParams(url);
 
-  const where: any = { company_id: access.companyId };
+  const where: any = {
+    company_id: access.companyId,
+  };
 
+  /*
+   * Segurança permanece igual:
+   * vendedor só pesquisa os próprios pedidos.
+   * Os filtros nunca ampliam a carteira permitida.
+   */
   if (role === "VENDEDOR") {
     where.seller_id = access.userId;
   } else if (role === "GERAL" && sellerParam) {
     where.seller_id = sellerParam;
   }
 
-  if (status) where.status = status;
-  if (deliveryRange.gte || deliveryRange.lte) where.delivery_date = deliveryRange;
+  if (status) {
+    where.status = status;
+  }
 
-  if (q) {
-    where.OR = [
-      { order_number: { contains: q, mode: "insensitive" } },
-      { customer_name: { contains: q, mode: "insensitive" } },
-      { document: { contains: q, mode: "insensitive" } },
-      { customer_internal_code: { contains: q, mode: "insensitive" } },
-      { seller_name: { contains: q, mode: "insensitive" } },
-      { payment_terms: { contains: q, mode: "insensitive" } },
-      { SalesOrderItem: { some: { name: { contains: q, mode: "insensitive" } } } },
-      { SalesOrderItem: { some: { code: { contains: q, mode: "insensitive" } } } },
-    ];
+  if (deliveryRange.gte || deliveryRange.lte) {
+    where.delivery_date = deliveryRange;
+  }
+
+  if (
+    minTotal !== undefined ||
+    maxTotal !== undefined
+  ) {
+    where.total = {
+      ...(minTotal !== undefined
+        ? { gte: minTotal }
+        : {}),
+      ...(maxTotal !== undefined
+        ? { lte: maxTotal }
+        : {}),
+    };
+  }
+
+  const andFilters: any[] = [];
+
+  if (customer) {
+    andFilters.push({
+      OR: [
+        {
+          customer_name: {
+            contains: customer,
+            mode: "insensitive",
+          },
+        },
+        {
+          customer_internal_code: {
+            contains: customer,
+            mode: "insensitive",
+          },
+        },
+        {
+          document: {
+            contains: customer,
+            mode: "insensitive",
+          },
+        },
+      ],
+    });
+  }
+
+  if (seller) {
+    andFilters.push({
+      OR: [
+        {
+          seller_name: {
+            contains: seller,
+            mode: "insensitive",
+          },
+        },
+        {
+          seller_code: {
+            contains: seller,
+            mode: "insensitive",
+          },
+        },
+      ],
+    });
+  }
+
+  if (payment) {
+    andFilters.push({
+      payment_terms: {
+        contains: payment,
+        mode: "insensitive",
+      },
+    });
+  }
+
+  const explicitProductFilter =
+    buildProductItemFilter(product, productCode);
+
+  if (explicitProductFilter) {
+    andFilters.push(explicitProductFilter);
+  }
+
+  if (rawQuery) {
+    const smartSearch = parseSmartSearch(
+      rawQuery,
+      searchIn
+    );
+
+    const smartFilter = buildSmartSearchFilter(
+      smartSearch.query,
+      smartSearch.scope
+    );
+
+    if (smartFilter) {
+      andFilters.push(smartFilter);
+    }
+  }
+
+  if (andFilters.length) {
+    where.AND = andFilters;
   }
 
   return where;
@@ -120,8 +508,20 @@ export async function GET(req: NextRequest) {
     if (role === "SUPERVISOR") return supervisorForbidden();
 
     const url = new URL(req.url);
-    const limit = Math.min(Number(url.searchParams.get("limit") || 80), 200);
-    const page = Math.max(Number(url.searchParams.get("page") || 1), 1);
+    const requestedLimit = Number(
+      url.searchParams.get("limit") || 80
+    );
+    const requestedPage = Number(
+      url.searchParams.get("page") || 1
+    );
+
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(Math.max(requestedLimit, 10), 200)
+      : 80;
+
+    const page = Number.isFinite(requestedPage)
+      ? Math.max(requestedPage, 1)
+      : 1;
     const orderByParam = url.searchParams.get("orderBy") || "created_desc";
     const where = buildWhere(req, access);
 
