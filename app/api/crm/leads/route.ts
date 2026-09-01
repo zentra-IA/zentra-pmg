@@ -568,11 +568,45 @@ export async function POST(req: NextRequest) {
         access.isSeller &&
         clean(existing.owner_user_id) !== access.userId
       ) {
+        const existingOwnerId = clean(
+          existing.owner_user_id
+        );
+
+        let ownerName = "Outro vendedor";
+
+        if (existingOwnerId) {
+          const { data: owner } = await supabase
+            .from("company_users")
+            .select("name")
+            .eq("company_id", access.companyId)
+            .eq("user_id", existingOwnerId)
+            .eq("active", true)
+            .maybeSingle();
+
+          if (clean(owner?.name)) {
+            ownerName = clean(owner.name);
+          }
+        }
+
         return NextResponse.json(
           {
             success: false,
-            error:
-              "Este contato já pertence a outro vendedor.",
+            code: "LEAD_OWNED_BY_OTHER_SELLER",
+            error: `Este contato já pertence a ${ownerName}.`,
+            conflict: {
+              lead_id: existing.id,
+              name:
+                existing.name ||
+                payload.name ||
+                "Contato",
+              phone:
+                existing.phone ||
+                phone,
+              owner_user_id:
+                existingOwnerId ||
+                null,
+              owner_name: ownerName,
+            },
           },
           { status: 409 }
         );

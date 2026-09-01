@@ -475,9 +475,14 @@ export default function ContactsDispatchPage() {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      throw new Error(
+      const error: any = new Error(
         data?.error || "Erro ao salvar contato."
       );
+
+      error.status = response.status;
+      error.data = data;
+
+      throw error;
     }
 
     return data?.lead;
@@ -521,24 +526,115 @@ export default function ContactsDispatchPage() {
       return;
     }
 
-    try {
-      for (const row of rows) {
+    let added = 0;
+    let conflicts = 0;
+    let errors = 0;
+
+    const conflictList: {
+      name: string;
+      phone: string;
+      ownerName: string;
+    }[] = [];
+
+    const errorList: {
+      name: string;
+      phone: string;
+      reason: string;
+    }[] = [];
+
+    for (const row of rows) {
+      try {
         await createLead({
           name: row.name,
           phone: row.phone,
           status: "novo",
         });
-      }
 
-      setBulkText("");
-      await loadContacts();
-      alert(`${rows.length} contato(s) adicionado(s).`);
-    } catch (error: any) {
-      alert(
-        error?.message ||
-          "Erro ao adicionar contatos em massa."
-      );
+        added++;
+      } catch (error: any) {
+        if (
+          error?.status === 409 &&
+          error?.data?.code ===
+            "LEAD_OWNED_BY_OTHER_SELLER"
+        ) {
+          conflicts++;
+
+          conflictList.push({
+            name:
+              error?.data?.conflict?.name ||
+              row.name,
+            phone:
+              error?.data?.conflict?.phone ||
+              row.phone,
+            ownerName:
+              error?.data?.conflict?.owner_name ||
+              "Outro vendedor",
+          });
+
+          continue;
+        }
+
+        errors++;
+
+        errorList.push({
+          name: row.name,
+          phone: row.phone,
+          reason:
+            error?.message ||
+            "Erro ao adicionar contato.",
+        });
+      }
     }
+
+    await loadContacts();
+
+    if (added > 0 || conflicts > 0) {
+      setBulkText("");
+    }
+
+    const message: string[] = [];
+
+    message.push(
+      `✅ ${added} contato(s) adicionado(s).`
+    );
+
+    if (conflicts) {
+      message.push(
+        `\n⚠️ ${conflicts} contato(s) não foram adicionados porque pertencem a outros vendedores:\n`
+      );
+
+      conflictList.slice(0, 30).forEach((item) => {
+        message.push(
+          `• ${item.name} — ${formatPhone(
+            item.phone
+          )} — Vendedor: ${item.ownerName}`
+        );
+      });
+
+      if (conflictList.length > 30) {
+        message.push(
+          `• ... e mais ${
+            conflictList.length - 30
+          } contato(s).`
+        );
+      }
+    }
+
+    if (errors) {
+      message.push(
+        `\n❌ ${errors} contato(s) apresentaram erro:`
+      );
+
+      errorList.slice(0, 10).forEach((item) => {
+        message.push(
+          `• ${item.name} — ${formatPhone(
+            item.phone
+          )} — ${item.reason}`
+        );
+      });
+    }
+
+    alert(message.join("\n"));
   }
 
   async function importSpreadsheet() {
