@@ -221,8 +221,15 @@ function getHaystack(row: PriceRow): string {
 function parseLine(raw: string): ParsedLine {
   const text = normalize(raw);
 
-  const quantityMatch = text.match(/(^|\s)(\d+(?:[,.]\d+)?)/);
-  const quantity = quantityMatch ? Number(quantityMatch[2].replace(",", ".")) : 1;
+  /*
+   * Quantidade só é reconhecida quando aparece explicitamente no início.
+   * Assim nomes como "farinha 101" continuam sendo pesquisados como produto
+   * e, sem quantidade informada, assumem quantidade 1.
+   */
+  const quantityMatch = text.match(/^\s*(\d+(?:[,.]\d+)?)(?=\s|$)/);
+  const quantity = quantityMatch
+    ? Number(quantityMatch[1].replace(",", "."))
+    : 1;
 
   const discountMatch = text.match(
     /(?:com\s+)?desconto\s*(?:de)?\s*(\d+(?:[,.]\d+)?)\s*%?/
@@ -272,6 +279,42 @@ function parseLine(raw: string): ParsedLine {
     discountPercent,
     searchText,
   };
+}
+
+
+function parseGlobalDiscountLine(raw: string): number | null {
+  const text = normalize(raw)
+    .replace(/[.,;:]+$/g, "")
+    .trim();
+
+  const patterns = [
+    /^(?:aplicar\s+)?desconto\s*(?:de\s*)?(\d+(?:[,.]\d+)?)\s*%?\s*(?:(?:em|para)\s+)?(?:todos|tudo)(?:\s+os)?(?:\s+(?:itens|produtos))?$/,
+    /^(?:aplicar\s+)?(\d+(?:[,.]\d+)?)\s*%\s*de\s*desconto\s*(?:(?:em|para)\s+)?(?:todos|tudo)(?:\s+os)?(?:\s+(?:itens|produtos))?$/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+
+    if (match?.[1]) {
+      return normalizeDiscountPercent(match[1]);
+    }
+  }
+
+  return null;
+}
+
+function getGlobalDiscountPercent(lines: string[]): number {
+  let discountPercent = 0;
+
+  for (const line of lines) {
+    const parsed = parseGlobalDiscountLine(line);
+
+    if (parsed !== null) {
+      discountPercent = parsed;
+    }
+  }
+
+  return discountPercent;
 }
 
 function tokensOf(query: string): string[] {
@@ -1885,6 +1928,58 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
+    /*
+     * Reapresenta uma cotação já calculada em outro formato de envio.
+     * Não pesquisa catálogo, não busca preços e não recalcula os itens.
+     */
+    if (body.formatOnly === true) {
+      const items = Array.isArray(body.items) ? body.items : [];
+      const optionBlocks = Array.isArray(body.optionBlocks)
+        ? body.optionBlocks
+        : [];
+
+      if (!items.length && !optionBlocks.length) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Nenhum item disponível para reformatar a cotação.",
+          },
+          { status: 400 }
+        );
+      }
+
+      const informedTotal = Number(body.total);
+      const total = Number.isFinite(informedTotal)
+        ? roundMoney(informedTotal)
+        : roundMoney(
+            items.reduce(
+              (sum: number, item: any) =>
+                sum + Number(item?.subtotal || 0),
+              0
+            )
+          );
+
+      const outputText = formatMixedQuote({
+        clientName: body.clientName,
+        optionBlocks,
+        items,
+        total,
+        displayMode: body.displayMode,
+        showProductId: body.showProductId !== false,
+      });
+
+      return NextResponse.json({
+        success: true,
+        mode: "format",
+        outputText,
+        tableDate: body.tableDate || "Dia atual",
+        items,
+        optionBlocks,
+        total,
+        needsReview: false,
+      });
+    }
+
     const companyId = await resolveCompanyId(
       body.companyId || body.company_id || body.company?.id || body.company
     );
@@ -1997,10 +2092,21 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const lines = rawText
+    const rawLines = rawText
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
+
+    const globalDiscountPercent =
+      getGlobalDiscountPercent(rawLines);
+
+    /*
+     * "desconto X% em todos" é uma instrução do pedido, não um produto.
+     * Ela é removida da busca e aplicada como padrão aos itens.
+     */
+    const lines = rawLines.filter(
+      (line) => parseGlobalDiscountLine(line) === null
+    );
 
     const autoItems: any[] = [];
     const candidateGroups: any[] = [];
@@ -2012,6 +2118,10 @@ export async function POST(req: NextRequest) {
 
     lines.forEach((line, index) => {
       const parsed = parseLine(line);
+      const discountPercent =
+        parsed.discountPercent > 0
+          ? parsed.discountPercent
+          : globalDiscountPercent;
 
       if (isCheapestOptionsRequest(line)) {
         const optionLimit = Math.max(
@@ -2029,7 +2139,7 @@ export async function POST(req: NextRequest) {
         optionBlocks.push({
           raw: line,
           options,
-          discountPercent: parsed.discountPercent,
+          discountPercent,
         });
 
         return;
@@ -2053,7 +2163,7 @@ export async function POST(req: NextRequest) {
             option: selected,
             quantity: parsed.quantity,
             quantityUnit: defaultUnitForLine(parsed, selected),
-            discountPercent: parsed.discountPercent,
+            discountPercent,
           })
         );
 
@@ -2066,7 +2176,7 @@ export async function POST(req: NextRequest) {
         parsed,
         quantity: parsed.quantity,
         quantityUnit: parsed.quantityUnit,
-        discountPercent: parsed.discountPercent,
+        discountPercent,
         optionCount: options.length,
         discoveryMode: false,
         searchText: parsed.searchText || line,

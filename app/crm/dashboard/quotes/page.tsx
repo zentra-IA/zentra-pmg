@@ -7,6 +7,7 @@ type GeneratedQuote = {
   total: number;
   tableDate: string;
   items: any[];
+  optionBlocks?: any[];
   unresolved?: any[];
 };
 
@@ -683,6 +684,63 @@ export default function QuotesPage() {
     }
   }
 
+  async function changeDisplayMode(nextMode: string) {
+    const previousMode = displayMode;
+
+    setDisplayMode(nextMode);
+
+    if (!quote) {
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/quotes/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          formatOnly: true,
+          items: quote.items || [],
+          optionBlocks: quote.optionBlocks || [],
+          total: quote.total,
+          tableDate: quote.tableDate || tableDate || null,
+          clientName,
+          displayMode: nextMode,
+          showProductId,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!data.success) {
+        setDisplayMode(previousMode);
+        setStatus(
+          data.error ||
+            "Não foi possível alterar a preferência de envio."
+        );
+        return;
+      }
+
+      setQuote((current) =>
+        current
+          ? {
+              ...current,
+              outputText: data.outputText || current.outputText,
+            }
+          : current
+      );
+
+      setStatus(
+        "Preferência de envio alterada sem recalcular a cotação."
+      );
+    } catch (err: any) {
+      setDisplayMode(previousMode);
+      setStatus(
+        err?.message ||
+          "Não foi possível alterar a preferência de envio."
+      );
+    }
+  }
+
   async function generateQuote() {
     if (!tableDate && !priceUploadStatus) {
       setPriceUploadStatus("Atenção: carregue o PDF do dia para garantir preços atualizados antes de finalizar a cotação.");
@@ -1249,13 +1307,13 @@ export default function QuotesPage() {
             <div className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
               <h2 className="text-lg font-black">Preferência de envio</h2>
               <p className="mt-1 text-xs leading-5 text-slate-500">
-                Define como o cliente verá a cotação. O sistema continua calculando tudo internamente.
+                Define como o cliente verá a cotação. Pode ser alterada mesmo depois de gerar, sem recalcular os itens.
               </p>
               <div className="mt-4 space-y-2">
                 {displayModes.map((mode) => (
                   <button
                     key={mode.value}
-                    onClick={() => setDisplayMode(mode.value)}
+                    onClick={() => void changeDisplayMode(mode.value)}
                     className={`w-full rounded-2xl border p-3 text-left transition ${
                       displayMode === mode.value
                         ? "border-emerald-400 bg-emerald-50"
@@ -1308,7 +1366,7 @@ export default function QuotesPage() {
               <div>
                 <h2 className="text-xl font-black">Pedido do cliente</h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  Uma linha por item. Exemplo: 3 peças mussarela imperador desconto 2%.
+                  Uma linha por item. Sem quantidade, o sistema assume 1. Você também pode usar "desconto 2% em todos".
                 </p>
               </div>
               <button
@@ -1323,7 +1381,7 @@ export default function QuotesPage() {
               value={requestText}
               onChange={(e) => setRequestText(e.target.value)}
               className="mt-5 min-h-[440px] w-full resize-y rounded-[1.5rem] border border-slate-200 bg-slate-50 p-5 text-base leading-7 outline-none transition focus:border-emerald-500 focus:bg-white"
-              placeholder={`Cole aqui o pedido recebido pelo WhatsApp:\n3 peças mussarela imperador\n5 caixas mussarela camila desconto 2%\n10 requeijão sem amido bisnaga mais barato desconto 2,5%`}
+              placeholder={`Cole aqui o pedido recebido pelo WhatsApp:\ndesconto 2% em todos\nmussarela imperador\nfarinha 101\n5 caixas mussarela camila desconto 3%`}
             />
 
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
