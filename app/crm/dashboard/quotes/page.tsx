@@ -259,6 +259,92 @@ function normalizeQuoteText(input: any): string {
     .trim();
 }
 
+type QuoteSearchScope =
+  | "all"
+  | "id"
+  | "customer"
+  | "product"
+  | "code"
+  | "quote"
+  | "phone"
+  | "document";
+
+function parseQuoteSearch(raw: string): {
+  scope: QuoteSearchScope;
+  value: string;
+} {
+  const value = String(raw || "").trim();
+
+  const match = value.match(
+    /^(id|cliente|produto|codigo|código|cotacao|cotação|telefone|whatsapp|cnpj|cpf)\s*[:#-]?\s+(.+)$/i
+  );
+
+  if (!match) {
+    return {
+      scope: "all",
+      value,
+    };
+  }
+
+  const key = normalizeQuoteText(match[1]);
+
+  const scopeMap: Record<string, QuoteSearchScope> = {
+    id: "id",
+    cliente: "customer",
+    produto: "product",
+    codigo: "code",
+    cotacao: "quote",
+    telefone: "phone",
+    whatsapp: "phone",
+    cnpj: "document",
+    cpf: "document",
+  };
+
+  return {
+    scope: scopeMap[key] || "all",
+    value: match[2].trim(),
+  };
+}
+
+function quoteSearchMatches(
+  query: string,
+  fields: Array<any>
+): boolean {
+  const rawQuery = String(query || "").trim();
+
+  if (!rawQuery) return true;
+
+  const normalizedQuery = normalizeQuoteText(rawQuery);
+  const normalizedHaystack = normalizeQuoteText(
+    fields.filter(Boolean).join(" ")
+  );
+
+  const tokens = normalizedQuery
+    .split(/\s+/)
+    .filter(Boolean);
+
+  const haystackDigits = fields
+    .filter(Boolean)
+    .map((value) =>
+      String(value).replace(/\D/g, "")
+    )
+    .filter(Boolean)
+    .join(" ");
+
+  return tokens.every((token) => {
+    if (normalizedHaystack.includes(token)) {
+      return true;
+    }
+
+    const tokenDigits = token.replace(/\D/g, "");
+
+    return (
+      tokenDigits.length >= 3 &&
+      haystackDigits.includes(tokenDigits)
+    );
+  });
+}
+
 function cleanSearchText(raw: string): string {
   let q = normalizeQuoteText(raw);
   q = q.replace(/desconto\s*(?:de)?\s*\d+(?:[,.]\d+)?\s*%?/g, " ");
@@ -483,46 +569,220 @@ export default function QuotesPage() {
 
   async function fetchCustomers(q = "") {
     try {
-      const res = await fetch(`/api/crm/customers${q ? `?q=${encodeURIComponent(q)}` : ""}`, { cache: "no-store" });
+      const parsedSearch = parseQuoteSearch(q);
+
+      /*
+       * Para busca explícita por ID/UUID usamos a lista padrão e filtramos
+       * no frontend, porque a rota de clientes pode não pesquisar o campo id.
+       */
+      const useLocalIdSearch =
+        parsedSearch.scope === "id";
+
+      const remoteQuery = useLocalIdSearch
+        ? ""
+        : parsedSearch.value;
+
+      const res = await fetch(
+        `/api/crm/customers${
+          remoteQuery
+            ? `?q=${encodeURIComponent(remoteQuery)}`
+            : ""
+        }`,
+        { cache: "no-store" }
+      );
+
       const data = await res.json();
-      setCustomers(data.customers || data.rows || []);
+
+      let rows = Array.isArray(data.customers)
+        ? data.customers
+        : Array.isArray(data.rows)
+          ? data.rows
+          : [];
+
+      /*
+       * Se a API não encontrou um termo, preservamos uma segunda chance
+       * usando a lista padrão e a busca inteligente local.
+       */
+      if (q.trim() && !rows.length && !useLocalIdSearch) {
+        const fallbackRes = await fetch(
+          "/api/crm/customers",
+          { cache: "no-store" }
+        );
+
+        const fallbackData =
+          await fallbackRes.json();
+
+        rows = Array.isArray(
+          fallbackData.customers
+        )
+          ? fallbackData.customers
+          : Array.isArray(fallbackData.rows)
+            ? fallbackData.rows
+            : [];
+      }
+
+      setCustomers(rows);
     } catch {
       setCustomers([]);
     }
   }
 
   const customerSuggestions = useMemo(() => {
-    const q = normalizeQuoteText(customerSearch);
-    if (!q) return customers.slice(0, 8);
+    const search = parseQuoteSearch(
+      customerSearch
+    );
+
+    if (!search.value) {
+      return customers.slice(0, 8);
+    }
+
     return customers
-      .filter((c) => normalizeQuoteText([c.legal_name, c.trade_name, c.internal_code, c.erp_code, c.document, c.whatsapp].join(" ")).includes(q))
+      .filter((c) => {
+        const idFields = [
+          c.id,
+          c.internal_code,
+          c.erp_code,
+        ];
+
+        const customerFields = [
+          c.legal_name,
+          c.trade_name,
+          c.city,
+          c.state,
+          c.segment,
+        ];
+
+        const phoneFields = [c.whatsapp];
+        const documentFields = [c.document];
+
+        if (search.scope === "id") {
+          return quoteSearchMatches(
+            search.value,
+            idFields
+          );
+        }
+
+        if (search.scope === "customer") {
+          return quoteSearchMatches(
+            search.value,
+            customerFields
+          );
+        }
+
+        if (search.scope === "phone") {
+          return quoteSearchMatches(
+            search.value,
+            phoneFields
+          );
+        }
+
+        if (search.scope === "document") {
+          return quoteSearchMatches(
+            search.value,
+            documentFields
+          );
+        }
+
+        return quoteSearchMatches(
+          search.value,
+          [
+            ...idFields,
+            ...customerFields,
+            ...phoneFields,
+            ...documentFields,
+          ]
+        );
+      })
       .slice(0, 10);
   }, [customerSearch, customers]);
 
   const filteredSavedQuotes = useMemo(() => {
-    const query = normalizeQuoteText(savedQuoteSearch);
+    const search = parseQuoteSearch(
+      savedQuoteSearch
+    );
+
     const now = Date.now();
 
     return savedQuotes.filter((saved) => {
-      if (query) {
-        const itemText = (saved.items || [])
-          .map((item) => [item.code, item.name, item.raw].filter(Boolean).join(" "))
-          .join(" ");
+      if (search.value) {
+        const itemFields = (saved.items || [])
+          .flatMap((item) => [
+            item.code,
+            item.name,
+            item.raw,
+          ]);
 
-        const haystack = normalizeQuoteText(
-          [
-            saved.quoteNumber,
-            saved.customerName,
-            saved.customerInternalCode,
-            saved.requestText,
-            itemText,
-          ]
-            .filter(Boolean)
-            .join(" ")
-        );
+        const idFields = [
+          saved.id,
+          saved.quoteNumber,
+          saved.customerId,
+          saved.customerInternalCode,
+          saved.metadata?.customerId,
+          saved.metadata?.customerInternalCode,
+          saved.metadata?.clientId,
+          ...((saved.items || []).map(
+            (item) => item.code
+          )),
+        ];
 
-        const tokens = query.split(/\s+/).filter(Boolean);
-        if (!tokens.every((token) => haystack.includes(token))) {
+        const customerFields = [
+          saved.customerName,
+          saved.customerId,
+          saved.customerInternalCode,
+          saved.metadata?.customerId,
+          saved.metadata?.customerInternalCode,
+          saved.metadata?.clientId,
+        ];
+
+        const quoteFields = [
+          saved.id,
+          saved.quoteNumber,
+        ];
+
+        const codeFields = [
+          saved.customerInternalCode,
+          saved.metadata?.customerInternalCode,
+          saved.metadata?.clientId,
+          ...((saved.items || []).map(
+            (item) => item.code
+          )),
+        ];
+
+        let fields: any[] = [
+          ...idFields,
+          ...customerFields,
+          ...quoteFields,
+          ...itemFields,
+          saved.requestText,
+          saved.outputText,
+        ];
+
+        if (search.scope === "id") {
+          fields = idFields;
+        } else if (
+          search.scope === "customer"
+        ) {
+          fields = customerFields;
+        } else if (
+          search.scope === "product"
+        ) {
+          fields = itemFields;
+        } else if (
+          search.scope === "code"
+        ) {
+          fields = codeFields;
+        } else if (
+          search.scope === "quote"
+        ) {
+          fields = quoteFields;
+        }
+
+        if (
+          !quoteSearchMatches(
+            search.value,
+            fields
+          )
+        ) {
           return false;
         }
       }
@@ -1262,9 +1522,13 @@ export default function QuotesPage() {
                   setCustomerSearch(e.target.value);
                   fetchCustomers(e.target.value);
                 }}
-                placeholder="Nome, ID, CNPJ ou WhatsApp"
+                placeholder="Nome, ID/UUID, código, CNPJ ou WhatsApp"
                 className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-emerald-500 focus:bg-white"
               />
+
+              <p className="mt-2 text-[11px] font-semibold leading-5 text-slate-400">
+                Busca inteligente: use também “id:”, “cliente:”, “whatsapp:” ou “cnpj:”.
+              </p>
 
               <div className="mt-3 max-h-56 space-y-2 overflow-auto pr-1">
                 {customerSuggestions.map((c) => (
@@ -1485,7 +1749,7 @@ export default function QuotesPage() {
                 <input
                   value={savedQuoteSearch}
                   onChange={(e) => setSavedQuoteSearch(e.target.value)}
-                  placeholder="Buscar cliente, COT-..., produto ou código"
+                  placeholder="Buscar ID, COT-..., cliente, produto ou código"
                   className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-emerald-500 focus:bg-white"
                 />
 
@@ -1517,6 +1781,12 @@ export default function QuotesPage() {
                 </span>
                 <span className="rounded-full bg-slate-100 px-3 py-1.5">
                   Busca também dentro dos itens
+                </span>
+                <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-700">
+                  ID/UUID • cliente • produto • código
+                </span>
+                <span className="rounded-full bg-slate-100 px-3 py-1.5">
+                  Dica: id:, cliente:, produto:, codigo:, cotacao:
                 </span>
               </div>
 
@@ -1560,6 +1830,10 @@ export default function QuotesPage() {
 
                           <p className="mt-1 text-xs font-semibold text-slate-500">
                             {formatSavedQuoteDate(saved.createdAt)}
+                          </p>
+
+                          <p className="mt-1 text-[10px] font-bold text-slate-400">
+                            ID: {saved.id}
                           </p>
                         </div>
 
