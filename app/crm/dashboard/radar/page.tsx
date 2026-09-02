@@ -648,13 +648,29 @@ export default function RadarPage() {
       return;
     }
 
-    copyText(`${p.name}, ${p.phone1}`);
+    const externalId = String(
+      p.externalId || ""
+    ).trim();
+
+    copyText(
+      externalId
+        ? `${externalId}, ${p.name}, ${p.phone1}`
+        : `${p.name}, ${p.phone1}`
+    );
   }
 
   function copySelectedForCampaign() {
     const rows = selectedProspects
       .filter((p) => p.revealed && p.phone1)
-      .map((p) => `${p.name}, ${p.phone1}`)
+      .map((p) => {
+        const externalId = String(
+          p.externalId || ""
+        ).trim();
+
+        return externalId
+          ? `${externalId}, ${p.name}, ${p.phone1}`
+          : `${p.name}, ${p.phone1}`;
+      })
       .join("\n");
 
     if (!rows) {

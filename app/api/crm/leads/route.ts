@@ -507,6 +507,13 @@ export async function POST(req: NextRequest) {
     const batchId =
       clean(body.batch_id || body.batchId) || null;
 
+    const externalId = clean(
+      body.external_id ||
+        body.externalId ||
+        body.radar_id ||
+        body.radarId
+    );
+
     /*
      * VENDEDOR sempre cria o lead para si.
      * GERAL pode informar owner_user_id ou deixar sem responsável.
@@ -534,6 +541,7 @@ export async function POST(req: NextRequest) {
         "Candidato",
       phone,
       email: clean(body.email) || null,
+      external_id: externalId || null,
       status,
       job_id: jobId,
       current_job_id: jobId,
@@ -627,6 +635,18 @@ export async function POST(req: NextRequest) {
       ) {
         updatePayload.owner_user_id =
           ownerUserId;
+      }
+
+      /*
+       * O ID comercial do Radar acompanha o contato.
+       * Não substituímos um ID já salvo só por uma nova importação.
+       */
+      if (
+        !clean(existing.external_id) &&
+        externalId
+      ) {
+        updatePayload.external_id =
+          externalId;
       }
 
       if (hasExplicitStatus) {
@@ -736,6 +756,21 @@ export async function PATCH(req: NextRequest) {
 
     if (body.email !== undefined) {
       data.email = clean(body.email) || null;
+    }
+
+    if (
+      body.external_id !== undefined ||
+      body.externalId !== undefined ||
+      body.radar_id !== undefined ||
+      body.radarId !== undefined
+    ) {
+      data.external_id =
+        clean(
+          body.external_id ||
+            body.externalId ||
+            body.radar_id ||
+            body.radarId
+        ) || null;
     }
 
     if (

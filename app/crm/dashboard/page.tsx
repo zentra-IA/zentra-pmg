@@ -168,6 +168,14 @@ function formatLeadContact(lead: any) {
   return "Contato via Inbox";
 }
 
+function formatLeadExternalId(lead: any) {
+  return String(
+    lead?.external_id ||
+      lead?.externalId ||
+      ""
+  ).trim();
+}
+
 function shortText(text?: string | null, max = 90) {
   if (!text) return "";
   const value = String(text).trim();
@@ -271,6 +279,8 @@ export default function DashboardPage() {
 
       return [
         lead.name,
+        lead.external_id,
+        lead.externalId,
         lead.phone,
         lead.email,
         lead.city,
@@ -313,7 +323,15 @@ export default function DashboardPage() {
     const rows = filteredLeads.filter((lead) => {
       if (
         nameTerm &&
-        !String(lead?.name || "").toLowerCase().includes(nameTerm)
+        ![
+          lead?.name,
+          lead?.external_id,
+          lead?.externalId,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(nameTerm)
       ) {
         return false;
       }
@@ -532,7 +550,7 @@ export default function DashboardPage() {
           <div className="mt-5 grid gap-3 xl:grid-cols-[minmax(320px,1fr)_230px_250px_150px]">
             <input
               className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 outline-none placeholder:text-slate-400 shadow-sm focus:border-[#0f7a3a] focus:ring-4 focus:ring-green-100"
-              placeholder="Buscar por cliente, telefone, e-mail, cidade, empresa ou última mensagem..."
+              placeholder="Buscar por ID Radar, cliente, telefone, e-mail, cidade, empresa ou última mensagem..."
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
@@ -818,6 +836,11 @@ export default function DashboardPage() {
                           <div className="font-black text-slate-900">
                             {lead.name || "Contato WhatsApp"}
                           </div>
+                          {formatLeadExternalId(lead) && (
+                            <div className="mt-1 text-[11px] font-black text-[#0f7a3a]">
+                              ID Radar {formatLeadExternalId(lead)}
+                            </div>
+                          )}
                           {lead.email && (
                             <div className="mt-1 text-xs font-medium text-slate-500">
                               {lead.email}
@@ -1012,6 +1035,11 @@ function LeadCard({
           <h3 className="truncate text-sm font-black text-slate-950">
             {lead.name || "Contato WhatsApp"}
           </h3>
+          {formatLeadExternalId(lead) && (
+            <p className="mt-1 text-[11px] font-black text-[#0f7a3a]">
+              ID Radar {formatLeadExternalId(lead)}
+            </p>
+          )}
           <p className="mt-1 text-xs font-bold text-slate-500">
             {formatLeadContact(lead)}
           </p>

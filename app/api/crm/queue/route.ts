@@ -99,6 +99,55 @@ function uniqueTexts(values: unknown[]) {
   return result;
 }
 
+function getSaoPauloDayRange(reference = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(reference);
+
+  const year = Number(
+    parts.find((part) => part.type === "year")?.value
+  );
+  const month = Number(
+    parts.find((part) => part.type === "month")?.value
+  );
+  const day = Number(
+    parts.find((part) => part.type === "day")?.value
+  );
+
+  const date = `${String(year).padStart(4, "0")}-${String(
+    month
+  ).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+
+  /*
+   * São Paulo opera em UTC-03:00 e não utiliza horário de verão
+   * desde 2019. A faixa abaixo representa exatamente o dia comercial
+   * usado pelos vendedores, independentemente do fuso do servidor Vercel.
+   */
+  const start = new Date(`${date}T00:00:00-03:00`);
+
+  const nextUtc = new Date(
+    Date.UTC(year, month - 1, day) + 24 * 60 * 60 * 1000
+  );
+
+  const nextDate = `${nextUtc.getUTCFullYear()}-${String(
+    nextUtc.getUTCMonth() + 1
+  ).padStart(2, "0")}-${String(nextUtc.getUTCDate()).padStart(
+    2,
+    "0"
+  )}`;
+
+  const end = new Date(`${nextDate}T00:00:00-03:00`);
+
+  return {
+    date,
+    startIso: start.toISOString(),
+    endIso: end.toISOString(),
+  };
+}
+
 function getVariationText(variation: any) {
   if (typeof variation === "string") {
     return clean(variation);
@@ -459,8 +508,7 @@ async function getSessionStats(
   ownerUserId: string | null,
   sessionId: number
 ) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const dayRange = getSaoPauloDayRange();
 
   let sentQuery = supabase
     .from("automation_queue")
@@ -471,7 +519,8 @@ async function getSessionStats(
     .eq("company_id", companyId)
     .eq("session_id", sessionId)
     .eq("status", "sent")
-    .gte("sent_at", today.toISOString());
+    .gte("sent_at", dayRange.startIso)
+    .lt("sent_at", dayRange.endIso);
 
   let queuedQuery = supabase
     .from("automation_queue")
@@ -506,6 +555,217 @@ async function getSessionStats(
     used: sentResult.count || 0,
     queued: queuedResult.count || 0,
     limit: MAX_PER_SESSION_DAY,
+  };
+}
+
+async function countQueueInRange(
+  supabase: ReturnType<typeof getSupabase>,
+  companyId: string,
+  ownerUserId: string | null,
+  status: string,
+  field: "sent_at" | "updated_at",
+  startIso: string,
+  endIso: string
+) {
+  let query = supabase
+    .from("automation_queue")
+    .select("id", {
+      count: "exact",
+      head: true,
+    })
+    .eq("company_id", companyId)
+    .eq("status", status)
+    .gte(field, startIso)
+    .lt(field, endIso);
+
+  if (ownerUserId) {
+    query = query.eq("owner_user_id", ownerUserId);
+  }
+
+  const { count, error } = await query;
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return count || 0;
+}
+
+async function loadQueueOperation(
+  supabase: ReturnType<typeof getSupabase>,
+  companyId: string,
+  ownerUserId: string | null,
+  startIso: string,
+  endIso: string
+) {
+  const baseSelect =
+    "id,lead_id,phone,session_id,status,created_at,scheduled_at,sent_at,updated_at,error,last_error,attempts";
+
+  let activeQuery = supabase
+    .from("automation_queue")
+    .select(baseSelect)
+    .eq("company_id", companyId)
+    .in("status", ["pending", "processing", "paused"])
+    .order("created_at", { ascending: false })
+    .limit(250);
+
+  let sentTodayQuery = supabase
+    .from("automation_queue")
+    .select(baseSelect)
+    .eq("company_id", companyId)
+    .eq("status", "sent")
+    .gte("sent_at", startIso)
+    .lt("sent_at", endIso)
+    .order("sent_at", { ascending: false })
+    .limit(250);
+
+  let failedTodayQuery = supabase
+    .from("automation_queue")
+    .select(baseSelect)
+    .eq("company_id", companyId)
+    .eq("status", "failed")
+    .gte("updated_at", startIso)
+    .lt("updated_at", endIso)
+    .order("updated_at", { ascending: false })
+    .limit(250);
+
+  if (ownerUserId) {
+    activeQuery = activeQuery.eq("owner_user_id", ownerUserId);
+    sentTodayQuery = sentTodayQuery.eq("owner_user_id", ownerUserId);
+    failedTodayQuery = failedTodayQuery.eq(
+      "owner_user_id",
+      ownerUserId
+    );
+  }
+
+  const [activeResult, sentResult, failedResult] =
+    await Promise.all([
+      activeQuery,
+      sentTodayQuery,
+      failedTodayQuery,
+    ]);
+
+  for (const result of [
+    activeResult,
+    sentResult,
+    failedResult,
+  ]) {
+    if (result.error) {
+      throw new Error(result.error.message);
+    }
+  }
+
+  const byId = new Map<string, any>();
+
+  for (const item of [
+    ...(activeResult.data || []),
+    ...(sentResult.data || []),
+    ...(failedResult.data || []),
+  ]) {
+    byId.set(String(item.id), item);
+  }
+
+  const allItems = Array.from(byId.values()).sort(
+    (a: any, b: any) => {
+      const timeA = new Date(
+        a.sent_at ||
+          a.updated_at ||
+          a.created_at ||
+          0
+      ).getTime();
+
+      const timeB = new Date(
+        b.sent_at ||
+          b.updated_at ||
+          b.created_at ||
+          0
+      ).getTime();
+
+      return timeB - timeA;
+    }
+  );
+
+  const truncated = allItems.length > 250;
+  const items = allItems.slice(0, 250);
+
+  const leadIds = [
+    ...new Set(
+      items
+        .map((item: any) => clean(item.lead_id))
+        .filter(Boolean)
+    ),
+  ];
+
+  const leadMap = new Map<string, any>();
+
+  if (leadIds.length) {
+    const leadResultWithExternalId = await supabase
+      .from("leads")
+      .select("id,name,phone,external_id")
+      .eq("company_id", companyId)
+      .in("id", leadIds);
+
+    let leadData: any[] = [];
+
+    /*
+     * Compatibilidade de implantação:
+     * se a coluna external_id ainda não tiver sido criada, a fila continua
+     * funcionando normalmente. O ID passa a aparecer assim que a migration
+     * for aplicada.
+     */
+    if (
+      leadResultWithExternalId.error &&
+      /external_id/i.test(
+        leadResultWithExternalId.error.message || ""
+      )
+    ) {
+      const fallbackResult = await supabase
+        .from("leads")
+        .select("id,name,phone")
+        .eq("company_id", companyId)
+        .in("id", leadIds);
+
+      if (fallbackResult.error) {
+        throw new Error(
+          fallbackResult.error.message
+        );
+      }
+
+      leadData = fallbackResult.data || [];
+    } else {
+      if (leadResultWithExternalId.error) {
+        throw new Error(
+          leadResultWithExternalId.error.message
+        );
+      }
+
+      leadData =
+        leadResultWithExternalId.data || [];
+    }
+
+    for (const lead of leadData) {
+      leadMap.set(String(lead.id), lead);
+    }
+  }
+
+  return {
+    items: items.map((item: any) => {
+      const lead = leadMap.get(
+        String(item.lead_id || "")
+      );
+
+      return {
+        ...item,
+        name: lead?.name || null,
+        external_id:
+          lead?.external_id || null,
+        phone:
+          item.phone ||
+          lead?.phone ||
+          null,
+      };
+    }),
+    truncated,
   };
 }
 
@@ -580,6 +840,8 @@ export async function GET(req: NextRequest) {
         ? access.userId
         : sellerParam || null;
 
+    const dayRange = getSaoPauloDayRange();
+
     const [
       pending,
       processing,
@@ -587,6 +849,8 @@ export async function GET(req: NextRequest) {
       failed,
       paused,
       sessionEntries,
+      failedToday,
+      operation,
     ] = await Promise.all([
       countQueue(
         supabase,
@@ -629,9 +893,31 @@ export async function GET(req: NextRequest) {
           ),
         ])
       ),
+      countQueueInRange(
+        supabase,
+        access.companyId,
+        scopedOwnerUserId,
+        "failed",
+        "updated_at",
+        dayRange.startIso,
+        dayRange.endIso
+      ),
+      loadQueueOperation(
+        supabase,
+        access.companyId,
+        scopedOwnerUserId,
+        dayRange.startIso,
+        dayRange.endIso
+      ),
     ]);
 
     const stats = Object.fromEntries(sessionEntries);
+
+    const sentToday = Object.values(stats).reduce(
+      (sum: number, item: any) =>
+        sum + Number(item?.used || 0),
+      0
+    );
 
     return NextResponse.json({
       success: true,
@@ -641,6 +927,13 @@ export async function GET(req: NextRequest) {
       failed,
       paused,
       stats,
+      today: {
+        date: dayRange.date,
+        timezone: "America/Sao_Paulo",
+        sent: sentToday,
+        failed: failedToday,
+      },
+      operation,
       owner_user_id: scopedOwnerUserId,
       antiban: {
         maxPerSessionDay: MAX_PER_SESSION_DAY,

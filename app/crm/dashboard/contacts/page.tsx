@@ -35,6 +35,23 @@ type MessageTemplate = {
   active?: boolean | null;
 };
 
+type QueueOperationItem = {
+  id: string;
+  lead_id?: string | null;
+  external_id?: string | null;
+  name?: string | null;
+  phone?: string | null;
+  session_id?: number | null;
+  status?: string | null;
+  created_at?: string | null;
+  scheduled_at?: string | null;
+  sent_at?: string | null;
+  updated_at?: string | null;
+  error?: string | null;
+  last_error?: string | null;
+  attempts?: number | null;
+};
+
 function normalizeStatus(value?: string | null) {
   const status = String(value || "novo").trim().toLowerCase();
 
@@ -87,7 +104,8 @@ function parseBulk(text: string) {
     .map((line) => {
       const parts = line
         .split(/[,;\t|]/)
-        .map((item) => item.trim());
+        .map((item) => item.trim())
+        .filter(Boolean);
 
       const maybePhone = parts.find(
         (part) => onlyDigits(part).length >= 10
@@ -95,16 +113,93 @@ function parseBulk(text: string) {
 
       const phone = normalizePhone(maybePhone || "");
 
+      /*
+       * Formato vindo do Radar:
+       * ID, Nome, Telefone
+       *
+       * Mantém compatibilidade com o formato antigo:
+       * Nome, Telefone
+       */
+      const externalIdPart =
+        parts.length >= 3
+          ? parts.find((part, index) => {
+              if (index !== 0 || part === maybePhone) {
+                return false;
+              }
+
+              const digits = onlyDigits(part);
+
+              return (
+                digits.length > 0 &&
+                digits.length < 10 &&
+                /^\d+$/.test(part.replace(/\s/g, ""))
+              );
+            }) || ""
+          : "";
+
       const name =
         parts.find(
           (part) =>
             part !== maybePhone &&
-            !/^\d+$/.test(onlyDigits(part))
+            part !== externalIdPart &&
+            /[a-zA-ZÀ-ÿ]/.test(part)
         ) || "Contato";
 
-      return phone ? { name, phone } : null;
+      return phone
+        ? {
+            name,
+            phone,
+            external_id:
+              externalIdPart || null,
+          }
+        : null;
     })
-    .filter(Boolean) as { name: string; phone: string }[];
+    .filter(Boolean) as {
+      name: string;
+      phone: string;
+      external_id: string | null;
+    }[];
+}
+
+function queueStatusLabel(value?: string | null) {
+  const status = String(value || "").toLowerCase();
+
+  const labels: Record<string, string> = {
+    pending: "Aguardando",
+    processing: "Processando",
+    sent: "Enviado",
+    failed: "Erro",
+    paused: "Pausado",
+  };
+
+  return labels[status] || status || "-";
+}
+
+function queueStatusClass(value?: string | null) {
+  const status = String(value || "").toLowerCase();
+
+  if (status === "sent") return "queue-status is-sent";
+  if (status === "failed") return "queue-status is-failed";
+  if (status === "processing") return "queue-status is-processing";
+  if (status === "paused") return "queue-status is-paused";
+
+  return "queue-status is-pending";
+}
+
+function formatQueueTime(value?: string | null) {
+  if (!value) return "-";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+
+  return date.toLocaleTimeString("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function whatsappLink(value?: string | null) {
@@ -205,6 +300,7 @@ export default function ContactsDispatchPage() {
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [sessionId, setSessionId] = useState("1");
+  const [queueViewStatus, setQueueViewStatus] = useState("all");
 
   async function loadTemplates() {
     try {
@@ -384,7 +480,7 @@ export default function ContactsDispatchPage() {
       if (document.visibilityState === "visible") {
         void loadQueueStats();
       }
-    }, 30_000);
+    }, 5_000);
 
     return () => {
       window.clearInterval(interval);
@@ -410,6 +506,26 @@ export default function ContactsDispatchPage() {
       ),
     [sessionStats]
   );
+
+  const queueOperationItems = useMemo(() => {
+    const items = Array.isArray(
+      queueStats?.operation?.items
+    )
+      ? (queueStats.operation.items as QueueOperationItem[])
+      : [];
+
+    if (queueViewStatus === "all") {
+      return items;
+    }
+
+    return items.filter(
+      (item) =>
+        String(item.status || "").toLowerCase() ===
+        queueViewStatus
+    );
+  }, [queueStats, queueViewStatus]);
+
+  const queueToday = queueStats?.today || {};
 
   const stats = useMemo(
     () => ({
@@ -547,6 +663,8 @@ export default function ContactsDispatchPage() {
         await createLead({
           name: row.name,
           phone: row.phone,
+          external_id:
+            row.external_id || null,
           status: "novo",
         });
 
@@ -675,6 +793,12 @@ export default function ContactsDispatchPage() {
           /email|e-mail/i.test(key)
         );
 
+        const externalIdKey = keys.find((key) =>
+          /^(id|id cliente|id_cliente|codigo|código|external_id|external id)$/i.test(
+            String(key).trim()
+          )
+        );
+
         const phone = normalizePhone(
           phoneKey ? row[phoneKey] : ""
         );
@@ -688,6 +812,10 @@ export default function ContactsDispatchPage() {
           phone,
           email: emailKey
             ? row[emailKey]
+            : null,
+          external_id: externalIdKey
+            ? String(row[externalIdKey] || "").trim() ||
+              null
             : null,
           status: "novo",
         });
@@ -904,6 +1032,32 @@ export default function ContactsDispatchPage() {
         ? "Fila pausada."
         : "Fila retomada."
     );
+  }
+
+  async function retryQueueItem(id: string) {
+    const response = await fetch("/api/crm/queue", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({
+        action: "retry",
+        id,
+      }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      alert(
+        data?.error ||
+          "Erro ao reenviar item da fila."
+      );
+      return;
+    }
+
+    await loadQueueStats();
   }
 
   async function startSession(id: number) {
@@ -1237,12 +1391,12 @@ export default function ContactsDispatchPage() {
       <section className="panel">
         <h2>Adicionar em massa</h2>
         <p>
-          Use uma linha por contato no formato: Nome, Telefone.
+          Use uma linha por contato no formato: ID, Nome, Telefone. O formato antigo Nome, Telefone continua aceito.
         </p>
 
         <textarea
           rows={5}
-          placeholder={`Mercado Central, 11999999999\nLoja Primavera, 11988888888`}
+          placeholder={`227681, Mercado Central, 11999999999\n224993, Loja Primavera, 11988888888`}
           value={bulkText}
           onChange={(event) =>
             setBulkText(event.target.value)
@@ -1368,6 +1522,148 @@ export default function ContactsDispatchPage() {
         </div>
       </section>
 
+      <section className="panel queue-monitor">
+        <div className="panel-heading">
+          <div>
+            <h2>Acompanhamento dos disparos de hoje</h2>
+            <p>
+              Mostra o que já foi enviado, o que está processando,
+              quem ainda aguarda na fila e os erros do vendedor conectado.
+              Atualização automática a cada 5 segundos.
+            </p>
+          </div>
+
+          <button
+            className="button secondary"
+            onClick={loadQueueStats}
+          >
+            Atualizar agora
+          </button>
+        </div>
+
+        <div className="queue-summary-grid">
+          <div className="queue-summary-card">
+            <span>Enviados hoje</span>
+            <strong>{Number(queueToday?.sent || 0)}</strong>
+          </div>
+          <div className="queue-summary-card">
+            <span>Processando</span>
+            <strong>{Number(queueStats?.processing || 0)}</strong>
+          </div>
+          <div className="queue-summary-card">
+            <span>Aguardando</span>
+            <strong>{Number(queueStats?.pending || 0)}</strong>
+          </div>
+          <div className="queue-summary-card is-error">
+            <span>Erros hoje</span>
+            <strong>{Number(queueToday?.failed || 0)}</strong>
+          </div>
+        </div>
+
+        <div className="queue-filter-row">
+          {[
+            ["all", "Todos"],
+            ["sent", "Enviados"],
+            ["processing", "Processando"],
+            ["pending", "Aguardando"],
+            ["failed", "Erros"],
+          ].map(([value, label]) => (
+            <button
+              type="button"
+              key={value}
+              className={`queue-filter ${
+                queueViewStatus === value ? "active" : ""
+              }`}
+              onClick={() => setQueueViewStatus(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {queueOperationItems.length ? (
+          <div className="queue-table-wrap">
+            <table className="queue-table">
+              <thead>
+                <tr>
+                  <th>Cliente</th>
+                  <th>ID Radar</th>
+                  <th>WhatsApp</th>
+                  <th>Sessão</th>
+                  <th>Status</th>
+                  <th>Horário</th>
+                  <th>Detalhe</th>
+                  <th>Ação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {queueOperationItems.map((item) => (
+                  <tr key={item.id}>
+                    <td>
+                      <strong>{item.name || "Contato"}</strong>
+                    </td>
+                    <td>{item.external_id || "-"}</td>
+                    <td>{formatPhone(item.phone)}</td>
+                    <td>
+                      {item.session_id
+                        ? `WhatsApp ${item.session_id}`
+                        : "-"}
+                    </td>
+                    <td>
+                      <span className={queueStatusClass(item.status)}>
+                        {queueStatusLabel(item.status)}
+                      </span>
+                    </td>
+                    <td>
+                      {formatQueueTime(
+                        item.sent_at ||
+                          item.updated_at ||
+                          item.created_at
+                      )}
+                    </td>
+                    <td className="queue-error-cell">
+                      {item.status === "failed"
+                        ? item.last_error ||
+                          item.error ||
+                          "Falha no envio."
+                        : item.status === "sent"
+                          ? "Mensagem enviada com sucesso."
+                          : item.status === "processing"
+                            ? "Envio em processamento."
+                            : "Aguardando envio."}
+                    </td>
+                    <td>
+                      {item.status === "failed" ? (
+                        <button
+                          type="button"
+                          className="button secondary"
+                          onClick={() => retryQueueItem(item.id)}
+                        >
+                          Reenviar
+                        </button>
+                      ) : (
+                        "-"
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="empty queue-empty">
+            Nenhum item neste filtro.
+          </div>
+        )}
+
+        {queueStats?.operation?.truncated ? (
+          <p className="queue-note">
+            A lista mostra os 250 itens mais recentes. Os contadores acima
+            continuam exatos.
+          </p>
+        ) : null}
+      </section>
+
       <section className="panel">
         <div className="panel-heading">
           <div>
@@ -1478,6 +1774,7 @@ export default function ContactsDispatchPage() {
                           onChange={toggleAll}
                         />
                       </th>
+                      <th>ID Radar</th>
                       <th>Contato</th>
                       <th>WhatsApp</th>
                       <th>E-mail</th>
@@ -1501,6 +1798,11 @@ export default function ContactsDispatchPage() {
                                 toggle(contact.id)
                               }
                             />
+                          </td>
+                          <td>
+                            <strong>
+                              {contact.external_id || "-"}
+                            </strong>
                           </td>
                           <td>
                             <strong>
@@ -1595,6 +1897,12 @@ export default function ContactsDispatchPage() {
                           contact.nome ||
                           "Sem nome"}
                       </h3>
+
+                      {contact.external_id && (
+                        <small className="external-id">
+                          ID Radar {contact.external_id}
+                        </small>
+                      )}
 
                       <p>
                         {formatPhone(
@@ -1994,6 +2302,154 @@ export default function ContactsDispatchPage() {
           text-align: center;
         }
 
+        .queue-summary-grid {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 10px;
+          margin-top: 14px;
+        }
+
+        .queue-summary-card {
+          display: grid;
+          gap: 6px;
+          padding: 14px;
+          border: 1px solid #d1fae5;
+          border-radius: 18px;
+          background: #f8fffb;
+        }
+
+        .queue-summary-card span {
+          color: #64748b;
+          font-size: 11px;
+          font-weight: 850;
+        }
+
+        .queue-summary-card strong {
+          font-size: 24px;
+        }
+
+        .queue-summary-card.is-error {
+          border-color: #fecaca;
+          background: #fff7f7;
+        }
+
+        .queue-summary-card.is-error strong {
+          color: #b91c1c;
+        }
+
+        .queue-filter-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-top: 14px;
+        }
+
+        .queue-filter {
+          border: 1px solid #dbe4ee;
+          border-radius: 999px;
+          padding: 8px 12px;
+          background: #ffffff;
+          color: #475569;
+          font-size: 12px;
+          font-weight: 900;
+          cursor: pointer;
+        }
+
+        .queue-filter.active {
+          border-color: #16a34a;
+          color: #166534;
+          background: #dcfce7;
+        }
+
+        .queue-table-wrap {
+          overflow-x: auto;
+          margin-top: 14px;
+          border: 1px solid #e2e8f0;
+          border-radius: 18px;
+        }
+
+        .queue-table {
+          width: 100%;
+          min-width: 1050px;
+          border-collapse: collapse;
+        }
+
+        .queue-table th,
+        .queue-table td {
+          padding: 11px 12px;
+          border-bottom: 1px solid #eef2f7;
+          text-align: left;
+          font-size: 12px;
+          vertical-align: middle;
+        }
+
+        .queue-table th {
+          color: #475569;
+          background: #f8fafc;
+          font-size: 10px;
+          font-weight: 950;
+          letter-spacing: 0.05em;
+          text-transform: uppercase;
+        }
+
+        .queue-status {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 86px;
+          border-radius: 999px;
+          padding: 6px 9px;
+          font-size: 10px;
+          font-weight: 950;
+        }
+
+        .queue-status.is-sent {
+          color: #166534;
+          background: #dcfce7;
+        }
+
+        .queue-status.is-processing {
+          color: #1d4ed8;
+          background: #dbeafe;
+        }
+
+        .queue-status.is-pending {
+          color: #92400e;
+          background: #fef3c7;
+        }
+
+        .queue-status.is-failed {
+          color: #b91c1c;
+          background: #fee2e2;
+        }
+
+        .queue-status.is-paused {
+          color: #475569;
+          background: #e2e8f0;
+        }
+
+        .queue-error-cell {
+          max-width: 340px;
+          white-space: normal;
+          line-height: 1.4;
+        }
+
+        .queue-note {
+          margin-top: 10px !important;
+          font-size: 11px !important;
+        }
+
+        .queue-empty {
+          margin-top: 12px;
+        }
+
+        .external-id {
+          display: inline-block;
+          margin-bottom: 4px;
+          color: #15803d !important;
+          font-weight: 900;
+        }
+
         .desktop-table {
           margin-top: 16px;
           overflow-x: auto;
@@ -2112,6 +2568,13 @@ export default function ContactsDispatchPage() {
               minmax(0, 1fr)
             );
           }
+
+          .queue-summary-grid {
+            grid-template-columns: repeat(
+              2,
+              minmax(0, 1fr)
+            );
+          }
         }
 
         @media (max-width: 760px) {
@@ -2138,6 +2601,13 @@ export default function ContactsDispatchPage() {
           }
 
           .metrics {
+            grid-template-columns: repeat(
+              2,
+              minmax(0, 1fr)
+            );
+          }
+
+          .queue-summary-grid {
             grid-template-columns: repeat(
               2,
               minmax(0, 1fr)
