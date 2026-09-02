@@ -419,6 +419,1156 @@ function moneyBR(value: any) {
   return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
+
+type QuoteVisualItem = {
+  kind: "item" | "option";
+  rank?: number;
+  code: string;
+  name: string;
+  quantity: number;
+  unit: string;
+  unitPrice: number;
+  total: number;
+};
+
+function getQuoteVisualItems(
+  currentQuote: GeneratedQuote | null
+): QuoteVisualItem[] {
+  const quoteItems = Array.isArray(
+    currentQuote?.items
+  )
+    ? currentQuote?.items || []
+    : [];
+
+  const optionBlocks = Array.isArray(
+    currentQuote?.optionBlocks
+  )
+    ? currentQuote?.optionBlocks || []
+    : [];
+
+  /*
+   * A regra "X produtos mais baratos" é retornada pela API
+   * dentro de optionBlocks. Ela não representa uma quantidade
+   * comprada; representa uma lista ordenada de alternativas.
+   */
+  const optionRows: QuoteVisualItem[] =
+    optionBlocks.flatMap((block: any) => {
+      const discount = Math.min(
+        100,
+        Math.max(
+          0,
+          Number(
+            block?.discountPercent || 0
+          )
+        )
+      );
+
+      return (
+        Array.isArray(block?.options)
+          ? block.options
+          : []
+      ).map(
+        (option: any, index: number) => {
+          const originalPrice = Number(
+            option?.price ??
+              option?.unitPrice ??
+              0
+          );
+
+          const finalPrice =
+            Math.round(
+              (
+                originalPrice *
+                  (1 - discount / 100) +
+                Number.EPSILON
+              ) *
+                100
+            ) / 100;
+
+          return {
+            kind: "option" as const,
+            rank: index + 1,
+            code: String(
+              option?.code || ""
+            ).trim(),
+            name: String(
+              option?.official_name ||
+                option?.product_name_from_pdf ||
+                option?.name ||
+                `Opção ${index + 1}`
+            ).trim(),
+            quantity: 0,
+            unit: String(
+              option?.sell_unit ||
+                option?.unit ||
+                "UN"
+            ).trim(),
+            unitPrice:
+              Number.isFinite(finalPrice)
+                ? finalPrice
+                : 0,
+            total:
+              Number.isFinite(finalPrice)
+                ? finalPrice
+                : 0,
+          };
+        }
+      );
+    });
+
+  const itemRows: QuoteVisualItem[] =
+    quoteItems.map(
+      (item: any, index: number) => {
+        const name = String(
+          item?.productName ||
+            item?.name ||
+            item?.option?.official_name ||
+            item?.selected?.descricaoOriginal ||
+            item?.selected?.descriptionOriginal ||
+            item?.selected?.produto ||
+            item?.selected?.product ||
+            item?.input?.raw ||
+            item?.raw ||
+            `Item ${index + 1}`
+        ).trim();
+
+        const code = String(
+          item?.code ||
+            item?.productCode ||
+            item?.option?.code ||
+            item?.selected?.code ||
+            ""
+        ).trim();
+
+        const quantity = Number(
+          item?.quantity ??
+            item?.convertedQuantity ??
+            1
+        );
+
+        const unit = String(
+          item?.unit ||
+            item?.convertedUnit ||
+            item?.tableUnit ||
+            "UN"
+        ).trim();
+
+        const unitPrice = Number(
+          item?.discountedUnitPrice ??
+            item?.unitPrice ??
+            item?.tableUnitPrice ??
+            0
+        );
+
+        const total = Number(
+          item?.subtotal ??
+            item?.total ??
+            unitPrice * quantity
+        );
+
+        return {
+          kind: "item" as const,
+          code,
+          name,
+          quantity:
+            Number.isFinite(quantity) &&
+            quantity > 0
+              ? quantity
+              : 1,
+          unit: unit || "UN",
+          unitPrice:
+            Number.isFinite(unitPrice)
+              ? unitPrice
+              : 0,
+          total:
+            Number.isFinite(total)
+              ? total
+              : 0,
+        };
+      }
+    );
+
+  /*
+   * Mantém a mesma lógica do texto gerado:
+   * opções mais baratas primeiro e itens fechados depois.
+   */
+  return [...optionRows, ...itemRows];
+}
+
+function quoteIsOptionsOnly(
+  currentQuote: GeneratedQuote | null
+) {
+  const rows =
+    getQuoteVisualItems(currentQuote);
+
+  return (
+    rows.length > 0 &&
+    rows.every(
+      (row) => row.kind === "option"
+    )
+  );
+}
+
+function formatQuoteTableDate(
+  value?: string | null
+) {
+  const raw = String(
+    value || ""
+  ).trim();
+
+  if (!raw) return "";
+
+  if (
+    raw.toLowerCase() === "dia atual"
+  ) {
+    return "Dia atual";
+  }
+
+  const date = new Date(raw);
+
+  if (
+    Number.isNaN(date.getTime())
+  ) {
+    return raw;
+  }
+
+  return date.toLocaleDateString(
+    "pt-BR"
+  );
+}
+
+function formatQuoteQuantity(value: number) {
+  return Number(value || 0).toLocaleString(
+    "pt-BR",
+    {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 3,
+    }
+  );
+}
+
+function formatQuoteImageDate() {
+  return new Date().toLocaleDateString(
+    "pt-BR"
+  );
+}
+
+function safeQuoteFilePart(value: string) {
+  return normalizeQuoteText(value)
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+}
+
+function loadQuoteLogo(
+  src: string
+): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+
+    image.onload = () => resolve(image);
+    image.onerror = () =>
+      reject(
+        new Error(
+          "Não foi possível carregar o logo PMG."
+        )
+      );
+
+    image.src = src;
+  });
+}
+
+function canvasRoundedRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+  fill: string
+) {
+  const r = Math.min(
+    radius,
+    width / 2,
+    height / 2
+  );
+
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(
+    x + width,
+    y,
+    x + width,
+    y + height,
+    r
+  );
+  ctx.arcTo(
+    x + width,
+    y + height,
+    x,
+    y + height,
+    r
+  );
+  ctx.arcTo(
+    x,
+    y + height,
+    x,
+    y,
+    r
+  );
+  ctx.arcTo(
+    x,
+    y,
+    x + width,
+    y,
+    r
+  );
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+}
+
+function canvasTextLines(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number
+) {
+  const words = String(text || "")
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (!words.length) return [""];
+
+  const lines: string[] = [];
+  let current = words[0];
+
+  for (let index = 1; index < words.length; index += 1) {
+    const candidate = `${current} ${words[index]}`;
+
+    if (
+      ctx.measureText(candidate).width <=
+      maxWidth
+    ) {
+      current = candidate;
+    } else {
+      lines.push(current);
+      current = words[index];
+    }
+  }
+
+  lines.push(current);
+  return lines;
+}
+
+function drawQuoteImageText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  options?: {
+    font?: string;
+    fill?: string;
+    align?: CanvasTextAlign;
+    baseline?: CanvasTextBaseline;
+  }
+) {
+  ctx.font =
+    options?.font ||
+    "600 26px Arial, sans-serif";
+  ctx.fillStyle =
+    options?.fill || "#0f172a";
+  ctx.textAlign =
+    options?.align || "left";
+  ctx.textBaseline =
+    options?.baseline || "middle";
+  ctx.fillText(String(text || ""), x, y);
+}
+
+async function createQuoteImageBlob(params: {
+  quote: GeneratedQuote;
+  clientName?: string;
+  clientId?: string;
+  showProductId?: boolean;
+}) {
+  const rows = getQuoteVisualItems(
+    params.quote
+  );
+
+  const optionsOnly =
+    quoteIsOptionsOnly(params.quote);
+
+  if (!rows.length) {
+    throw new Error(
+      "A cotação ainda não possui itens para gerar a imagem."
+    );
+  }
+
+  const canvas = document.createElement(
+    "canvas"
+  );
+
+  const width = 1440;
+  const outer = 48;
+  const innerX = 88;
+  const innerWidth = width - innerX * 2;
+
+  /*
+   * Calculamos a altura de cada linha conforme o tamanho do nome do
+   * produto para evitar letras pequenas ou nomes cortados.
+   */
+  const measureCanvas =
+    document.createElement("canvas");
+  const measureCtx =
+    measureCanvas.getContext("2d");
+
+  if (!measureCtx) {
+    throw new Error(
+      "Seu navegador não conseguiu preparar a imagem."
+    );
+  }
+
+  measureCtx.font =
+    "700 28px Arial, sans-serif";
+
+  const productTextWidth = 520;
+
+  const rowLayouts = rows.map((row) => {
+    const lines = canvasTextLines(
+      measureCtx,
+      row.name,
+      productTextWidth
+    );
+
+    const lineCount = Math.min(
+      Math.max(lines.length, 1),
+      4
+    );
+
+    return {
+      row,
+      lines: lines.slice(0, 4),
+      height: Math.max(
+        98,
+        46 + lineCount * 31
+      ),
+    };
+  });
+
+  const rowsHeight = rowLayouts.reduce(
+    (sum, item) => sum + item.height,
+    0
+  );
+
+  const height =
+    outer +
+    190 +
+    28 +
+    118 +
+    30 +
+    72 +
+    rowsHeight +
+    34 +
+    154 +
+    82 +
+    outer;
+
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+
+  if (!ctx) {
+    throw new Error(
+      "Seu navegador não conseguiu gerar a imagem."
+    );
+  }
+
+  // Fundo externo.
+  ctx.fillStyle = "#f1f5f4";
+  ctx.fillRect(0, 0, width, height);
+
+  // Cartão principal.
+  canvasRoundedRect(
+    ctx,
+    outer,
+    outer,
+    width - outer * 2,
+    height - outer * 2,
+    34,
+    "#ffffff"
+  );
+
+  // Faixa superior.
+  canvasRoundedRect(
+    ctx,
+    outer,
+    outer,
+    width - outer * 2,
+    190,
+    34,
+    "#07130f"
+  );
+
+  // Corrige os cantos inferiores da faixa para ficarem retos.
+  ctx.fillStyle = "#07130f";
+  ctx.fillRect(
+    outer,
+    outer + 120,
+    width - outer * 2,
+    70
+  );
+
+  // Linha de identidade.
+  ctx.fillStyle = "#10b981";
+  ctx.fillRect(
+    outer,
+    outer + 186,
+    width - outer * 2,
+    4
+  );
+
+  // Logo.
+  try {
+    const logo = await loadQuoteLogo(
+      "/logo-pmg.png"
+    );
+
+    const logoBoxWidth = 250;
+    const logoBoxHeight = 102;
+    const ratio = Math.min(
+      logoBoxWidth / logo.width,
+      logoBoxHeight / logo.height
+    );
+
+    const logoWidth =
+      logo.width * ratio;
+    const logoHeight =
+      logo.height * ratio;
+
+    ctx.drawImage(
+      logo,
+      innerX,
+      outer + 40,
+      logoWidth,
+      logoHeight
+    );
+  } catch {
+    drawQuoteImageText(
+      ctx,
+      "PMG",
+      innerX,
+      outer + 91,
+      {
+        font: "900 54px Arial, sans-serif",
+        fill: "#ffffff",
+      }
+    );
+  }
+
+  drawQuoteImageText(
+    ctx,
+    optionsOnly
+      ? "OPÇÕES MAIS BARATAS"
+      : "COTAÇÃO COMERCIAL",
+    width - innerX,
+    outer + 76,
+    {
+      font: "900 38px Arial, sans-serif",
+      fill: "#ffffff",
+      align: "right",
+    }
+  );
+
+  drawQuoteImageText(
+    ctx,
+    `Emitida em ${formatQuoteImageDate()}`,
+    width - innerX,
+    outer + 126,
+    {
+      font: "600 22px Arial, sans-serif",
+      fill: "#a7b6af",
+      align: "right",
+    }
+  );
+
+  let y = outer + 218;
+
+  // Cliente.
+  canvasRoundedRect(
+    ctx,
+    innerX,
+    y,
+    innerWidth,
+    118,
+    22,
+    "#f7faf9"
+  );
+
+  drawQuoteImageText(
+    ctx,
+    "CLIENTE",
+    innerX + 30,
+    y + 31,
+    {
+      font: "800 18px Arial, sans-serif",
+      fill: "#0f8a5f",
+    }
+  );
+
+  drawQuoteImageText(
+    ctx,
+    params.clientName ||
+      "Cliente não informado",
+    innerX + 30,
+    y + 72,
+    {
+      font: "800 31px Arial, sans-serif",
+      fill: "#0f172a",
+    }
+  );
+
+  const rightInfo = [
+    params.clientId
+      ? `ID ${params.clientId}`
+      : "",
+    params.quote.tableDate
+      ? `Tabela: ${formatQuoteTableDate(
+          params.quote.tableDate
+        )}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("  •  ");
+
+  if (rightInfo) {
+    drawQuoteImageText(
+      ctx,
+      rightInfo,
+      width - innerX - 30,
+      y + 72,
+      {
+        font: "600 20px Arial, sans-serif",
+        fill: "#64748b",
+        align: "right",
+      }
+    );
+  }
+
+  y += 148;
+
+  // Tabela.
+  const colProduct = 584;
+  const colQty = 130;
+  const colUnit = 130;
+  const colUnitPrice = 200;
+  const colTotal = innerWidth -
+    colProduct -
+    colQty -
+    colUnit -
+    colUnitPrice;
+
+  const xProduct = innerX;
+  const xQty = xProduct + colProduct;
+  const xUnit = xQty + colQty;
+  const xUnitPrice = xUnit + colUnit;
+  const xTotal = xUnitPrice + colUnitPrice;
+
+  canvasRoundedRect(
+    ctx,
+    innerX,
+    y,
+    innerWidth,
+    72,
+    18,
+    "#0f5138"
+  );
+
+  drawQuoteImageText(
+    ctx,
+    "PRODUTO",
+    xProduct + 24,
+    y + 36,
+    {
+      font: "800 19px Arial, sans-serif",
+      fill: "#ffffff",
+    }
+  );
+  drawQuoteImageText(
+    ctx,
+    optionsOnly
+      ? "OPÇÃO"
+      : "QTD.",
+    xQty + colQty / 2,
+    y + 36,
+    {
+      font: "800 19px Arial, sans-serif",
+      fill: "#ffffff",
+      align: "center",
+    }
+  );
+  drawQuoteImageText(
+    ctx,
+    "UN.",
+    xUnit + colUnit / 2,
+    y + 36,
+    {
+      font: "800 19px Arial, sans-serif",
+      fill: "#ffffff",
+      align: "center",
+    }
+  );
+  drawQuoteImageText(
+    ctx,
+    optionsOnly
+      ? "PREÇO"
+      : "PREÇO UNIT.",
+    xUnitPrice + colUnitPrice - 22,
+    y + 36,
+    {
+      font: "800 19px Arial, sans-serif",
+      fill: "#ffffff",
+      align: "right",
+    }
+  );
+  if (!optionsOnly) {
+    drawQuoteImageText(
+      ctx,
+      "TOTAL",
+      xTotal + colTotal - 24,
+      y + 36,
+      {
+        font: "800 19px Arial, sans-serif",
+        fill: "#ffffff",
+        align: "right",
+      }
+    );
+  }
+
+  y += 72;
+
+  rowLayouts.forEach(
+    ({ row, lines, height: rowHeight }, index) => {
+      ctx.fillStyle =
+        index % 2 === 0
+          ? "#ffffff"
+          : "#f8faf9";
+
+      ctx.fillRect(
+        innerX,
+        y,
+        innerWidth,
+        rowHeight
+      );
+
+      // Linha divisória.
+      ctx.fillStyle = "#e2e8e5";
+      ctx.fillRect(
+        innerX,
+        y + rowHeight - 1,
+        innerWidth,
+        1
+      );
+
+      // Nome do produto.
+      ctx.font =
+        "700 28px Arial, sans-serif";
+      ctx.fillStyle = "#111827";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+
+      const productTop =
+        y +
+        Math.max(
+          18,
+          (rowHeight -
+            lines.length * 31 -
+            (params.showProductId &&
+            row.code
+              ? 25
+              : 0)) /
+            2
+        );
+
+      lines.forEach(
+        (line, lineIndex) => {
+          ctx.fillText(
+            line,
+            xProduct + 24,
+            productTop +
+              lineIndex * 31
+          );
+        }
+      );
+
+      if (
+        params.showProductId !== false &&
+        row.code
+      ) {
+        ctx.font =
+          "600 18px Arial, sans-serif";
+        ctx.fillStyle = "#64748b";
+        ctx.fillText(
+          `ID ${row.code}`,
+          xProduct + 24,
+          productTop +
+            lines.length * 31 +
+            5
+        );
+      }
+
+      const centerY = y + rowHeight / 2;
+
+      drawQuoteImageText(
+        ctx,
+        row.kind === "option"
+          ? `${row.rank || index + 1}ª`
+          : formatQuoteQuantity(
+              row.quantity
+            ),
+        xQty + colQty / 2,
+        centerY,
+        {
+          font: "800 25px Arial, sans-serif",
+          fill: "#334155",
+          align: "center",
+        }
+      );
+
+      drawQuoteImageText(
+        ctx,
+        row.unit.toUpperCase(),
+        xUnit + colUnit / 2,
+        centerY,
+        {
+          font: "800 22px Arial, sans-serif",
+          fill: "#64748b",
+          align: "center",
+        }
+      );
+
+      drawQuoteImageText(
+        ctx,
+        moneyBR(row.unitPrice),
+        xUnitPrice +
+          colUnitPrice -
+          22,
+        centerY,
+        {
+          font: "700 24px Arial, sans-serif",
+          fill: "#334155",
+          align: "right",
+        }
+      );
+
+      if (!optionsOnly) {
+        drawQuoteImageText(
+          ctx,
+          moneyBR(row.total),
+          xTotal + colTotal - 24,
+          centerY,
+          {
+            font: "900 26px Arial, sans-serif",
+            fill: "#0f5138",
+            align: "right",
+          }
+        );
+      }
+
+      y += rowHeight;
+    }
+  );
+
+  y += 34;
+
+  // Total geral.
+  canvasRoundedRect(
+    ctx,
+    innerX,
+    y,
+    innerWidth,
+    154,
+    24,
+    "#07130f"
+  );
+
+  drawQuoteImageText(
+    ctx,
+    `${rows.length} ${
+      rows.length === 1
+        ? "produto"
+        : "produtos"
+    }`,
+    innerX + 34,
+    y + 55,
+    {
+      font: "700 22px Arial, sans-serif",
+      fill: "#a7b6af",
+    }
+  );
+
+  drawQuoteImageText(
+    ctx,
+    optionsOnly
+      ? "MELHORES OPÇÕES ENCONTRADAS"
+      : "TOTAL DA COTAÇÃO",
+    innerX + 34,
+    y + 99,
+    {
+      font: "900 27px Arial, sans-serif",
+      fill: "#ffffff",
+    }
+  );
+
+  drawQuoteImageText(
+    ctx,
+    optionsOnly
+      ? "Valores unitários"
+      : moneyBR(
+          params.quote.total
+        ),
+    width - innerX - 34,
+    y + 77,
+    {
+      font: optionsOnly
+        ? "800 31px Arial, sans-serif"
+        : "900 48px Arial, sans-serif",
+      fill: "#34d399",
+      align: "right",
+    }
+  );
+
+  y += 154;
+
+  // Rodapé.
+  drawQuoteImageText(
+    ctx,
+    "PMG • Cotação comercial",
+    innerX,
+    y + 46,
+    {
+      font: "700 19px Arial, sans-serif",
+      fill: "#64748b",
+    }
+  );
+
+  drawQuoteImageText(
+    ctx,
+    "Valores apresentados conforme a cotação gerada.",
+    width - innerX,
+    y + 46,
+    {
+      font: "500 18px Arial, sans-serif",
+      fill: "#94a3b8",
+      align: "right",
+    }
+  );
+
+  return new Promise<Blob>(
+    (resolve, reject) => {
+      canvas.toBlob(
+        (blob) => {
+          if (blob) {
+            resolve(blob);
+            return;
+          }
+
+          reject(
+            new Error(
+              "Não foi possível finalizar a imagem."
+            )
+          );
+        },
+        "image/png",
+        1
+      );
+    }
+  );
+}
+
+function QuoteVisualPreview(props: {
+  quote: GeneratedQuote;
+  clientName?: string;
+  clientId?: string;
+  showProductId?: boolean;
+}) {
+  const rows = getQuoteVisualItems(
+    props.quote
+  );
+
+  const optionsOnly =
+    quoteIsOptionsOnly(props.quote);
+
+  return (
+    <div className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-white shadow-sm">
+      <div className="border-b-4 border-emerald-500 bg-slate-950 p-4 text-white">
+        <div className="flex items-center justify-between gap-4">
+          <img
+            src="/logo-pmg.png"
+            alt="PMG"
+            className="h-12 max-w-[145px] rounded-lg bg-white object-contain px-2 py-1"
+          />
+
+          <div className="text-right">
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-300">
+              {optionsOnly
+                ? "Opções mais baratas"
+                : "Cotação comercial"}
+            </p>
+
+            <p className="mt-1 text-[11px] font-semibold text-slate-300">
+              {formatQuoteImageDate()}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="border-b border-slate-100 bg-slate-50 p-4">
+        <p className="text-[9px] font-black uppercase tracking-[0.18em] text-emerald-700">
+          Cliente
+        </p>
+
+        <p className="mt-1 truncate text-base font-black text-slate-950">
+          {props.clientName ||
+            "Cliente não informado"}
+        </p>
+
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-semibold text-slate-500">
+          {props.clientId && (
+            <span>
+              ID {props.clientId}
+            </span>
+          )}
+
+          {props.quote.tableDate && (
+            <span>
+              Tabela:{" "}
+              {formatQuoteTableDate(
+                props.quote.tableDate
+              )}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-[minmax(0,1fr)_72px_110px] gap-2 bg-emerald-800 px-4 py-2.5 text-[9px] font-black uppercase tracking-wide text-white">
+        <span>Produto</span>
+
+        <span className="text-center">
+          {optionsOnly
+            ? "Opção"
+            : "Qtd."}
+        </span>
+
+        <span className="text-right">
+          {optionsOnly
+            ? "Preço"
+            : "Total"}
+        </span>
+      </div>
+
+      <div>
+        {rows.map((row, index) => (
+          <div
+            key={`${row.code || row.name}-${index}`}
+            className={`grid grid-cols-[minmax(0,1fr)_72px_110px] gap-2 border-b border-slate-100 px-4 py-3 ${
+              index % 2
+                ? "bg-slate-50/70"
+                : "bg-white"
+            }`}
+          >
+            <div className="min-w-0">
+              <p className="text-xs font-black leading-5 text-slate-900">
+                {row.name}
+              </p>
+
+              <p className="mt-1 text-[10px] font-semibold text-slate-500">
+                {props.showProductId !==
+                  false &&
+                row.code
+                  ? `ID ${row.code} • `
+                  : ""}
+
+                {moneyBR(
+                  row.unitPrice
+                )}{" "}
+                /{" "}
+                {row.unit.toUpperCase()}
+              </p>
+            </div>
+
+            <div className="flex items-center justify-center text-center">
+              {row.kind === "option" ? (
+                <div>
+                  <p className="text-sm font-black text-emerald-700">
+                    {row.rank ||
+                      index + 1}ª
+                  </p>
+                  <p className="text-[9px] font-bold uppercase text-slate-400">
+                    menor
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  <p className="text-xs font-black text-slate-900">
+                    {formatQuoteQuantity(
+                      row.quantity
+                    )}
+                  </p>
+
+                  <p className="text-[9px] font-bold uppercase text-slate-400">
+                    {row.unit}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end text-right">
+              <p className="text-xs font-black text-emerald-700">
+                {moneyBR(
+                  row.kind === "option"
+                    ? row.unitPrice
+                    : row.total
+                )}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-center justify-between gap-3 bg-slate-950 p-4 text-white">
+        <div>
+          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+            {optionsOnly
+              ? "Resultado da pesquisa"
+              : "Total da cotação"}
+          </p>
+
+          <p className="mt-1 text-[10px] font-semibold text-slate-400">
+            {rows.length}{" "}
+            {rows.length === 1
+              ? "produto"
+              : "produtos"}
+          </p>
+        </div>
+
+        {optionsOnly ? (
+          <p className="text-right text-xs font-black text-emerald-300">
+            Ordenado do
+            <br />
+            menor preço
+          </p>
+        ) : (
+          <p className="text-xl font-black text-emerald-300">
+            {moneyBR(
+              props.quote.total
+            )}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function customerLabel(c: Customer) {
   const name = c.trade_name || c.legal_name;
   const code = c.internal_code || c.erp_code || "";
@@ -528,6 +1678,9 @@ export default function QuotesPage() {
   const [showProductId, setShowProductId] = useState(true);
   const [loading, setLoading] = useState(false);
   const [quote, setQuote] = useState<GeneratedQuote | null>(null);
+  const [quotePreviewMode, setQuotePreviewMode] = useState<"text" | "image">("text");
+  const [quoteImageLoading, setQuoteImageLoading] = useState(false);
+  const [quoteImageStatus, setQuoteImageStatus] = useState("");
   const [tableDate, setTableDate] = useState("");
   const [candidateGroups, setCandidateGroups] = useState<CandidateGroup[]>([]);
   const [autoItems, setAutoItems] = useState<any[]>([]);
@@ -556,6 +1709,11 @@ export default function QuotesPage() {
   const [savedQuotePeriod, setSavedQuotePeriod] = useState("all");
   const [savedQuoteDiscount, setSavedQuoteDiscount] = useState("all");
   const [openedSavedQuote, setOpenedSavedQuote] = useState<SavedQuote | null>(null);
+
+  const quoteVisualRows = useMemo(
+    () => getQuoteVisualItems(quote),
+    [quote]
+  );
 
   useEffect(() => {
     fetchCustomers();
@@ -1008,6 +2166,7 @@ export default function QuotesPage() {
 
     setLoading(true);
     setQuote(null);
+    setQuoteImageStatus("");
     setStatus("Interpretando pedido com IA e consultando a tabela PMG...");
     setSavedStatus("");
 
@@ -1263,6 +2422,221 @@ export default function QuotesPage() {
     if (!quote?.outputText) return;
     await navigator.clipboard.writeText(quote.outputText);
     setStatus("Cotação copiada. Agora é só colar no WhatsApp.");
+  }
+
+  function quoteImageFileName() {
+    const client =
+      safeQuoteFilePart(clientName) ||
+      "cliente";
+
+    const date = new Date()
+      .toISOString()
+      .slice(0, 10);
+
+    return `cotacao-pmg-${client}-${date}.png`;
+  }
+
+  function downloadQuoteBlob(
+    blob: Blob,
+    fileName: string
+  ) {
+    const url =
+      URL.createObjectURL(blob);
+
+    const link =
+      document.createElement("a");
+
+    link.href = url;
+    link.download = fileName;
+
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    window.setTimeout(
+      () => URL.revokeObjectURL(url),
+      1500
+    );
+  }
+
+  async function copyQuoteImage() {
+    if (!quote) return;
+
+    setQuoteImageLoading(true);
+    setQuoteImageStatus(
+      "Preparando imagem para copiar..."
+    );
+
+    try {
+      const blob =
+        await createQuoteImageBlob({
+          quote,
+          clientName,
+          clientId,
+          showProductId,
+        });
+
+      const clipboard =
+        navigator.clipboard as
+          | (Clipboard & {
+              write?: (
+                data: ClipboardItem[]
+              ) => Promise<void>;
+            })
+          | undefined;
+
+      const ClipboardItemCtor =
+        (window as any).ClipboardItem;
+
+      if (
+        !clipboard?.write ||
+        !ClipboardItemCtor
+      ) {
+        throw new Error(
+          "Seu navegador não permite copiar imagens diretamente. Use Compartilhar imagem ou Baixar PNG."
+        );
+      }
+
+      const clipboardItem =
+        new ClipboardItemCtor({
+          "image/png": blob,
+        });
+
+      await clipboard.write([
+        clipboardItem,
+      ]);
+
+      setQuoteImageStatus(
+        "Imagem copiada! Abra o WhatsApp e cole com Ctrl + V."
+      );
+    } catch (err: any) {
+      setQuoteImageStatus(
+        err?.message ||
+          "Não foi possível copiar a imagem. Use Compartilhar imagem ou Baixar PNG."
+      );
+    } finally {
+      setQuoteImageLoading(false);
+    }
+  }
+
+  async function downloadQuoteImage() {
+    if (!quote) return;
+
+    setQuoteImageLoading(true);
+    setQuoteImageStatus(
+      "Preparando imagem em alta qualidade..."
+    );
+
+    try {
+      const blob =
+        await createQuoteImageBlob({
+          quote,
+          clientName,
+          clientId,
+          showProductId,
+        });
+
+      downloadQuoteBlob(
+        blob,
+        quoteImageFileName()
+      );
+
+      setQuoteImageStatus(
+        "Imagem da cotação gerada com sucesso."
+      );
+    } catch (err: any) {
+      setQuoteImageStatus(
+        err?.message ||
+          "Não foi possível gerar a imagem."
+      );
+    } finally {
+      setQuoteImageLoading(false);
+    }
+  }
+
+  async function shareQuoteImage() {
+    if (!quote) return;
+
+    setQuoteImageLoading(true);
+    setQuoteImageStatus(
+      "Preparando imagem para compartilhar..."
+    );
+
+    try {
+      const blob =
+        await createQuoteImageBlob({
+          quote,
+          clientName,
+          clientId,
+          showProductId,
+        });
+
+      const fileName =
+        quoteImageFileName();
+
+      const file = new File(
+        [blob],
+        fileName,
+        { type: "image/png" }
+      );
+
+      const navigatorWithShare =
+        navigator as Navigator & {
+          canShare?: (data: {
+            files?: File[];
+          }) => boolean;
+          share?: (data: {
+            files?: File[];
+            title?: string;
+            text?: string;
+          }) => Promise<void>;
+        };
+
+      if (
+        navigatorWithShare.share &&
+        navigatorWithShare.canShare?.({
+          files: [file],
+        })
+      ) {
+        await navigatorWithShare.share({
+          files: [file],
+          title: "Cotação PMG",
+          text: clientName
+            ? `Cotação para ${clientName}`
+            : "Cotação PMG",
+        });
+
+        setQuoteImageStatus(
+          "Imagem pronta para compartilhar."
+        );
+
+        return;
+      }
+
+      downloadQuoteBlob(
+        blob,
+        fileName
+      );
+
+      setQuoteImageStatus(
+        "Seu navegador não permite compartilhar arquivos diretamente. A imagem foi baixada."
+      );
+    } catch (err: any) {
+      if (
+        String(err?.name || "") ===
+        "AbortError"
+      ) {
+        setQuoteImageStatus("");
+        return;
+      }
+
+      setQuoteImageStatus(
+        err?.message ||
+          "Não foi possível compartilhar a imagem."
+      );
+    } finally {
+      setQuoteImageLoading(false);
+    }
   }
 
   async function fetchSavedQuotes() {
@@ -1669,53 +3043,155 @@ export default function QuotesPage() {
           </section>
 
           <aside className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3">
               <div>
-                <h2 className="text-xl font-black">Cotação pronta</h2>
-                <p className="mt-1 text-sm text-slate-500">Preview para copiar e enviar.</p>
+                <h2 className="text-xl font-black">
+                  Cotação pronta
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Envie como texto ou como uma imagem profissional.
+                </p>
               </div>
+
               {quote?.total ? (
-                <div className="rounded-2xl bg-slate-950 px-4 py-3 text-right text-white">
-                  <p className="text-[10px] font-bold uppercase text-slate-300">Total</p>
-                  <p className="text-sm font-black">{moneyBR(quote.total)}</p>
+                <div className="shrink-0 rounded-2xl bg-slate-950 px-4 py-3 text-right text-white">
+                  <p className="text-[10px] font-bold uppercase text-slate-300">
+                    Total
+                  </p>
+                  <p className="text-sm font-black">
+                    {moneyBR(quote.total)}
+                  </p>
                 </div>
               ) : null}
             </div>
 
-            <div className="mt-5 min-h-[480px] rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
+            <div className="mt-4 grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1.5">
+              <button
+                type="button"
+                onClick={() =>
+                  setQuotePreviewMode("text")
+                }
+                className={`rounded-xl px-3 py-2.5 text-xs font-black transition ${
+                  quotePreviewMode === "text"
+                    ? "bg-white text-slate-950 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                Texto
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  setQuotePreviewMode("image")
+                }
+                className={`rounded-xl px-3 py-2.5 text-xs font-black transition ${
+                  quotePreviewMode === "image"
+                    ? "bg-emerald-600 text-white shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                Imagem
+              </button>
+            </div>
+
+            <div className="mt-4 min-h-[480px] rounded-[1.5rem] border border-slate-200 bg-slate-50 p-3">
               {quote?.outputText ? (
-                <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-slate-800">
-                  {quote.outputText}
-                </pre>
+                quotePreviewMode === "text" ? (
+                  <pre className="whitespace-pre-wrap break-words p-1 font-sans text-sm leading-6 text-slate-800">
+                    {quote.outputText}
+                  </pre>
+                ) : (
+                  <div>
+                    <QuoteVisualPreview
+                      quote={quote}
+                      clientName={clientName}
+                      clientId={clientId}
+                      showProductId={showProductId}
+                    />
+
+                    <div className="mt-3 rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-2.5 text-[11px] font-semibold leading-5 text-emerald-800">
+                      A imagem final é gerada em alta resolução com o logo oficial PMG. Cotações normais mostram quantidade, preço unitário e total; pesquisas de “mais baratos” mostram o ranking e o preço de cada opção.
+                    </div>
+                  </div>
+                )
               ) : (
                 <div className="flex min-h-[420px] flex-col items-center justify-center text-center">
                   <div className="rounded-full bg-white px-4 py-2 text-xs font-black uppercase text-slate-400 shadow-sm">
                     Aguardando cotação
                   </div>
+
                   <p className="mt-4 max-w-xs text-sm leading-6 text-slate-500">
-                    Depois da confirmação, a cotação aparece aqui em formato limpo e profissional.
+                    Depois da confirmação, você poderá usar a versão em texto ou gerar uma imagem comercial pronta para o cliente.
                   </p>
                 </div>
               )}
             </div>
 
-            <div className="mt-4 grid gap-3">
+            <div className="mt-4 grid gap-2 sm:grid-cols-2">
               <button
                 disabled={!quote?.outputText}
                 onClick={copyQuote}
-                className="rounded-2xl bg-slate-950 px-5 py-4 text-sm font-black text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-2xl bg-slate-950 px-4 py-3.5 text-sm font-black text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Copiar cotação
+                Copiar texto
               </button>
+
+              <button
+                disabled={
+                  !quoteVisualRows.length ||
+                  quoteImageLoading
+                }
+                onClick={copyQuoteImage}
+                className="rounded-2xl bg-emerald-600 px-4 py-3.5 text-sm font-black text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {quoteImageLoading
+                  ? "Preparando..."
+                  : "Copiar imagem"}
+              </button>
+
+              <button
+                disabled={
+                  !quoteVisualRows.length ||
+                  quoteImageLoading
+                }
+                onClick={downloadQuoteImage}
+                className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3.5 text-sm font-black text-emerald-800 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Baixar imagem PNG
+              </button>
+
+              <button
+                disabled={
+                  !quoteVisualRows.length ||
+                  quoteImageLoading
+                }
+                onClick={shareQuoteImage}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-black text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Compartilhar imagem
+              </button>
+
               <button
                 disabled={!quote?.outputText}
                 onClick={saveQuote}
-                className="rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm font-black text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-black text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 sm:col-span-2"
               >
                 Salvar cotação
               </button>
-              {savedStatus && <p className="text-center text-xs font-semibold text-slate-500">{savedStatus}</p>}
             </div>
+
+            {quoteImageStatus && (
+              <p className="mt-3 rounded-xl bg-slate-50 px-3 py-2 text-center text-xs font-semibold text-slate-600">
+                {quoteImageStatus}
+              </p>
+            )}
+
+            {savedStatus && (
+              <p className="mt-2 text-center text-xs font-semibold text-slate-500">
+                {savedStatus}
+              </p>
+            )}
           </aside>
         </section>
           </>
