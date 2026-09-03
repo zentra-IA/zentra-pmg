@@ -148,6 +148,46 @@ function getSaoPauloDayRange(reference = new Date()) {
   };
 }
 
+
+function getSaoPauloDayRangeByDate(
+  dateValue?: string | null
+) {
+  const date = clean(dateValue);
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return getSaoPauloDayRange();
+  }
+
+  const [year, month, day] = date
+    .split("-")
+    .map(Number);
+
+  const start = new Date(
+    `${date}T00:00:00-03:00`
+  );
+
+  const nextUtc = new Date(
+    Date.UTC(year, month - 1, day) +
+      24 * 60 * 60 * 1000
+  );
+
+  const nextDate = `${nextUtc.getUTCFullYear()}-${String(
+    nextUtc.getUTCMonth() + 1
+  ).padStart(2, "0")}-${String(
+    nextUtc.getUTCDate()
+  ).padStart(2, "0")}`;
+
+  const end = new Date(
+    `${nextDate}T00:00:00-03:00`
+  );
+
+  return {
+    date,
+    startIso: start.toISOString(),
+    endIso: end.toISOString(),
+  };
+}
+
 function getVariationText(variation: any) {
   if (typeof variation === "string") {
     return clean(variation);
@@ -563,7 +603,7 @@ async function countQueueInRange(
   companyId: string,
   ownerUserId: string | null,
   status: string,
-  field: "sent_at" | "updated_at",
+  field: "sent_at" | "updated_at" | "scheduled_at",
   startIso: string,
   endIso: string
 ) {
@@ -606,7 +646,9 @@ async function loadQueueOperation(
     .select(baseSelect)
     .eq("company_id", companyId)
     .in("status", ["pending", "processing", "paused"])
-    .order("created_at", { ascending: false })
+    .gte("scheduled_at", startIso)
+    .lt("scheduled_at", endIso)
+    .order("scheduled_at", { ascending: true })
     .limit(250);
 
   let sentTodayQuery = supabase
@@ -842,6 +884,11 @@ export async function GET(req: NextRequest) {
 
     const dayRange = getSaoPauloDayRange();
 
+    const selectedDayRange =
+      getSaoPauloDayRangeByDate(
+        req.nextUrl.searchParams.get("date")
+      );
+
     const [
       pending,
       processing,
@@ -851,6 +898,11 @@ export async function GET(req: NextRequest) {
       sessionEntries,
       failedToday,
       operation,
+      operationPending,
+      operationProcessing,
+      operationPaused,
+      operationSent,
+      operationFailed,
     ] = await Promise.all([
       countQueue(
         supabase,
@@ -906,8 +958,53 @@ export async function GET(req: NextRequest) {
         supabase,
         access.companyId,
         scopedOwnerUserId,
-        dayRange.startIso,
-        dayRange.endIso
+        selectedDayRange.startIso,
+        selectedDayRange.endIso
+      ),
+      countQueueInRange(
+        supabase,
+        access.companyId,
+        scopedOwnerUserId,
+        "pending",
+        "scheduled_at",
+        selectedDayRange.startIso,
+        selectedDayRange.endIso
+      ),
+      countQueueInRange(
+        supabase,
+        access.companyId,
+        scopedOwnerUserId,
+        "processing",
+        "scheduled_at",
+        selectedDayRange.startIso,
+        selectedDayRange.endIso
+      ),
+      countQueueInRange(
+        supabase,
+        access.companyId,
+        scopedOwnerUserId,
+        "paused",
+        "scheduled_at",
+        selectedDayRange.startIso,
+        selectedDayRange.endIso
+      ),
+      countQueueInRange(
+        supabase,
+        access.companyId,
+        scopedOwnerUserId,
+        "sent",
+        "sent_at",
+        selectedDayRange.startIso,
+        selectedDayRange.endIso
+      ),
+      countQueueInRange(
+        supabase,
+        access.companyId,
+        scopedOwnerUserId,
+        "failed",
+        "updated_at",
+        selectedDayRange.startIso,
+        selectedDayRange.endIso
       ),
     ]);
 
@@ -933,7 +1030,18 @@ export async function GET(req: NextRequest) {
         sent: sentToday,
         failed: failedToday,
       },
-      operation,
+      operation: {
+        ...operation,
+        date: selectedDayRange.date,
+        timezone: "America/Sao_Paulo",
+        summary: {
+          pending: operationPending,
+          processing: operationProcessing,
+          paused: operationPaused,
+          sent: operationSent,
+          failed: operationFailed,
+        },
+      },
       owner_user_id: scopedOwnerUserId,
       antiban: {
         maxPerSessionDay: MAX_PER_SESSION_DAY,
@@ -1193,6 +1301,51 @@ export async function POST(req: NextRequest) {
 
     const now = new Date().toISOString();
 
+    const requestedScheduledAt = clean(
+      body?.scheduled_at ||
+        body?.scheduledAt
+    );
+
+    let scheduledAt = now;
+
+    if (requestedScheduledAt) {
+      const parsedSchedule = new Date(
+        requestedScheduledAt
+      );
+
+      if (
+        Number.isNaN(
+          parsedSchedule.getTime()
+        )
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              "Data ou horário de agendamento inválido.",
+          },
+          { status: 400 }
+        );
+      }
+
+      if (
+        parsedSchedule.getTime() <
+        Date.now() - 60_000
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              "O horário agendado já passou.",
+          },
+          { status: 400 }
+        );
+      }
+
+      scheduledAt =
+        parsedSchedule.toISOString();
+    }
+
     const queueOwnerUserId =
       access.role === "VENDEDOR"
         ? access.userId
@@ -1226,7 +1379,7 @@ export async function POST(req: NextRequest) {
       campaign_id: configuredTemplate.id,
 
       status: "pending",
-      scheduled_at: now,
+      scheduled_at: scheduledAt,
       created_at: now,
       attempts: 0,
       message: resolvedMessage,
@@ -1393,6 +1546,7 @@ export async function POST(req: NextRequest) {
       },
       owner_user_id: queueOwnerUserId,
       resolved_message: resolvedMessage,
+      scheduled_at: scheduledAt,
       variation: {
         sequence_index: sequenceIndex,
         selected_index: selectedIndex,
@@ -1586,3 +1740,149 @@ export async function PATCH(req: NextRequest) {
     );
   }
 }
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const supabase = getSupabase();
+    const access = await requireQueueAccess(req);
+
+    if (access.role === "SUPERVISOR") {
+      return supervisorForbidden();
+    }
+
+    const body = await req
+      .json()
+      .catch(() => ({}));
+
+    const queueId = clean(
+      body?.id ||
+        body?.queue_id ||
+        body?.queueId
+    );
+
+    if (!isUuid(queueId)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "ID da fila inválido.",
+        },
+        { status: 400 }
+      );
+    }
+
+    let lookupQuery = supabase
+      .from("automation_queue")
+      .select("id,status,owner_user_id")
+      .eq("id", queueId)
+      .eq("company_id", access.companyId);
+
+    if (access.role === "VENDEDOR") {
+      lookupQuery = lookupQuery.eq(
+        "owner_user_id",
+        access.userId
+      );
+    }
+
+    const { data: item, error: lookupError } =
+      await lookupQuery.maybeSingle();
+
+    if (lookupError) {
+      throw new Error(
+        lookupError.message
+      );
+    }
+
+    if (!item) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Item da fila não encontrado ou sem permissão.",
+        },
+        { status: 404 }
+      );
+    }
+
+    const status = clean(
+      item.status
+    ).toLowerCase();
+
+    /*
+     * Nunca apagamos mensagem já enviada nem um item que o worker
+     * está processando. Isso preserva auditoria e evita corrida com
+     * o processo de envio.
+     */
+    if (
+      !["pending", "paused", "failed"].includes(
+        status
+      )
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            status === "processing"
+              ? "Este item está sendo processado e não pode ser excluído agora."
+              : "Mensagens já enviadas permanecem no histórico e não podem ser excluídas.",
+        },
+        { status: 409 }
+      );
+    }
+
+    let deleteQuery = supabase
+      .from("automation_queue")
+      .delete()
+      .eq("id", queueId)
+      .eq("company_id", access.companyId)
+      .in("status", [
+        "pending",
+        "paused",
+        "failed",
+      ]);
+
+    if (access.role === "VENDEDOR") {
+      deleteQuery = deleteQuery.eq(
+        "owner_user_id",
+        access.userId
+      );
+    }
+
+    const { data, error } =
+      await deleteQuery
+        .select("id");
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return NextResponse.json({
+      success: true,
+      deleted: data?.length || 0,
+      id: queueId,
+    });
+  } catch (error: any) {
+    console.error(
+      "CRM_QUEUE_DELETE_ERROR",
+      error
+    );
+
+    const message =
+      error?.message ||
+      "Erro ao excluir item da fila.";
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: message,
+      },
+      {
+        status: message.includes(
+          "não identificad"
+        )
+          ? 401
+          : 500,
+      }
+    );
+  }
+}
+

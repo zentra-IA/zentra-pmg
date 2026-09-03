@@ -170,6 +170,7 @@ function queueStatusLabel(value?: string | null) {
     sent: "Enviado",
     failed: "Erro",
     paused: "Pausado",
+    scheduled: "Agendado",
   };
 
   return labels[status] || status || "-";
@@ -182,6 +183,7 @@ function queueStatusClass(value?: string | null) {
   if (status === "failed") return "queue-status is-failed";
   if (status === "processing") return "queue-status is-processing";
   if (status === "paused") return "queue-status is-paused";
+  if (status === "scheduled") return "queue-status is-scheduled";
 
   return "queue-status is-pending";
 }
@@ -200,6 +202,143 @@ function formatQueueTime(value?: string | null) {
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+
+function getSaoPauloDateValue() {
+  const parts =
+    new Intl.DateTimeFormat(
+      "en-CA",
+      {
+        timeZone:
+          "America/Sao_Paulo",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }
+    ).formatToParts(new Date());
+
+  const year =
+    parts.find(
+      (item) =>
+        item.type === "year"
+    )?.value || "";
+
+  const month =
+    parts.find(
+      (item) =>
+        item.type === "month"
+    )?.value || "";
+
+  const day =
+    parts.find(
+      (item) =>
+        item.type === "day"
+    )?.value || "";
+
+  return `${year}-${month}-${day}`;
+}
+
+function scheduleToIso(
+  date: string,
+  time: string
+) {
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(
+      date
+    ) ||
+    !/^\d{2}:\d{2}$/.test(time)
+  ) {
+    return null;
+  }
+
+  const parsed = new Date(
+    `${date}T${time}:00-03:00`
+  );
+
+  if (
+    Number.isNaN(parsed.getTime())
+  ) {
+    return null;
+  }
+
+  return parsed.toISOString();
+}
+
+function formatQueueDate(
+  value?: string | null
+) {
+  if (!value) return "-";
+
+  const date = new Date(
+    `${value}T12:00:00-03:00`
+  );
+
+  if (
+    Number.isNaN(date.getTime())
+  ) {
+    return value;
+  }
+
+  return date.toLocaleDateString(
+    "pt-BR"
+  );
+}
+
+function formatQueueDateTime(
+  value?: string | null
+) {
+  if (!value) return "-";
+
+  const date = new Date(value);
+
+  if (
+    Number.isNaN(date.getTime())
+  ) {
+    return "-";
+  }
+
+  return date.toLocaleString(
+    "pt-BR",
+    {
+      timeZone:
+        "America/Sao_Paulo",
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }
+  );
+}
+
+function isFutureQueueItem(
+  item: QueueOperationItem
+) {
+  if (
+    String(item.status || "")
+      .toLowerCase() !== "pending"
+  ) {
+    return false;
+  }
+
+  const time = new Date(
+    item.scheduled_at || ""
+  ).getTime();
+
+  return (
+    Number.isFinite(time) &&
+    time > Date.now() + 30_000
+  );
+}
+
+function queueDisplayStatus(
+  item: QueueOperationItem
+) {
+  return isFutureQueueItem(item)
+    ? "scheduled"
+    : String(
+        item.status || ""
+      ).toLowerCase();
 }
 
 function whatsappLink(value?: string | null) {
@@ -301,6 +440,19 @@ export default function ContactsDispatchPage() {
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [sessionId, setSessionId] = useState("1");
   const [queueViewStatus, setQueueViewStatus] = useState("all");
+  const [queueViewDate, setQueueViewDate] = useState(
+    getSaoPauloDateValue()
+  );
+  const [queueMonitorOpen, setQueueMonitorOpen] = useState(true);
+  const [queueDeletingId, setQueueDeletingId] = useState<string | null>(null);
+
+  const [dispatchTiming, setDispatchTiming] = useState<
+    "now" | "scheduled"
+  >("now");
+  const [scheduleDate, setScheduleDate] = useState(
+    getSaoPauloDateValue()
+  );
+  const [scheduleTime, setScheduleTime] = useState("10:00");
 
   async function loadTemplates() {
     try {
@@ -403,12 +555,24 @@ export default function ContactsDispatchPage() {
     }
   }
 
-  async function loadQueueStats() {
+  async function loadQueueStats(
+    date = queueViewDate
+  ) {
     try {
-      const response = await fetch("/api/crm/queue", {
-        cache: "no-store",
-        credentials: "include",
-      });
+      const params =
+        new URLSearchParams();
+
+      if (date) {
+        params.set("date", date);
+      }
+
+      const response = await fetch(
+        `/api/crm/queue?${params.toString()}`,
+        {
+          cache: "no-store",
+          credentials: "include",
+        }
+      );
 
       const data = await response.json().catch(() => ({}));
 
@@ -464,21 +628,28 @@ export default function ContactsDispatchPage() {
 
   useEffect(() => {
     /*
-     * Carregamento inicial completo:
-     * - contatos;
-     * - templates;
-     * - fila;
-     * - status das 5 sessões do usuário/empresa atuais.
-     *
-     * Depois disso, somente a fila é atualizada automaticamente.
-     * O status das sessões continua sendo atualizado manualmente,
-     * pelo botão "Atualizar tudo" e após iniciar/reiniciar uma sessão.
+     * Carregamento inicial completo.
+     * Status das sessões continua sem polling agressivo.
      */
     void refreshAll();
 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    /*
+     * A fila acompanha o dia escolhido e atualiza a cada 5 segundos.
+     * Trocar o filtro de data não recarrega contatos nem sessões.
+     */
+    void loadQueueStats(queueViewDate);
+
     const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") {
-        void loadQueueStats();
+      if (
+        document.visibilityState === "visible"
+      ) {
+        void loadQueueStats(
+          queueViewDate
+        );
       }
     }, 5_000);
 
@@ -487,7 +658,7 @@ export default function ContactsDispatchPage() {
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [queueViewDate]);
 
   const filteredContacts = useMemo(() => contacts, [contacts]);
 
@@ -519,13 +690,21 @@ export default function ContactsDispatchPage() {
     }
 
     return items.filter(
-      (item) =>
-        String(item.status || "").toLowerCase() ===
-        queueViewStatus
+      (item) => {
+        const displayStatus =
+          queueDisplayStatus(item);
+
+        return (
+          displayStatus ===
+          queueViewStatus
+        );
+      }
     );
   }, [queueStats, queueViewStatus]);
 
   const queueToday = queueStats?.today || {};
+  const queueOperationSummary =
+    queueStats?.operation?.summary || {};
 
   const stats = useMemo(
     () => ({
@@ -880,11 +1059,44 @@ export default function ContactsDispatchPage() {
       return;
     }
 
+    let scheduledAt: string | null = null;
+
     if (
-      !confirm(
-        `Adicionar ${items.length} contato(s) na fila de disparo?`
-      )
+      dispatchTiming === "scheduled"
     ) {
+      scheduledAt = scheduleToIso(
+        scheduleDate,
+        scheduleTime
+      );
+
+      if (!scheduledAt) {
+        alert(
+          "Informe uma data e um horário válidos."
+        );
+        return;
+      }
+
+      if (
+        new Date(
+          scheduledAt
+        ).getTime() <=
+        Date.now() + 30_000
+      ) {
+        alert(
+          "O agendamento precisa estar no futuro."
+        );
+        return;
+      }
+    }
+
+    const confirmationText =
+      dispatchTiming === "scheduled"
+        ? `Agendar ${items.length} contato(s) para ${formatQueueDateTime(
+            scheduledAt
+          )}?`
+        : `Adicionar ${items.length} contato(s) na fila de disparo agora?`;
+
+    if (!confirm(confirmationText)) {
       return;
     }
 
@@ -923,6 +1135,8 @@ export default function ContactsDispatchPage() {
                * base → variação 1 → variação 2 → base...
                */
               sequence_index: index,
+              scheduled_at:
+                scheduledAt || undefined,
             }),
           }
         );
@@ -947,12 +1161,29 @@ export default function ContactsDispatchPage() {
         loadQueueStats(),
       ]);
 
+      if (
+        dispatchTiming === "scheduled" &&
+        scheduleDate
+      ) {
+        setQueueViewDate(
+          scheduleDate
+        );
+      } else {
+        setQueueViewDate(
+          getSaoPauloDateValue()
+        );
+      }
+
       alert(
         failures
           ? `Fila criada: ${success} sucesso(s), ${failures} erro(s).\n${errors
               .slice(0, 3)
               .join("\n")}`
-          : `${success} contato(s) colocado(s) na fila.`
+          : dispatchTiming === "scheduled"
+            ? `${success} contato(s) agendado(s) para ${formatQueueDateTime(
+                scheduledAt
+              )}.`
+            : `${success} contato(s) colocado(s) na fila.`
       );
     } finally {
       setQueueLoading(false);
@@ -1058,6 +1289,85 @@ export default function ContactsDispatchPage() {
     }
 
     await loadQueueStats();
+  }
+
+  async function deleteQueueItem(
+    item: QueueOperationItem
+  ) {
+    const status =
+      String(
+        item.status || ""
+      ).toLowerCase();
+
+    if (
+      ![
+        "pending",
+        "paused",
+        "failed",
+      ].includes(status)
+    ) {
+      alert(
+        status === "processing"
+          ? "Este envio está sendo processado e não pode ser excluído agora."
+          : "Mensagens já enviadas permanecem no histórico."
+      );
+      return;
+    }
+
+    const label =
+      item.name ||
+      item.external_id ||
+      item.phone ||
+      "este item";
+
+    if (
+      !confirm(
+        `Excluir ${label} da fila? O contato não será excluído da carteira.`
+      )
+    ) {
+      return;
+    }
+
+    setQueueDeletingId(
+      item.id
+    );
+
+    try {
+      const response = await fetch(
+        "/api/crm/queue",
+        {
+          method: "DELETE",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          credentials: "include",
+          body: JSON.stringify({
+            id: item.id,
+          }),
+        }
+      );
+
+      const data = await response
+        .json()
+        .catch(() => ({}));
+
+      if (!response.ok) {
+        alert(
+          data?.error ||
+            "Erro ao excluir item da fila."
+        );
+        return;
+      }
+
+      await loadQueueStats(
+        queueViewDate
+      );
+    } finally {
+      setQueueDeletingId(
+        null
+      );
+    }
   }
 
   async function startSession(id: number) {
@@ -1520,148 +1830,465 @@ export default function ContactsDispatchPage() {
             Retomar fila
           </button>
         </div>
+
+        <div className="dispatch-schedule">
+          <div className="dispatch-schedule-top">
+            <div>
+              <strong>Quando disparar?</strong>
+              <span>
+                Para agendar, escolha a data e o horário. O sistema coloca os contatos na fila e o worker começa automaticamente quando chegar a hora.
+              </span>
+            </div>
+
+            <div className="timing-toggle">
+              <button
+                type="button"
+                className={`timing-option ${
+                  dispatchTiming === "now"
+                    ? "active"
+                    : ""
+                }`}
+                onClick={() =>
+                  setDispatchTiming("now")
+                }
+              >
+                Enviar agora
+              </button>
+
+              <button
+                type="button"
+                className={`timing-option ${
+                  dispatchTiming ===
+                  "scheduled"
+                    ? "active"
+                    : ""
+                }`}
+                onClick={() =>
+                  setDispatchTiming(
+                    "scheduled"
+                  )
+                }
+              >
+                Agendar
+              </button>
+            </div>
+          </div>
+
+          {dispatchTiming ===
+          "scheduled" ? (
+            <div className="schedule-fields">
+              <label>
+                <span>Data</span>
+                <input
+                  type="date"
+                  min={getSaoPauloDateValue()}
+                  value={scheduleDate}
+                  onChange={(event) =>
+                    setScheduleDate(
+                      event.target.value
+                    )
+                  }
+                />
+              </label>
+
+              <label>
+                <span>Horário</span>
+                <input
+                  type="time"
+                  value={scheduleTime}
+                  onChange={(event) =>
+                    setScheduleTime(
+                      event.target.value
+                    )
+                  }
+                />
+              </label>
+
+              <div className="schedule-preview">
+                <small>Agendamento</small>
+                <strong>
+                  {scheduleDate &&
+                  scheduleTime
+                    ? `${formatQueueDate(
+                        scheduleDate
+                      )} às ${scheduleTime}`
+                    : "Defina data e horário"}
+                </strong>
+              </div>
+            </div>
+          ) : null}
+        </div>
       </section>
 
       <section className="panel queue-monitor">
-        <div className="panel-heading">
+        <div className="panel-heading queue-monitor-heading">
           <div>
-            <h2>Acompanhamento dos disparos de hoje</h2>
+            <h2>
+              Acompanhamento dos disparos
+            </h2>
             <p>
-              Mostra o que já foi enviado, o que está processando,
-              quem ainda aguarda na fila e os erros do vendedor conectado.
-              Atualização automática a cada 5 segundos.
+              Por padrão mostra somente o dia atual. Use a data para consultar outro dia.
             </p>
           </div>
 
-          <button
-            className="button secondary"
-            onClick={loadQueueStats}
-          >
-            Atualizar agora
-          </button>
-        </div>
-
-        <div className="queue-summary-grid">
-          <div className="queue-summary-card">
-            <span>Enviados hoje</span>
-            <strong>{Number(queueToday?.sent || 0)}</strong>
-          </div>
-          <div className="queue-summary-card">
-            <span>Processando</span>
-            <strong>{Number(queueStats?.processing || 0)}</strong>
-          </div>
-          <div className="queue-summary-card">
-            <span>Aguardando</span>
-            <strong>{Number(queueStats?.pending || 0)}</strong>
-          </div>
-          <div className="queue-summary-card is-error">
-            <span>Erros hoje</span>
-            <strong>{Number(queueToday?.failed || 0)}</strong>
-          </div>
-        </div>
-
-        <div className="queue-filter-row">
-          {[
-            ["all", "Todos"],
-            ["sent", "Enviados"],
-            ["processing", "Processando"],
-            ["pending", "Aguardando"],
-            ["failed", "Erros"],
-          ].map(([value, label]) => (
+          <div className="queue-heading-actions">
             <button
               type="button"
-              key={value}
-              className={`queue-filter ${
-                queueViewStatus === value ? "active" : ""
-              }`}
-              onClick={() => setQueueViewStatus(value)}
+              className="button secondary"
+              onClick={() =>
+                loadQueueStats(
+                  queueViewDate
+                )
+              }
             >
-              {label}
+              Atualizar
             </button>
-          ))}
+
+            <button
+              type="button"
+              className="button ghost"
+              onClick={() =>
+                setQueueMonitorOpen(
+                  (current) =>
+                    !current
+                )
+              }
+            >
+              {queueMonitorOpen
+                ? "Minimizar"
+                : "Expandir"}
+            </button>
+          </div>
         </div>
 
-        {queueOperationItems.length ? (
-          <div className="queue-table-wrap">
-            <table className="queue-table">
-              <thead>
-                <tr>
-                  <th>Cliente</th>
-                  <th>ID Radar</th>
-                  <th>WhatsApp</th>
-                  <th>Sessão</th>
-                  <th>Status</th>
-                  <th>Horário</th>
-                  <th>Detalhe</th>
-                  <th>Ação</th>
-                </tr>
-              </thead>
-              <tbody>
-                {queueOperationItems.map((item) => (
-                  <tr key={item.id}>
-                    <td>
-                      <strong>{item.name || "Contato"}</strong>
-                    </td>
-                    <td>{item.external_id || "-"}</td>
-                    <td>{formatPhone(item.phone)}</td>
-                    <td>
-                      {item.session_id
-                        ? `WhatsApp ${item.session_id}`
-                        : "-"}
-                    </td>
-                    <td>
-                      <span className={queueStatusClass(item.status)}>
-                        {queueStatusLabel(item.status)}
-                      </span>
-                    </td>
-                    <td>
-                      {formatQueueTime(
-                        item.sent_at ||
-                          item.updated_at ||
-                          item.created_at
+        {queueMonitorOpen ? (
+          <>
+            <div className="queue-date-toolbar">
+              <label>
+                <span>Dia do disparo</span>
+                <input
+                  type="date"
+                  value={queueViewDate}
+                  onChange={(event) =>
+                    setQueueViewDate(
+                      event.target.value
+                    )
+                  }
+                />
+              </label>
+
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() =>
+                  setQueueViewDate(
+                    getSaoPauloDateValue()
+                  )
+                }
+              >
+                Hoje
+              </button>
+
+              <div className="queue-date-current">
+                <small>Exibindo</small>
+                <strong>
+                  {queueViewDate ===
+                  getSaoPauloDateValue()
+                    ? "Hoje"
+                    : formatQueueDate(
+                        queueViewDate
                       )}
-                    </td>
-                    <td className="queue-error-cell">
-                      {item.status === "failed"
-                        ? item.last_error ||
-                          item.error ||
-                          "Falha no envio."
-                        : item.status === "sent"
-                          ? "Mensagem enviada com sucesso."
-                          : item.status === "processing"
-                            ? "Envio em processamento."
-                            : "Aguardando envio."}
-                    </td>
-                    <td>
-                      {item.status === "failed" ? (
-                        <button
-                          type="button"
-                          className="button secondary"
-                          onClick={() => retryQueueItem(item.id)}
-                        >
-                          Reenviar
-                        </button>
-                      ) : (
-                        "-"
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </strong>
+              </div>
+            </div>
+
+            <div className="queue-summary-grid">
+              <div className="queue-summary-card">
+                <span>
+                  Enviados no dia
+                </span>
+                <strong>
+                  {Number(
+                    queueOperationSummary?.sent ||
+                      0
+                  )}
+                </strong>
+              </div>
+
+              <div className="queue-summary-card">
+                <span>Processando</span>
+                <strong>
+                  {Number(
+                    queueOperationSummary?.processing ||
+                      0
+                  )}
+                </strong>
+              </div>
+
+              <div className="queue-summary-card">
+                <span>Aguardando</span>
+                <strong>
+                  {Number(
+                    queueOperationSummary?.pending ||
+                      0
+                  )}
+                </strong>
+              </div>
+
+              <div className="queue-summary-card is-error">
+                <span>Erros no dia</span>
+                <strong>
+                  {Number(
+                    queueOperationSummary?.failed ||
+                      0
+                  )}
+                </strong>
+              </div>
+            </div>
+
+            <div className="queue-filter-row">
+              {[
+                ["all", "Todos"],
+                ["scheduled", "Agendados"],
+                ["sent", "Enviados"],
+                [
+                  "processing",
+                  "Processando",
+                ],
+                [
+                  "pending",
+                  "Aguardando",
+                ],
+                ["paused", "Pausados"],
+                ["failed", "Erros"],
+              ].map(
+                ([value, label]) => (
+                  <button
+                    type="button"
+                    key={value}
+                    className={`queue-filter ${
+                      queueViewStatus ===
+                      value
+                        ? "active"
+                        : ""
+                    }`}
+                    onClick={() =>
+                      setQueueViewStatus(
+                        value
+                      )
+                    }
+                  >
+                    {label}
+                  </button>
+                )
+              )}
+            </div>
+
+            {queueOperationItems.length ? (
+              <div className="queue-table-wrap">
+                <table className="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Cliente</th>
+                      <th>ID Radar</th>
+                      <th>WhatsApp</th>
+                      <th>Sessão</th>
+                      <th>Status</th>
+                      <th>Horário</th>
+                      <th>Detalhe</th>
+                      <th>Ação</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {queueOperationItems.map(
+                      (item) => {
+                        const displayStatus =
+                          queueDisplayStatus(
+                            item
+                          );
+
+                        const canDelete =
+                          [
+                            "pending",
+                            "paused",
+                            "failed",
+                          ].includes(
+                            String(
+                              item.status ||
+                                ""
+                            ).toLowerCase()
+                          );
+
+                        return (
+                          <tr
+                            key={item.id}
+                          >
+                            <td>
+                              <strong>
+                                {item.name ||
+                                  "Contato"}
+                              </strong>
+                            </td>
+
+                            <td>
+                              {item.external_id ||
+                                "-"}
+                            </td>
+
+                            <td>
+                              {formatPhone(
+                                item.phone
+                              )}
+                            </td>
+
+                            <td>
+                              {item.session_id
+                                ? `WhatsApp ${item.session_id}`
+                                : "-"}
+                            </td>
+
+                            <td>
+                              <span
+                                className={queueStatusClass(
+                                  displayStatus
+                                )}
+                              >
+                                {queueStatusLabel(
+                                  displayStatus
+                                )}
+                              </span>
+                            </td>
+
+                            <td>
+                              {displayStatus ===
+                              "scheduled"
+                                ? formatQueueDateTime(
+                                    item.scheduled_at
+                                  )
+                                : formatQueueTime(
+                                    item.sent_at ||
+                                      item.updated_at ||
+                                      item.created_at
+                                  )}
+                            </td>
+
+                            <td className="queue-error-cell">
+                              {displayStatus ===
+                              "scheduled"
+                                ? `Agendado para ${formatQueueDateTime(
+                                    item.scheduled_at
+                                  )}.`
+                                : item.status ===
+                                    "failed"
+                                  ? item.last_error ||
+                                    item.error ||
+                                    "Falha no envio."
+                                  : item.status ===
+                                      "sent"
+                                    ? "Mensagem enviada com sucesso."
+                                    : item.status ===
+                                        "processing"
+                                      ? "Envio em processamento."
+                                      : item.status ===
+                                          "paused"
+                                        ? "Envio pausado."
+                                        : "Aguardando envio."}
+                            </td>
+
+                            <td>
+                              <div className="queue-row-actions">
+                                {item.status ===
+                                "failed" ? (
+                                  <button
+                                    type="button"
+                                    className="button secondary compact"
+                                    onClick={() =>
+                                      retryQueueItem(
+                                        item.id
+                                      )
+                                    }
+                                  >
+                                    Reenviar
+                                  </button>
+                                ) : null}
+
+                                {canDelete ? (
+                                  <button
+                                    type="button"
+                                    className="button danger compact"
+                                    disabled={
+                                      queueDeletingId ===
+                                      item.id
+                                    }
+                                    onClick={() =>
+                                      deleteQueueItem(
+                                        item
+                                      )
+                                    }
+                                  >
+                                    {queueDeletingId ===
+                                    item.id
+                                      ? "Excluindo..."
+                                      : "Excluir"}
+                                  </button>
+                                ) : (
+                                  <span className="queue-history-lock">
+                                    Histórico
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      }
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="empty queue-empty">
+                Nenhum disparo encontrado para este dia e filtro.
+              </div>
+            )}
+
+            {queueStats?.operation
+              ?.truncated ? (
+              <p className="queue-note">
+                A lista mostra os 250 itens mais recentes do dia. Os contadores continuam consultados separadamente.
+              </p>
+            ) : null}
+          </>
         ) : (
-          <div className="empty queue-empty">
-            Nenhum item neste filtro.
+          <div className="queue-collapsed-summary">
+            <span>
+              {formatQueueDate(
+                queueViewDate
+              )}
+            </span>
+            <strong>
+              {Number(
+                queueOperationSummary?.sent ||
+                  0
+              )}{" "}
+              enviados
+            </strong>
+            <strong>
+              {Number(
+                queueOperationSummary?.pending ||
+                  0
+              )}{" "}
+              aguardando
+            </strong>
+            <strong>
+              {Number(
+                queueOperationSummary?.failed ||
+                  0
+              )}{" "}
+              erros
+            </strong>
           </div>
         )}
-
-        {queueStats?.operation?.truncated ? (
-          <p className="queue-note">
-            A lista mostra os 250 itens mais recentes. Os contadores acima
-            continuam exatos.
-          </p>
-        ) : null}
       </section>
 
       <section className="panel">
@@ -2208,6 +2835,98 @@ export default function ContactsDispatchPage() {
           );
         }
 
+        .dispatch-schedule {
+          margin-top: 14px;
+          border: 1px solid #d1fae5;
+          border-radius: 18px;
+          padding: 14px;
+          background: #f8fffb;
+        }
+
+        .dispatch-schedule-top {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 14px;
+        }
+
+        .dispatch-schedule-top strong,
+        .dispatch-schedule-top span {
+          display: block;
+        }
+
+        .dispatch-schedule-top span {
+          margin-top: 4px;
+          color: #64748b;
+          font-size: 12px;
+          line-height: 1.45;
+        }
+
+        .timing-toggle {
+          display: inline-flex;
+          gap: 4px;
+          border: 1px solid #dbe4ee;
+          border-radius: 14px;
+          padding: 4px;
+          background: #ffffff;
+        }
+
+        .timing-option {
+          border: 0;
+          border-radius: 10px;
+          padding: 9px 13px;
+          color: #64748b;
+          background: transparent;
+          font-size: 12px;
+          font-weight: 900;
+          cursor: pointer;
+        }
+
+        .timing-option.active {
+          color: #ffffff;
+          background: #15803d;
+        }
+
+        .schedule-fields {
+          display: grid;
+          grid-template-columns:
+            minmax(180px, 1fr)
+            minmax(160px, 1fr)
+            minmax(220px, 1.2fr);
+          gap: 12px;
+          margin-top: 12px;
+        }
+
+        .schedule-fields label span {
+          display: block;
+          margin-bottom: 6px;
+          color: #475569;
+          font-size: 11px;
+          font-weight: 900;
+        }
+
+        .schedule-preview {
+          display: grid;
+          align-content: center;
+          border: 1px solid #bbf7d0;
+          border-radius: 14px;
+          padding: 10px 14px;
+          background: #ffffff;
+        }
+
+        .schedule-preview small {
+          color: #64748b;
+          font-size: 10px;
+          font-weight: 900;
+          text-transform: uppercase;
+        }
+
+        .schedule-preview strong {
+          margin-top: 4px;
+          color: #166534;
+          font-size: 13px;
+        }
+
         .filters {
           grid-template-columns:
             minmax(220px, 2fr)
@@ -2337,6 +3056,75 @@ export default function ContactsDispatchPage() {
           color: #b91c1c;
         }
 
+        .queue-monitor-heading {
+          align-items: flex-start;
+        }
+
+        .queue-heading-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+
+        .queue-date-toolbar {
+          display: grid;
+          grid-template-columns:
+            minmax(190px, 240px)
+            auto
+            minmax(160px, 1fr);
+          align-items: end;
+          gap: 10px;
+          margin-top: 14px;
+        }
+
+        .queue-date-toolbar label span {
+          display: block;
+          margin-bottom: 6px;
+          color: #64748b;
+          font-size: 11px;
+          font-weight: 900;
+        }
+
+        .queue-date-current {
+          display: grid;
+          align-content: center;
+          min-height: 44px;
+          border: 1px solid #e2e8f0;
+          border-radius: 14px;
+          padding: 8px 12px;
+          background: #ffffff;
+        }
+
+        .queue-date-current small {
+          color: #94a3b8;
+          font-size: 9px;
+          font-weight: 900;
+          text-transform: uppercase;
+        }
+
+        .queue-date-current strong {
+          margin-top: 2px;
+          color: #0f172a;
+          font-size: 12px;
+        }
+
+        .queue-collapsed-summary {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px 16px;
+          margin-top: 12px;
+          border: 1px solid #e2e8f0;
+          border-radius: 14px;
+          padding: 10px 12px;
+          color: #64748b;
+          background: #f8fafc;
+          font-size: 12px;
+        }
+
+        .queue-collapsed-summary strong {
+          color: #0f172a;
+        }
+
         .queue-filter-row {
           display: flex;
           flex-wrap: wrap;
@@ -2362,10 +3150,13 @@ export default function ContactsDispatchPage() {
         }
 
         .queue-table-wrap {
-          overflow-x: auto;
+          max-height: 360px;
+          overflow: auto;
           margin-top: 14px;
           border: 1px solid #e2e8f0;
           border-radius: 18px;
+          background: #ffffff;
+          -webkit-overflow-scrolling: touch;
         }
 
         .queue-table {
@@ -2384,6 +3175,9 @@ export default function ContactsDispatchPage() {
         }
 
         .queue-table th {
+          position: sticky;
+          top: 0;
+          z-index: 2;
           color: #475569;
           background: #f8fafc;
           font-size: 10px;
@@ -2426,6 +3220,30 @@ export default function ContactsDispatchPage() {
         .queue-status.is-paused {
           color: #475569;
           background: #e2e8f0;
+        }
+
+        .queue-status.is-scheduled {
+          color: #6d28d9;
+          background: #ede9fe;
+        }
+
+        .queue-row-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+        }
+
+        .button.compact {
+          min-height: 32px;
+          border-radius: 10px;
+          padding: 6px 9px;
+          font-size: 10px;
+        }
+
+        .queue-history-lock {
+          color: #94a3b8;
+          font-size: 10px;
+          font-weight: 800;
         }
 
         .queue-error-cell {
@@ -2575,6 +3393,17 @@ export default function ContactsDispatchPage() {
               minmax(0, 1fr)
             );
           }
+
+          .schedule-fields {
+            grid-template-columns: repeat(
+              2,
+              minmax(0, 1fr)
+            );
+          }
+
+          .schedule-preview {
+            grid-column: 1 / -1;
+          }
         }
 
         @media (max-width: 760px) {
@@ -2591,6 +3420,36 @@ export default function ContactsDispatchPage() {
 
           .hero .button {
             width: 100%;
+          }
+
+          .dispatch-schedule-top {
+            align-items: stretch;
+            flex-direction: column;
+          }
+
+          .timing-toggle {
+            width: 100%;
+          }
+
+          .timing-option {
+            flex: 1;
+          }
+
+          .schedule-fields,
+          .queue-date-toolbar {
+            grid-template-columns: 1fr;
+          }
+
+          .queue-heading-actions {
+            width: 100%;
+          }
+
+          .queue-heading-actions .button {
+            flex: 1;
+          }
+
+          .queue-table-wrap {
+            max-height: 320px;
           }
 
           .session-grid {
