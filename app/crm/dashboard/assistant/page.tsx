@@ -2,19 +2,22 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+type CustomerRef = {
+  id?: string | null;
+  internalCode?: string | null;
+  name?: string;
+  document?: string | null;
+  sellerName?: string;
+  sellerId?: string | null;
+};
+
 type Action = {
   id: string;
-  type: "boleto" | "ticket" | "mix" | "pagamento" | string;
+  type: "boleto" | "ticket" | "mix" | "pagamento" | "quote_gap" | "portfolio" | string;
   title?: string;
   priority: "alta" | "media" | "baixa" | string;
   score?: number;
-  customer?: {
-    id?: string | null;
-    internalCode?: string | null;
-    name?: string;
-    document?: string | null;
-    sellerName?: string;
-  };
+  customer?: CustomerRef;
   orderId?: string;
   orderNumber?: string;
   reason?: string;
@@ -25,12 +28,68 @@ type Action = {
   currentTicketFormatted?: string;
   averageTicketFormatted?: string;
   dropPercent?: number;
+  portfolioStatus?: string;
   products?: Array<{
     code?: string;
     name: string;
     averageValue?: number;
+    quotedValueFormatted?: string;
   }>;
   message?: string;
+};
+
+type PortfolioStatus =
+  | "critical"
+  | "d29"
+  | "attention"
+  | "habit_overdue"
+  | "expected_today"
+  | "expected_tomorrow"
+  | "protected"
+  | "not_activated"
+  | string;
+
+type PortfolioItem = {
+  id: string;
+  customer: CustomerRef;
+  status: PortfolioStatus;
+  statusRank?: number;
+  title: string;
+  reason: string;
+  recommendation: string;
+  referenceAt?: string | null;
+  referenceDate?: string | null;
+  daysSinceReference?: number | null;
+  lastOrderAt?: string | null;
+  lastOrderDate?: string | null;
+  lastActivationAt?: string | null;
+  lastActivationDate?: string | null;
+  lastPortfolioAction?: "activated" | "not_activated" | null;
+  lastPortfolioActionAt?: string | null;
+  lastPortfolioActionNote?: string | null;
+  rhythm?: {
+    cadence?: string | null;
+    intervalDays?: number | null;
+    confidence?: number | null;
+    dominantWeekday?: string | null;
+    expectedAt?: string | null;
+    expectedDate?: string | null;
+    sampleSize?: number | null;
+  } | null;
+  manualHabitualPurchaseDay?: string | null;
+  manualPurchaseWeekdays?: string[];
+};
+
+type PortfolioSummary = {
+  total: number;
+  attention: number;
+  d29: number;
+  critical: number;
+  expectedToday: number;
+  expectedTomorrow: number;
+  overdueHabit: number;
+  activated: number;
+  notActivated: number;
 };
 
 type IntelligenceResponse = {
@@ -44,6 +103,7 @@ type IntelligenceResponse = {
     mix: number;
     pagamento: number;
     cotacoes?: number;
+    portfolio?: number;
     potential?: number;
     potentialFormatted: string;
     highPriority: number;
@@ -55,6 +115,11 @@ type IntelligenceResponse = {
     mix: Action[];
     pagamento: Action[];
     cotacoes?: Action[];
+    portfolio?: Action[];
+  };
+  portfolio?: {
+    summary: PortfolioSummary;
+    items: PortfolioItem[];
   };
   supervisor?: {
     sellers: Array<{
@@ -92,25 +157,6 @@ type Activity = {
   } | null;
 };
 
-type AgendaCustomer = {
-  id: string;
-  legal_name: string;
-  trade_name?: string | null;
-  buyer_name?: string | null;
-  whatsapp?: string | null;
-  phone?: string | null;
-};
-
-type AgendaForm = {
-  title: string;
-  description: string;
-  customer_id: string;
-  date: string;
-  time: string;
-  priority: "baixa" | "media" | "alta";
-  notify: boolean;
-};
-
 type Goal = {
   id: string;
   seller_id?: string | null;
@@ -119,30 +165,78 @@ type Goal = {
   goal_amount: number;
 };
 
+type AgendaCustomer = {
+  id: string;
+  legal_name?: string | null;
+  trade_name?: string | null;
+  internal_code?: string | null;
+  erp_code?: string | null;
+  whatsapp?: string | null;
+  phone?: string | null;
+};
+
+type AgendaForm = {
+  customerId: string;
+  customerName: string;
+  title: string;
+  description: string;
+  date: string;
+  time: string;
+};
+
+const EMPTY_PORTFOLIO_SUMMARY: PortfolioSummary = {
+  total: 0,
+  attention: 0,
+  d29: 0,
+  critical: 0,
+  expectedToday: 0,
+  expectedTomorrow: 0,
+  overdueHabit: 0,
+  activated: 0,
+  notActivated: 0,
+};
+
 const tabs = [
   { id: "prioridade", label: "Prioridade" },
+  { id: "carteira", label: "Carteira" },
   { id: "boleto", label: "Boletos" },
   { id: "ticket", label: "Ticket" },
   { id: "mix", label: "Mix perdido" },
+  { id: "cotacoes", label: "Cotações" },
   { id: "pagamento", label: "Pagamento" },
   { id: "supervisor", label: "Supervisor" },
 ];
 
+const PORTFOLIO_FILTERS = [
+  { value: "all", label: "Todos" },
+  { value: "urgent", label: "Urgentes" },
+  { value: "critical", label: "30+ dias" },
+  { value: "d29", label: "D+29" },
+  { value: "attention", label: "D+26 a D+28" },
+  { value: "expected_today", label: "Compra hoje" },
+  { value: "expected_tomorrow", label: "Compra amanhã" },
+  { value: "habit_overdue", label: "Padrão atrasado" },
+  { value: "protected", label: "Ativados" },
+  { value: "not_activated", label: "Não ativados" },
+];
+
 function brl(value: number) {
-  return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  return Number(value || 0).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
 }
 
 function todayISO(offset = 0) {
   const date = new Date();
   date.setDate(date.getDate() + offset);
-  return date.toISOString().slice(0, 10);
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 10);
 }
 
-function localDateISO(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+function currentTimeInput() {
+  const date = new Date();
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 function formatDateLabel(value: string) {
@@ -156,19 +250,35 @@ function formatDateLabel(value: string) {
   });
 }
 
+function formatDateTime(value?: string | null) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+
+  return date.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function formatTime(value?: string | null) {
   if (!value) return "Sem horário";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Sem horário";
 
-  return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleTimeString("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function priorityStyle(priority?: string) {
   const p = String(priority || "").toLowerCase();
   if (p === "alta") return "border-red-200 bg-red-50 text-red-700";
   if (p === "media") return "border-amber-200 bg-amber-50 text-amber-700";
-  return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  return "border-emerald-200 bg-emerald-50 text-teal-700";
 }
 
 function typeLabel(type?: string) {
@@ -176,7 +286,8 @@ function typeLabel(type?: string) {
   if (type === "ticket") return "Ticket";
   if (type === "mix") return "Mix";
   if (type === "pagamento") return "Pagamento";
-  if (type === "cotacao") return "Cotação";
+  if (type === "quote_gap" || type === "cotacao") return "Cotação";
+  if (type === "portfolio") return "Carteira";
   return "Ação";
 }
 
@@ -207,18 +318,77 @@ function getActivityName(activity: Activity) {
   );
 }
 
-function getActivityPhone(activity: Activity) {
-  return (
-    activity.customer?.whatsapp ||
-    activity.customer?.phone ||
-    activity.phone ||
-    activity.lead?.phone ||
-    ""
-  );
-}
-
 function cleanPhone(value?: string | null) {
   return String(value || "").replace(/\D/g, "");
+}
+
+function customerDisplayName(customer: AgendaCustomer) {
+  return customer.trade_name || customer.legal_name || "Cliente sem nome";
+}
+
+function portfolioStatusMeta(status: PortfolioStatus) {
+  const map: Record<
+    string,
+    { label: string; pill: string; border: string; icon: string }
+  > = {
+    critical: {
+      label: "30+ dias · Crítico",
+      pill: "border-red-200 bg-red-50 text-red-700",
+      border: "border-red-200",
+      icon: "🚨",
+    },
+    d29: {
+      label: "D+29 · Agir hoje",
+      pill: "border-orange-200 bg-orange-50 text-orange-700",
+      border: "border-orange-200",
+      icon: "⏳",
+    },
+    attention: {
+      label: "Atenção de carteira",
+      pill: "border-amber-200 bg-amber-50 text-amber-700",
+      border: "border-amber-200",
+      icon: "⚠️",
+    },
+    habit_overdue: {
+      label: "Compra atrasada",
+      pill: "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700",
+      border: "border-fuchsia-200",
+      icon: "📉",
+    },
+    expected_today: {
+      label: "Compra esperada hoje",
+      pill: "border-blue-200 bg-blue-50 text-blue-700",
+      border: "border-blue-200",
+      icon: "🎯",
+    },
+    expected_tomorrow: {
+      label: "Compra esperada amanhã",
+      pill: "border-cyan-200 bg-cyan-50 text-cyan-700",
+      border: "border-cyan-200",
+      icon: "📅",
+    },
+    protected: {
+      label: "Ativado no PMG",
+      pill: "border-emerald-200 bg-emerald-50 text-teal-700",
+      border: "border-emerald-200",
+      icon: "🛡️",
+    },
+    not_activated: {
+      label: "Não ativado",
+      pill: "border-slate-300 bg-slate-100 text-slate-700",
+      border: "border-slate-300",
+      icon: "↩",
+    },
+  };
+
+  return (
+    map[String(status)] || {
+      label: String(status || "Carteira"),
+      pill: "border-slate-200 bg-slate-50 text-slate-700",
+      border: "border-slate-200",
+      icon: "•",
+    }
+  );
 }
 
 function KpiCard({
@@ -242,8 +412,12 @@ function KpiCard({
 
   return (
     <div className={`rounded-3xl border p-5 shadow-sm ${toneMap[tone]}`}>
-      <p className="text-[11px] font-black uppercase tracking-[0.16em] opacity-70">{label}</p>
-      <strong className="mt-2 block text-2xl font-black tracking-tight">{value}</strong>
+      <p className="text-[11px] font-black uppercase tracking-[0.16em] opacity-70">
+        {label}
+      </p>
+      <strong className="mt-2 block text-2xl font-black tracking-tight">
+        {value}
+      </strong>
       <p className="mt-1 text-xs font-bold opacity-70">{helper}</p>
     </div>
   );
@@ -251,15 +425,19 @@ function KpiCard({
 
 function ActionCard({ action }: { action: Action }) {
   const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   async function copyMessage() {
-    await navigator.clipboard.writeText(action.message || "");
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1400);
+    try {
+      await navigator.clipboard.writeText(action.message || "");
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      alert("Não foi possível copiar a mensagem automaticamente.");
+    }
   }
 
   const customerName = action.customer?.name || "Cliente não informado";
-
   const clientUrl = action.customer?.id
     ? `/crm/dashboard/customers?customer=${action.customer.id}`
     : `/crm/dashboard/customers?search=${encodeURIComponent(customerName)}`;
@@ -269,181 +447,154 @@ function ActionCard({ action }: { action: Action }) {
     : `/crm/dashboard/orders?search=${encodeURIComponent(customerName)}`;
 
   return (
-    <article className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
+    <article className="rounded-[22px] border border-slate-200 bg-white px-4 py-4 shadow-sm transition hover:border-slate-300 hover:shadow-md">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-emerald-700">
+            <span className="rounded-full border border-teal-200 bg-teal-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-teal-700">
               {typeLabel(action.type)}
             </span>
-            <span className={`rounded-full border px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] ${priorityStyle(action.priority)}`}>
+            <span
+              className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.1em] ${priorityStyle(action.priority)}`}
+            >
               {action.priority || "média"}
             </span>
-            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-black text-slate-600">
+            <span className="text-[10px] font-black text-slate-400">
               Score {Math.round(action.score || 0)}
             </span>
           </div>
 
-          <h3 className="mt-3 text-xl font-black tracking-tight text-slate-950">{customerName}</h3>
-          <p className="mt-1 text-xs font-bold text-slate-500">
-            {action.customer?.internalCode ? `ID ${action.customer.internalCode}` : "Sem ID"}
-            {action.customer?.document ? ` • ${action.customer.document}` : ""}
-            {action.customer?.sellerName ? ` • Vendedor: ${action.customer.sellerName}` : ""}
+          <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h3 className="text-base font-black tracking-tight text-slate-950">
+              {customerName}
+            </h3>
+            <span className="text-[11px] font-bold text-slate-400">
+              {action.customer?.internalCode
+                ? `ID ${action.customer.internalCode}`
+                : "Sem ID PMG"}
+            </span>
+          </div>
+
+          <p className="mt-1 line-clamp-2 text-xs font-semibold leading-5 text-slate-600">
+            {action.recommendation ||
+              action.reason ||
+              "Ação comercial recomendada pela IA."}
           </p>
         </div>
 
-        <div className="rounded-2xl bg-slate-50 px-4 py-3 text-right">
-          <p className="text-[11px] font-black uppercase tracking-[0.14em] text-slate-500">Potencial</p>
-          <p className="text-lg font-black text-emerald-700">
-            {action.estimatedValueFormatted || action.valueFormatted || "—"}
-          </p>
+        <div className="flex flex-wrap items-center gap-2">
+          {action.estimatedValueFormatted || action.valueFormatted ? (
+            <div className="rounded-xl bg-slate-50 px-3 py-2 text-right">
+              <span className="block text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
+                Potencial
+              </span>
+              <strong className="text-xs font-black text-teal-700">
+                {action.estimatedValueFormatted ||
+                  action.valueFormatted ||
+                  "—"}
+              </strong>
+            </div>
+          ) : null}
+
+          {action.message ? (
+            <button
+              type="button"
+              onClick={copyMessage}
+              className="rounded-xl bg-teal-700 px-3 py-2 text-[11px] font-black text-white transition hover:bg-teal-800"
+            >
+              {copied ? "Copiada" : "Copiar mensagem"}
+            </button>
+          ) : null}
+
+          <a
+            href={clientUrl}
+            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black text-slate-700 transition hover:bg-slate-50"
+          >
+            Cliente
+          </a>
+
+          <button
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+            className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-black text-slate-700 transition hover:bg-slate-100"
+          >
+            {expanded ? "Menos" : "Detalhes"}
+          </button>
         </div>
       </div>
 
-      <div className="mt-5 grid gap-4 md:grid-cols-2">
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <p className="text-[11px] font-black uppercase tracking-[0.14em] text-slate-500">O que aconteceu</p>
-          <p className="mt-2 text-sm font-bold leading-6 text-slate-800">{action.reason || "Sem diagnóstico detalhado."}</p>
-        </div>
+      {expanded ? (
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-2xl bg-slate-50 p-3">
+              <p className="text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">
+                O que aconteceu
+              </p>
+              <p className="mt-1 text-xs font-bold leading-5 text-slate-700">
+                {action.reason || "Sem diagnóstico detalhado."}
+              </p>
+            </div>
 
-        <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-          <p className="text-[11px] font-black uppercase tracking-[0.14em] text-emerald-700">Recomendação</p>
-          <p className="mt-2 text-sm font-bold leading-6 text-emerald-950">{action.recommendation || "Fazer contato comercial."}</p>
-        </div>
-      </div>
-
-      {action.type === "boleto" && (
-        <div className="mt-4 rounded-2xl border border-red-100 bg-red-50 p-4 text-sm font-bold text-red-900">
-          Vencimento: {action.dueDate} {action.valueFormatted ? `• Valor: ${action.valueFormatted}` : ""}
-        </div>
-      )}
-
-      {action.type === "ticket" && (
-        <div className="mt-4 grid gap-3 md:grid-cols-3">
-          <div className="rounded-2xl bg-slate-50 p-4">
-            <p className="text-xs font-black text-slate-500">Atual</p>
-            <p className="text-lg font-black text-slate-950">{action.currentTicketFormatted || "—"}</p>
+            <div className="rounded-2xl bg-teal-50 p-3">
+              <p className="text-[10px] font-black uppercase tracking-[0.12em] text-teal-700">
+                Próxima ação
+              </p>
+              <p className="mt-1 text-xs font-bold leading-5 text-teal-950">
+                {action.recommendation || "Fazer contato comercial."}
+              </p>
+            </div>
           </div>
-          <div className="rounded-2xl bg-slate-50 p-4">
-            <p className="text-xs font-black text-slate-500">Média</p>
-            <p className="text-lg font-black text-slate-950">{action.averageTicketFormatted || "—"}</p>
-          </div>
-          <div className="rounded-2xl bg-red-50 p-4">
-            <p className="text-xs font-black text-red-500">Queda</p>
-            <p className="text-lg font-black text-red-700">{action.dropPercent || 0}%</p>
-          </div>
-        </div>
-      )}
 
-      {!!action.products?.length && (
-        <div className="mt-4 rounded-2xl border border-slate-200 p-4">
-          <p className="text-[11px] font-black uppercase tracking-[0.14em] text-slate-500">
-            Produtos para trabalhar
-          </p>
-          <div className="mt-3 grid gap-2">
-            {action.products.map((product) => (
-              <div key={`${product.code}-${product.name}`} className="flex flex-col justify-between gap-1 rounded-2xl bg-slate-50 px-4 py-3 md:flex-row md:items-center">
-                <span className="text-sm font-black text-slate-900">
-                  {product.code ? `${product.code} • ` : ""}{product.name}
-                </span>
-                {product.averageValue ? (
-                  <span className="text-sm font-black text-emerald-700">{brl(product.averageValue)}</span>
-                ) : null}
+          {action.type === "boleto" ? (
+            <div className="mt-3 rounded-2xl border border-rose-100 bg-rose-50 p-3 text-xs font-bold text-rose-900">
+              Vencimento: {action.dueDate}
+              {action.valueFormatted ? ` • ${action.valueFormatted}` : ""}
+            </div>
+          ) : null}
+
+          {action.type === "ticket" ? (
+            <div className="mt-3 flex flex-wrap gap-2 text-xs font-black">
+              <span className="rounded-xl bg-slate-100 px-3 py-2 text-slate-700">
+                Atual {action.currentTicketFormatted || "—"}
+              </span>
+              <span className="rounded-xl bg-slate-100 px-3 py-2 text-slate-700">
+                Média {action.averageTicketFormatted || "—"}
+              </span>
+              <span className="rounded-xl bg-rose-50 px-3 py-2 text-rose-700">
+                Queda {action.dropPercent || 0}%
+              </span>
+            </div>
+          ) : null}
+
+          {!!action.products?.length ? (
+            <div className="mt-3 rounded-2xl border border-slate-100 p-3">
+              <p className="text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">
+                Produtos
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {action.products.slice(0, 6).map((product) => (
+                  <span
+                    key={`${product.code}-${product.name}`}
+                    className="rounded-xl bg-slate-50 px-3 py-2 text-[11px] font-bold text-slate-700"
+                  >
+                    {product.code ? `${product.code} • ` : ""}
+                    {product.name}
+                  </span>
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
-      )}
+            </div>
+          ) : null}
 
-      {action.message ? (
-        <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
-          <p className="text-[11px] font-black uppercase tracking-[0.14em] text-slate-500">
-            Mensagem sugerida
-          </p>
-          <p className="mt-2 whitespace-pre-line text-sm font-semibold leading-6 text-slate-700">
-            {action.message}
-          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <a
+              href={ordersUrl}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black text-slate-700"
+            >
+              Ver pedidos
+            </a>
+          </div>
         </div>
       ) : null}
-
-      <div className="mt-5 flex flex-col gap-3 md:flex-row">
-        {action.message ? (
-          <button
-            onClick={copyMessage}
-            className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-black text-white shadow-sm transition hover:bg-emerald-800"
-          >
-            {copied ? "Mensagem copiada" : "Copiar mensagem WhatsApp"}
-          </button>
-        ) : null}
-
-        <a
-          href={clientUrl}
-          className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-center text-sm font-black text-slate-800 transition hover:bg-slate-50"
-        >
-          Abrir cliente
-        </a>
-        <a
-          href={ordersUrl}
-          className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-center text-sm font-black text-slate-800 transition hover:bg-slate-50"
-        >
-          Ver pedidos
-        </a>
-      </div>
-    </article>
-  );
-}
-
-function ActivityMiniCard({ activity }: { activity: Activity }) {
-  const name = getActivityName(activity);
-  const phone = getActivityPhone(activity);
-
-  return (
-    <article className="rounded-3xl border border-blue-100 bg-white p-4 shadow-sm">
-      <div className="flex flex-col justify-between gap-3 md:flex-row md:items-start">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] text-blue-700">
-              {activityTypeLabel(activity.type)}
-            </span>
-            <span className={`rounded-full border px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] ${priorityStyle(activity.priority)}`}>
-              {activity.priority || "média"}
-            </span>
-          </div>
-
-          <h3 className="mt-3 text-base font-black tracking-tight text-slate-950">{activity.title}</h3>
-          <p className="mt-1 text-sm font-bold text-slate-500">{name}</p>
-
-          {activity.description ? (
-            <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{activity.description}</p>
-          ) : null}
-        </div>
-
-        <div className="rounded-2xl bg-blue-50 px-4 py-3 text-center md:min-w-[104px]">
-          <p className="text-[11px] font-black uppercase text-blue-500">Horário</p>
-          <strong className="text-lg font-black text-blue-700">{formatTime(activity.scheduled_at)}</strong>
-        </div>
-      </div>
-
-      <div className="mt-4 flex flex-col gap-2 md:flex-row">
-        {activity.customer?.id ? (
-          <a
-            href={`/crm/dashboard/customers?customer=${activity.customer.id}`}
-            className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-center text-xs font-black text-slate-700 transition hover:bg-slate-50"
-          >
-            Abrir cliente
-          </a>
-        ) : null}
-
-        {phone ? (
-          <a
-            href={`https://wa.me/${cleanPhone(phone)}`}
-            target="_blank"
-            className="rounded-2xl bg-emerald-700 px-4 py-2 text-center text-xs font-black text-white transition hover:bg-emerald-800"
-          >
-            Abrir WhatsApp
-          </a>
-        ) : null}
-      </div>
     </article>
   );
 }
@@ -460,7 +611,7 @@ function DeliveryRow({
 
   return (
     <div
-      className={`rounded-3xl border p-4 ${
+      className={`rounded-2xl border p-4 ${
         delivered
           ? "border-emerald-100 bg-emerald-50"
           : failed
@@ -487,10 +638,14 @@ function DeliveryRow({
             </span>
           </div>
           <p className="mt-1 text-xs font-bold text-slate-500">
-            Pedido {order.order_number || "-"} · {brl(Number(order.total || 0))} · Vendedor: {order.seller_name || "-"}
+            Pedido {order.order_number || "-"} ·{" "}
+            {brl(Number(order.total || 0))} · Vendedor:{" "}
+            {order.seller_name || "-"}
           </p>
           {order.commercial_notes ? (
-            <p className="mt-1 text-xs font-bold text-red-700">{order.commercial_notes}</p>
+            <p className="mt-1 text-xs font-bold text-red-700">
+              {order.commercial_notes}
+            </p>
           ) : null}
         </div>
 
@@ -515,7 +670,7 @@ function DeliveryRow({
 
           <a
             href={`/crm/dashboard/orders?order=${order.id}`}
-            className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-xs font-black text-slate-700 transition hover:bg-slate-50"
+            className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-black text-slate-700 transition hover:bg-slate-100"
           >
             Ver pedido
           </a>
@@ -524,6 +679,230 @@ function DeliveryRow({
     </div>
   );
 }
+
+function PortfolioCard({
+  item,
+  savingKey,
+  onOpenPmg,
+  onRegister,
+  onSchedule,
+}: {
+  item: PortfolioItem;
+  savingKey: string;
+  onOpenPmg: (item: PortfolioItem) => void;
+  onRegister: (
+    item: PortfolioItem,
+    action: "activated" | "not_activated"
+  ) => void;
+  onSchedule: (item: PortfolioItem) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const meta = portfolioStatusMeta(item.status);
+  const customerName = item.customer?.name || "Cliente sem nome";
+  const internalCode = item.customer?.internalCode || "";
+
+  const cadence = item.rhythm?.cadence
+    ? `${item.rhythm.cadence}${
+        item.rhythm.intervalDays ? ` · ~${item.rhythm.intervalDays} dias` : ""
+      }`
+    : null;
+
+  const rhythmDescription = item.rhythm
+    ? [
+        cadence,
+        item.rhythm.dominantWeekday
+          ? `dia forte: ${item.rhythm.dominantWeekday}`
+          : null,
+        item.rhythm.confidence
+          ? `confiança ${item.rhythm.confidence}%`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : item.manualHabitualPurchaseDay ||
+        item.manualPurchaseWeekdays?.length
+      ? `Padrão cadastrado: ${[
+          item.manualHabitualPurchaseDay,
+          ...(item.manualPurchaseWeekdays || []),
+        ]
+          .filter(Boolean)
+          .join(", ")}`
+      : "Sem padrão de recompra confiável ainda.";
+
+  const activatedLoading =
+    savingKey === `${item.customer.id}:activated`;
+  const notActivatedLoading =
+    savingKey === `${item.customer.id}:not_activated`;
+
+  return (
+    <article
+      className={`rounded-[22px] border bg-white px-4 py-4 shadow-sm transition hover:shadow-md ${meta.border}`}
+    >
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.1em] ${meta.pill}`}
+            >
+              {meta.icon} {meta.label}
+            </span>
+
+            {item.daysSinceReference !== null &&
+            item.daysSinceReference !== undefined ? (
+              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-600">
+                D+{item.daysSinceReference}
+              </span>
+            ) : null}
+
+            {item.rhythm?.cadence ? (
+              <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-[10px] font-black text-indigo-700">
+                {item.rhythm.cadence}
+              </span>
+            ) : null}
+          </div>
+
+          <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h3 className="text-base font-black tracking-tight text-slate-950">
+              {customerName}
+            </h3>
+            <span className="text-[11px] font-bold text-slate-400">
+              {internalCode ? `ID PMG ${internalCode}` : "Sem ID PMG"}
+            </span>
+          </div>
+
+          <p className="mt-1 line-clamp-2 text-xs font-semibold leading-5 text-slate-600">
+            {item.recommendation || item.reason}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="rounded-xl bg-slate-50 px-3 py-2">
+            <span className="block text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
+              Referência
+            </span>
+            <strong className="text-[11px] font-black text-slate-700">
+              {item.referenceDate || "—"}
+            </strong>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => onOpenPmg(item)}
+            className="rounded-xl bg-slate-900 px-3 py-2 text-[11px] font-black text-white transition hover:bg-slate-800"
+          >
+            PMG + ID
+          </button>
+
+          <button
+            type="button"
+            disabled={activatedLoading || notActivatedLoading}
+            onClick={() => onRegister(item, "activated")}
+            className="rounded-xl bg-teal-700 px-3 py-2 text-[11px] font-black text-white transition hover:bg-teal-800 disabled:opacity-60"
+          >
+            {activatedLoading ? "Salvando..." : "Ativado"}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+            className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-black text-slate-700 transition hover:bg-slate-100"
+          >
+            {expanded ? "Menos" : "Detalhes"}
+          </button>
+        </div>
+      </div>
+
+      {expanded ? (
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          <div className="grid gap-3 lg:grid-cols-3">
+            <div className="rounded-2xl bg-slate-50 p-3">
+              <p className="text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">
+                Diagnóstico
+              </p>
+              <p className="mt-1 text-xs font-bold leading-5 text-slate-700">
+                {item.reason}
+              </p>
+            </div>
+
+            <div className="rounded-2xl bg-teal-50 p-3">
+              <p className="text-[10px] font-black uppercase tracking-[0.12em] text-teal-700">
+                O que fazer
+              </p>
+              <p className="mt-1 text-xs font-bold leading-5 text-teal-950">
+                {item.recommendation}
+              </p>
+            </div>
+
+            <div className="rounded-2xl bg-indigo-50 p-3">
+              <p className="text-[10px] font-black uppercase tracking-[0.12em] text-indigo-700">
+                Recorrência
+              </p>
+              <p className="mt-1 text-xs font-bold leading-5 text-indigo-950">
+                {rhythmDescription}
+              </p>
+              {item.rhythm?.expectedDate ? (
+                <p className="mt-1 text-[11px] font-black text-indigo-700">
+                  Próxima esperada: {item.rhythm.expectedDate}
+                </p>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold text-slate-600">
+            <span className="rounded-xl bg-slate-50 px-3 py-2">
+              Último pedido:{" "}
+              <strong className="text-slate-950">
+                {item.lastOrderDate || "não localizado"}
+              </strong>
+            </span>
+            <span className="rounded-xl bg-slate-50 px-3 py-2">
+              Última ativação:{" "}
+              <strong className="text-slate-950">
+                {item.lastActivationDate || "não registrada"}
+              </strong>
+            </span>
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={activatedLoading || notActivatedLoading}
+              onClick={() => onRegister(item, "not_activated")}
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-[11px] font-black text-slate-700"
+            >
+              {notActivatedLoading ? "Salvando..." : "Não ativado"}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onSchedule(item)}
+              className="rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-[11px] font-black text-indigo-700"
+            >
+              Agendar retorno
+            </button>
+
+            <a
+              href={`/crm/dashboard/customers?customer=${encodeURIComponent(
+                String(item.customer.id || "")
+              )}`}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black text-slate-700"
+            >
+              Abrir cliente
+            </a>
+
+            <a
+              href={`/crm/dashboard/orders?search=${encodeURIComponent(customerName)}`}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black text-slate-700"
+            >
+              Ver pedidos
+            </a>
+          </div>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
 
 export default function CentralIA() {
   const [data, setData] = useState<IntelligenceResponse | null>(null);
@@ -534,47 +913,97 @@ export default function CentralIA() {
   const [tab, setTab] = useState("prioridade");
   const [search, setSearch] = useState("");
   const [deliveryDate, setDeliveryDate] = useState(todayISO());
-  const [deliveryOpen, setDeliveryOpen] = useState(true);
+  const [deliveryOpen, setDeliveryOpen] = useState(false);
   const [showAllDeliveries, setShowAllDeliveries] = useState(false);
+  const [priorityOpen, setPriorityOpen] = useState(true);
+  const [portfolioOpen, setPortfolioOpen] = useState(false);
+  const [activitiesOpen, setActivitiesOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+
+  const [portfolioSearch, setPortfolioSearch] = useState("");
+  const [portfolioFilter, setPortfolioFilter] = useState("all");
+  const [portfolioSaving, setPortfolioSaving] = useState("");
+
   const [agendaOpen, setAgendaOpen] = useState(false);
-  const [agendaSaving, setAgendaSaving] = useState(false);
   const [agendaCustomers, setAgendaCustomers] = useState<AgendaCustomer[]>([]);
   const [agendaCustomerSearch, setAgendaCustomerSearch] = useState("");
+  const [agendaLoadingCustomers, setAgendaLoadingCustomers] = useState(false);
+  const [agendaSaving, setAgendaSaving] = useState(false);
   const [agendaForm, setAgendaForm] = useState<AgendaForm>({
-    title: "",
+    customerId: "",
+    customerName: "",
+    title: "Retornar contato",
     description: "",
-    customer_id: "",
-    date: localDateISO(),
-    time: "",
-    priority: "media",
-    notify: true,
+    date: todayISO(),
+    time: currentTimeInput(),
   });
+
+  function revealSection(
+    id: string,
+    openSection?: () => void
+  ) {
+    openSection?.();
+
+    window.setTimeout(() => {
+      document.getElementById(id)?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }, 80);
+  }
 
   async function load() {
     setLoading(true);
-    try {
-      const [intelRes, deliveryRes, activitiesRes, goalsRes] = await Promise.all([
-        fetch("/api/crm/customer-intelligence", { cache: "no-store" }),
-        fetch(`/api/crm/delivery-summary?date=${deliveryDate}`, { cache: "no-store" }),
-        fetch("/api/crm/customer-activities?scope=today", { cache: "no-store" }),
-        fetch("/api/crm/goals", { cache: "no-store" }),
-      ]);
 
-      const intelJson = await intelRes.json();
-      if (!intelRes.ok) throw new Error(intelJson?.error || "Erro ao carregar Central IA");
+    try {
+      const [intelRes, deliveryRes, activitiesRes, goalsRes] =
+        await Promise.all([
+          fetch("/api/crm/customer-intelligence", {
+            cache: "no-store",
+            credentials: "include",
+          }),
+          fetch(`/api/crm/delivery-summary?date=${deliveryDate}`, {
+            cache: "no-store",
+            credentials: "include",
+          }),
+          fetch("/api/crm/customer-activities?scope=today", {
+            cache: "no-store",
+            credentials: "include",
+          }),
+          fetch("/api/crm/goals", {
+            cache: "no-store",
+            credentials: "include",
+          }),
+        ]);
+
+      const intelJson = await intelRes.json().catch(() => ({}));
+      if (!intelRes.ok) {
+        throw new Error(
+          intelJson?.error || "Erro ao carregar Central IA"
+        );
+      }
       setData(intelJson);
 
-      const deliveryJson = await deliveryRes.json();
-      if (deliveryRes.ok && !deliveryJson.error) setDeliverySummary(deliveryJson);
-      else setDeliverySummary(null);
+      const deliveryJson = await deliveryRes.json().catch(() => ({}));
+      if (deliveryRes.ok && !deliveryJson.error) {
+        setDeliverySummary(deliveryJson);
+      } else {
+        setDeliverySummary(null);
+      }
 
-      const activitiesJson = await activitiesRes.json();
-      if (activitiesRes.ok && !activitiesJson.error) setActivities(activitiesJson.activities || []);
-      else setActivities([]);
+      const activitiesJson = await activitiesRes.json().catch(() => ({}));
+      if (activitiesRes.ok && !activitiesJson.error) {
+        setActivities(activitiesJson.activities || []);
+      } else {
+        setActivities([]);
+      }
 
-      const goalsJson = await goalsRes.json();
-      if (goalsRes.ok && !goalsJson.error) setGoals(goalsJson.goals || []);
-      else setGoals([]);
+      const goalsJson = await goalsRes.json().catch(() => ({}));
+      if (goalsRes.ok && !goalsJson.error) {
+        setGoals(goalsJson.goals || []);
+      } else {
+        setGoals([]);
+      }
     } catch (error: any) {
       alert(error?.message || "Erro ao carregar Central IA");
     } finally {
@@ -582,11 +1011,19 @@ export default function CentralIA() {
     }
   }
 
-  async function updateDeliveryStatus(order: any, status: "entregue" | "nao_entregue") {
+  async function updateDeliveryStatus(
+    order: any,
+    status: "entregue" | "nao_entregue"
+  ) {
     let commercial_notes: string | undefined;
 
     if (status === "nao_entregue") {
-      const reason = window.prompt(`Por que o pedido ${order.order_number || ""} de ${order.customer_name || "cliente"} não foi entregue?`);
+      const reason = window.prompt(
+        `Por que o pedido ${order.order_number || ""} de ${
+          order.customer_name || "cliente"
+        } não foi entregue?`
+      );
+
       if (!reason?.trim()) {
         alert("Informe o motivo para marcar como não entregue.");
         return;
@@ -594,18 +1031,26 @@ export default function CentralIA() {
 
       commercial_notes = `Não entregue: ${reason.trim()}`;
     } else {
-      const ok = confirm(`Marcar pedido ${order.order_number || ""} como entregue?`);
+      const ok = confirm(
+        `Marcar pedido ${order.order_number || ""} como entregue?`
+      );
       if (!ok) return;
-      commercial_notes = "Pedido marcado como entregue pela Central IA.";
+      commercial_notes =
+        "Pedido marcado como entregue pela Central IA.";
     }
 
     const res = await fetch("/api/crm/orders", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: order.id, status, commercial_notes }),
+      credentials: "include",
+      body: JSON.stringify({
+        id: order.id,
+        status,
+        commercial_notes,
+      }),
     });
 
-    const response = await res.json();
+    const response = await res.json().catch(() => ({}));
 
     if (!res.ok) {
       alert(response.error || "Erro ao atualizar pedido.");
@@ -615,191 +1060,346 @@ export default function CentralIA() {
     await load();
   }
 
-  async function openAgenda() {
-    setAgendaOpen(true);
-    setAgendaCustomerSearch("");
-    setAgendaForm({
-      title: "",
-      description: "",
-      customer_id: "",
-      date: localDateISO(),
-      time: "",
-      priority: "media",
-      notify: true,
-    });
+  async function copyText(value: string) {
+    if (!value) return false;
 
     try {
-      const response = await fetch("/api/crm/customers", { cache: "no-store" });
-      const json = await response.json();
-
-      if (response.ok && !json?.error) {
-        setAgendaCustomers(json.customers || []);
-      } else {
-        setAgendaCustomers([]);
-      }
+      await navigator.clipboard.writeText(value);
+      return true;
     } catch {
-      setAgendaCustomers([]);
+      try {
+        const textarea = document.createElement("textarea");
+        textarea.value = value;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        return copied;
+      } catch {
+        return false;
+      }
     }
   }
 
-  async function saveAgendaItem() {
-    const title = agendaForm.title.trim();
+  async function openPmg(item: PortfolioItem) {
+    const pmgId = String(item.customer.internalCode || "").trim();
 
-    if (!title) {
-      alert("Escreva o que você precisa fazer.");
+    if (pmgId) {
+      await copyText(pmgId);
+    }
+
+    window.open(
+      "https://sistema.pmg.com.br/Default.aspx",
+      "_blank",
+      "noopener,noreferrer"
+    );
+
+    window.setTimeout(() => {
+      alert(
+        pmgId
+          ? `Sistema PMG aberto.\n\nID ${pmgId} copiado para a área de transferência.`
+          : "Sistema PMG aberto.\n\nEste cliente ainda não possui ID PMG cadastrado."
+      );
+    }, 120);
+  }
+
+  async function registerPortfolioAction(
+    item: PortfolioItem,
+    action: "activated" | "not_activated"
+  ) {
+    if (!item.customer.id) {
+      alert("Cliente sem ID interno no Zentra.");
       return;
     }
 
-    if (!agendaForm.date) {
-      alert("Informe a data do lembrete.");
+    if (action === "activated") {
+      const ok = confirm(
+        `Confirma que ${item.customer.name || "o cliente"} foi realmente ativado no PMG?\n\nIsso inicia um novo ciclo de proteção no Zentra.`
+      );
+      if (!ok) return;
+    }
+
+    setPortfolioSaving(`${item.customer.id}:${action}`);
+
+    try {
+      const res = await fetch("/api/crm/portfolio-protection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          customerId: item.customer.id,
+          action,
+          note:
+            action === "activated"
+              ? "Cliente ativado manualmente no PMG pelo vendedor."
+              : "Ativação no PMG não realizada.",
+        }),
+      });
+
+      const response = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(
+          response.error || "Erro ao registrar ação da carteira."
+        );
+      }
+
+      alert(
+        action === "activated"
+          ? "Ativação registrada. O novo ciclo de proteção começa agora."
+          : "Tentativa registrada. O ciclo de proteção não foi reiniciado."
+      );
+
+      await load();
+    } catch (error: any) {
+      alert(
+        error?.message || "Erro ao registrar proteção de carteira."
+      );
+    } finally {
+      setPortfolioSaving("");
+    }
+  }
+
+  async function loadAgendaCustomers() {
+    setAgendaLoadingCustomers(true);
+
+    try {
+      const res = await fetch("/api/crm/customers?limit=300", {
+        cache: "no-store",
+        credentials: "include",
+      });
+
+      const json = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(json?.error || "Erro ao carregar clientes.");
+      }
+
+      const list = Array.isArray(json)
+        ? json
+        : Array.isArray(json.customers)
+          ? json.customers
+          : [];
+
+      setAgendaCustomers(list);
+    } catch (error: any) {
+      alert(error?.message || "Erro ao carregar clientes.");
+      setAgendaCustomers([]);
+    } finally {
+      setAgendaLoadingCustomers(false);
+    }
+  }
+
+  function openAgenda(item?: PortfolioItem) {
+    const customerId = String(item?.customer?.id || "");
+    const customerName = String(item?.customer?.name || "");
+
+    setAgendaForm({
+      customerId,
+      customerName,
+      title: item
+        ? `Retornar contato — ${customerName}`
+        : "Retornar contato",
+      description: item?.recommendation || "",
+      date: todayISO(),
+      time: currentTimeInput(),
+    });
+
+    setAgendaCustomerSearch(customerName);
+    setAgendaOpen(true);
+
+    if (!agendaCustomers.length) {
+      void loadAgendaCustomers();
+    }
+  }
+
+  async function saveAgenda() {
+    if (!agendaForm.customerId) {
+      alert("Selecione um cliente.");
       return;
     }
+
+    if (!agendaForm.title.trim()) {
+      alert("Informe o título da próxima ação.");
+      return;
+    }
+
+    if (!agendaForm.date || !agendaForm.time) {
+      alert("Informe data e hora.");
+      return;
+    }
+
+    const scheduledAt = new Date(
+      `${agendaForm.date}T${agendaForm.time}:00`
+    );
+
+    if (Number.isNaN(scheduledAt.getTime())) {
+      alert("Data ou hora inválida.");
+      return;
+    }
+
+    const selectedCustomer = agendaCustomers.find(
+      (customer) => customer.id === agendaForm.customerId
+    );
 
     setAgendaSaving(true);
 
     try {
-      const scheduledAt = agendaForm.time
-        ? `${agendaForm.date}T${agendaForm.time}:00`
-        : `${agendaForm.date}T12:00:00`;
-
-      const response = await fetch("/api/crm/customer-activities", {
+      const res = await fetch("/api/crm/customer-activities", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
-          customer_id: agendaForm.customer_id || null,
-          type: "task",
-          origin: "personal_agenda",
-          title,
+          customer_id: agendaForm.customerId,
+          phone:
+            selectedCustomer?.whatsapp ||
+            selectedCustomer?.phone ||
+            null,
+          origin: "assistant",
+          type: "followup",
+          title: agendaForm.title.trim(),
           description: agendaForm.description.trim() || null,
-          scheduled_at: scheduledAt,
-          priority: agendaForm.priority,
+          scheduled_at: scheduledAt.toISOString(),
+          priority: "media",
           status: "pendente",
-          notify: agendaForm.notify,
+          notify: true,
         }),
       });
 
-      const json = await response.json();
+      const json = await res.json().catch(() => ({}));
 
-      if (!response.ok) {
-        throw new Error(json?.error || "Erro ao salvar lembrete.");
+      if (!res.ok) {
+        throw new Error(
+          json?.error || "Erro ao salvar próxima ação."
+        );
       }
 
+      alert("Próxima ação salva com sucesso.");
       setAgendaOpen(false);
       await load();
     } catch (error: any) {
-      alert(error?.message || "Erro ao salvar lembrete.");
+      alert(error?.message || "Erro ao salvar próxima ação.");
     } finally {
       setAgendaSaving(false);
     }
   }
 
-  async function completeAgendaItem(id: string) {
-    const response = await fetch("/api/crm/customer-activities", {
+  async function completeActivity(id: string) {
+    const ok = confirm("Marcar esta ação como concluída?");
+    if (!ok) return;
+
+    const res = await fetch("/api/crm/customer-activities", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ id, status: "concluido" }),
     });
 
-    const json = await response.json();
+    const json = await res.json().catch(() => ({}));
 
-    if (!response.ok) {
-      alert(json?.error || "Erro ao concluir lembrete.");
+    if (!res.ok) {
+      alert(json?.error || "Erro ao concluir atividade.");
       return;
     }
 
     await load();
   }
 
-  async function deleteAgendaItem(id: string) {
-    if (!confirm("Excluir este lembrete?")) return;
-
-    const response = await fetch(
-      `/api/crm/customer-activities?id=${encodeURIComponent(id)}`,
-      { method: "DELETE" }
-    );
-
-    const json = await response.json();
-
-    if (!response.ok) {
-      alert(json?.error || "Erro ao excluir lembrete.");
-      return;
-    }
-
-    await load();
-  }
-
-  const filteredAgendaCustomers = useMemo(() => {
-    const query = agendaCustomerSearch.trim().toLowerCase();
-    if (!query) return agendaCustomers.slice(0, 50);
-
-    return agendaCustomers
-      .filter((customer) =>
-        [
-          customer.trade_name,
-          customer.legal_name,
-          customer.buyer_name,
-          customer.whatsapp,
-          customer.phone,
-        ]
-          .filter(Boolean)
-          .some((value) => String(value).toLowerCase().includes(query))
-      )
-      .slice(0, 50);
-  }, [agendaCustomerSearch, agendaCustomers]);
-
   useEffect(() => {
-    if (!agendaOpen) return;
-
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setAgendaOpen(false);
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [agendaOpen]);
-
-  useEffect(() => {
-    load();
+    void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deliveryDate]);
 
   const orders = useMemo(() => {
-    return (deliverySummary?.sellers || []).flatMap((seller: any) => seller.orders || []);
+    return (deliverySummary?.sellers || []).flatMap(
+      (seller: any) => seller.orders || []
+    );
   }, [deliverySummary]);
 
   const pendingOrders = useMemo(() => {
-    return orders.filter((order: any) => order.status !== "entregue" && order.status !== "nao_entregue");
+    return orders.filter(
+      (order: any) =>
+        order.status !== "entregue" &&
+        order.status !== "nao_entregue"
+    );
   }, [orders]);
 
-  const visibleOrders = showAllDeliveries ? orders : orders.slice(0, 8);
+  const visibleOrders = showAllDeliveries
+    ? orders
+    : orders.slice(0, 8);
+
+  const portfolioSummary =
+    data?.portfolio?.summary || EMPTY_PORTFOLIO_SUMMARY;
+
+  const portfolioItems = useMemo(() => {
+    let list = [...(data?.portfolio?.items || [])];
+
+    if (portfolioFilter === "urgent") {
+      list = list.filter((item) =>
+        ["critical", "d29", "attention", "habit_overdue", "expected_today"].includes(
+          String(item.status)
+        )
+      );
+    } else if (portfolioFilter !== "all") {
+      list = list.filter(
+        (item) => String(item.status) === portfolioFilter
+      );
+    }
+
+    const term = portfolioSearch.trim().toLowerCase();
+
+    if (term) {
+      list = list.filter((item) =>
+        [
+          item.customer?.name,
+          item.customer?.internalCode,
+          item.customer?.document,
+          item.title,
+          item.reason,
+          item.rhythm?.dominantWeekday,
+          item.rhythm?.cadence,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(term)
+      );
+    }
+
+    return list;
+  }, [data?.portfolio?.items, portfolioFilter, portfolioSearch]);
 
   const actions = useMemo(() => {
     if (!data) return [];
 
     let list: Action[] = data.actions || [];
 
+    if (tab === "carteira") list = data.groups?.portfolio || [];
     if (tab === "boleto") list = data.groups?.boletos || [];
     if (tab === "ticket") list = data.groups?.ticket || [];
     if (tab === "mix") list = data.groups?.mix || [];
+    if (tab === "cotacoes") list = data.groups?.cotacoes || [];
     if (tab === "pagamento") list = data.groups?.pagamento || [];
 
     if (search.trim()) {
       const q = search.trim().toLowerCase();
-      list = list.filter((a) => {
-        return (
-          a.customer?.name?.toLowerCase().includes(q) ||
-          a.customer?.document?.toLowerCase().includes(q) ||
-          a.customer?.internalCode?.toLowerCase().includes(q) ||
-          a.orderNumber?.toLowerCase().includes(q)
-        );
-      });
+
+      list = list.filter((action) =>
+        [
+          action.customer?.name,
+          action.customer?.document,
+          action.customer?.internalCode,
+          action.orderNumber,
+          action.reason,
+          action.recommendation,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(q)
+      );
     }
 
     return list;
@@ -808,11 +1408,14 @@ export default function CentralIA() {
   const topActions = useMemo(() => {
     return (data?.actions || [])
       .filter((action) => action.priority === "alta")
-      .slice(0, 4);
+      .slice(0, 5);
   }, [data]);
 
   const goalTotal = useMemo(() => {
-    return goals.reduce((sum, goal) => sum + Number(goal.goal_amount || 0), 0);
+    return goals.reduce(
+      (sum, goal) => sum + Number(goal.goal_amount || 0),
+      0
+    );
   }, [goals]);
 
   const daySales = Number(deliverySummary?.total_sales || 0);
@@ -832,8 +1435,11 @@ export default function CentralIA() {
         id: `activity-${activity.id}`,
         label: formatTime(activity.scheduled_at),
         title: `${activity.title} — ${getActivityName(activity)}`,
-        helper: activity.description || activityTypeLabel(activity.type),
-        href: activity.customer?.id ? `/crm/dashboard/customers?customer=${activity.customer.id}` : undefined,
+        helper:
+          activity.description || activityTypeLabel(activity.type),
+        href: activity.customer?.id
+          ? `/crm/dashboard/customers?customer=${activity.customer.id}`
+          : undefined,
         tone: activity.priority === "alta" ? "red" : "blue",
       });
     });
@@ -842,84 +1448,196 @@ export default function CentralIA() {
       items.push({
         id: `order-${order.id}`,
         label: "Pedido",
-        title: `${order.customer_name || "Cliente"} tem entrega prevista`,
-        helper: `Pedido ${order.order_number || "-"} • ${brl(Number(order.total || 0))}`,
+        title: `${
+          order.customer_name || "Cliente"
+        } tem entrega prevista`,
+        helper: `Pedido ${order.order_number || "-"} • ${brl(
+          Number(order.total || 0)
+        )}`,
         href: `/crm/dashboard/orders?order=${order.id}`,
         tone: "amber",
       });
     });
 
-    topActions.slice(0, 3).forEach((action) => {
+    topActions.slice(0, 4).forEach((action) => {
       items.push({
         id: `action-${action.id}`,
         label: typeLabel(action.type),
-        title: action.customer?.name || action.title || "Ação recomendada",
-        helper: action.recommendation || action.reason || "Ação comercial recomendada pela IA.",
-        href: action.customer?.id ? `/crm/dashboard/customers?customer=${action.customer.id}` : undefined,
-        tone: action.priority === "alta" ? "red" : "emerald",
+        title:
+          action.customer?.name ||
+          action.title ||
+          "Ação recomendada",
+        helper:
+          action.recommendation ||
+          action.reason ||
+          "Ação comercial recomendada pela IA.",
+        href: action.customer?.id
+          ? `/crm/dashboard/customers?customer=${action.customer.id}`
+          : undefined,
+        tone:
+          action.priority === "alta" ? "red" : "emerald",
       });
     });
 
-    return items.slice(0, 6);
+    return items.slice(0, 4);
   }, [activities, pendingOrders, topActions]);
 
   const assistantSummary = useMemo(() => {
-    const totalActions = data?.summary.totalActions || 0;
-    const boletos = data?.summary.boletos || 0;
-    const mix = data?.summary.mix || 0;
-    const ticket = data?.summary.ticket || 0;
+    const highlights: string[] = [];
 
-    const lines = [
-      activities.length ? `Você tem ${activities.length} retorno(s) agendado(s) para hoje.` : "Nenhum retorno agendado para hoje.",
-      pendingOrders.length ? `${pendingOrders.length} pedido(s) ainda precisam de acompanhamento.` : "Nenhum pedido pendente na agenda de entrega selecionada.",
-      boletos ? `${boletos} boleto(s) exigem atenção comercial.` : "Nenhum boleto crítico identificado.",
-      mix ? `${mix} cliente(s) com oportunidade de mix perdido.` : "Nenhum alerta forte de mix perdido no momento.",
-      ticket ? `${ticket} cliente(s) com queda de ticket.` : "Nenhuma queda forte de ticket no momento.",
-      totalActions ? `A IA encontrou ${totalActions} ação(ões) comerciais recomendadas.` : "A IA não encontrou ações críticas agora.",
-    ];
+    if (portfolioSummary.critical) {
+      highlights.push(
+        `${portfolioSummary.critical} cliente(s) já passaram de 30 dias sem proteção.`
+      );
+    }
 
-    return lines;
-  }, [activities.length, data, pendingOrders.length]);
+    if (portfolioSummary.d29) {
+      highlights.push(
+        `${portfolioSummary.d29} cliente(s) estão no D+29 e precisam de ação hoje.`
+      );
+    }
+
+    if (portfolioSummary.expectedToday) {
+      highlights.push(
+        `${portfolioSummary.expectedToday} cliente(s) têm compra esperada hoje.`
+      );
+    }
+
+    if (portfolioSummary.overdueHabit) {
+      highlights.push(
+        `${portfolioSummary.overdueHabit} cliente(s) atrasaram o padrão habitual de compra.`
+      );
+    }
+
+    if (activities.length) {
+      highlights.push(
+        `${activities.length} retorno(s) estão agendados para hoje.`
+      );
+    }
+
+    if (pendingOrders.length) {
+      highlights.push(
+        `${pendingOrders.length} pedido(s) precisam de acompanhamento de entrega.`
+      );
+    }
+
+    if (data?.summary.boletos) {
+      highlights.push(
+        `${data.summary.boletos} boleto(s) exigem atenção comercial.`
+      );
+    }
+
+    if (!highlights.length) {
+      highlights.push("Nenhuma prioridade crítica identificada agora.");
+    }
+
+    return highlights.slice(0, 5);
+  }, [
+    activities.length,
+    data?.summary.boletos,
+    pendingOrders.length,
+    portfolioSummary,
+  ]);
+
+  const filteredAgendaCustomers = useMemo(() => {
+    const term = agendaCustomerSearch.trim().toLowerCase();
+
+    if (!term) return agendaCustomers.slice(0, 40);
+
+    return agendaCustomers
+      .filter((customer) =>
+        [
+          customerDisplayName(customer),
+          customer.legal_name,
+          customer.internal_code,
+          customer.erp_code,
+          customer.whatsapp,
+          customer.phone,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(term)
+      )
+      .slice(0, 40);
+  }, [agendaCustomers, agendaCustomerSearch]);
 
   return (
-    <main className="min-h-screen bg-[#f7f8fa] p-4 md:p-6">
-      <section className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm md:p-8">
+    <main className="min-h-screen bg-[linear-gradient(180deg,#f6f8fb_0%,#eef6f3_55%,#f8fafc_100%)] p-4 md:p-6">
+      <section id="topo-assistente" className="rounded-[30px] border border-slate-200/80 bg-white/95 p-5 shadow-sm md:p-7">
         <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
           <div className="max-w-3xl">
             <p className="text-xs font-black uppercase tracking-[0.25em] text-emerald-700">
               Copiloto Comercial
             </p>
             <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-950 md:text-4xl">
-              Bom dia. Vamos organizar seu dia.
+              Inteligência para vender e proteger a carteira.
             </h1>
             <p className="mt-3 text-sm font-semibold leading-6 text-slate-500">
-              A Central IA lê pedidos, boletos, mix, ticket, entregas e próximas ações para mostrar o que o vendedor precisa fazer agora.
+              A Central IA cruza pedidos reais, cotações, boletos,
+              recorrência e ativações manuais do PMG para dizer quem
+              precisa de ação agora — sem criar pedido fictício.
             </p>
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void load()}
+                className="rounded-2xl bg-emerald-700 px-4 py-2.5 text-xs font-black text-white transition hover:bg-emerald-800"
+              >
+                Atualizar inteligência
+              </button>
+              <button
+                type="button"
+                onClick={() => openAgenda()}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-black text-slate-700 transition hover:bg-slate-50"
+              >
+                + Próxima ação
+              </button>
+              <a
+                href="#carteira-inteligente"
+                className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs font-black text-blue-700 transition hover:bg-blue-100"
+              >
+                Ver proteção e recorrência
+              </a>
+            </div>
           </div>
 
           <div className="w-full rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-5 xl:max-w-[360px]">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-700">Meta mensal</p>
+                <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-700">
+                  Meta mensal
+                </p>
                 <strong className="mt-1 block text-2xl font-black text-slate-950">
                   {goalTotal ? brl(goalTotal) : "Sem meta"}
                 </strong>
               </div>
               <span className="rounded-2xl bg-white px-3 py-2 text-xs font-black text-emerald-700 shadow-sm">
-                Supervisor
+                IA ativa
               </span>
             </div>
 
             <div className="mt-4 h-3 overflow-hidden rounded-full bg-emerald-100">
               <div
                 className="h-full rounded-full bg-emerald-700"
-                style={{ width: goalTotal ? `${Math.min(100, Math.round((daySales / goalTotal) * 100))}%` : "0%" }}
+                style={{
+                  width: goalTotal
+                    ? `${Math.min(
+                        100,
+                        Math.round((daySales / goalTotal) * 100)
+                      )}%`
+                    : "0%",
+                }}
               />
             </div>
 
             <p className="mt-3 text-xs font-bold leading-5 text-slate-600">
-              Vendas do dia selecionado: <strong className="text-slate-950">{brl(daySales)}</strong>.
-              {goalTotal ? " A evolução mensal completa depende do endpoint de realizado mensal." : " Cadastre a meta na tela de metas."}
+              Vendas da entrega selecionada:{" "}
+              <strong className="text-slate-950">{brl(daySales)}</strong>.
+              {goalTotal
+                ? " A meta continua sendo acompanhada sem alterar sua regra atual."
+                : " Cadastre a meta na tela de metas."}
             </p>
           </div>
         </div>
@@ -927,500 +1645,880 @@ export default function CentralIA() {
 
       {loading ? (
         <section className="mt-5 rounded-3xl border border-slate-200 bg-white p-6 text-sm font-black text-slate-600 shadow-sm">
-          Carregando inteligência comercial...
+          Atualizando pedidos, carteira, cotações e recorrência...
         </section>
       ) : null}
 
-      {data ? (
-        <>
-          <section className="mt-5 grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-            <div className="rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm md:p-6">
-              <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-[0.22em] text-red-700">
-                    O que fazer agora
-                  </p>
-                  <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-950">
-                    Prioridades do vendedor
-                  </h2>
-                  <p className="mt-2 text-sm font-semibold leading-6 text-slate-500">
-                    Retornos, pedidos pendentes e ações comerciais mais importantes do dia.
-                  </p>
-                </div>
+      <section className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <button
+          type="button"
+          onClick={() =>
+            revealSection("carteira-inteligente", () =>
+              setPortfolioOpen(true)
+            )
+          }
+          className="group rounded-[22px] border border-orange-100 bg-gradient-to-br from-orange-50 to-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[10px] font-black uppercase tracking-[0.16em] text-orange-700">
+              🛡 Carteira
+            </span>
+            <strong className="text-xl font-black text-orange-700">
+              {portfolioSummary.critical + portfolioSummary.d29}
+            </strong>
+          </div>
+          <p className="mt-2 text-xs font-bold text-slate-600">
+            D+29 e clientes críticos
+          </p>
+        </button>
 
-                <button
-                  onClick={load}
-                  className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-black text-white shadow-sm transition hover:bg-emerald-800"
-                >
-                  Atualizar
-                </button>
-              </div>
+        <button
+          type="button"
+          onClick={() =>
+            revealSection("entregas-dia", () =>
+              setDeliveryOpen(true)
+            )
+          }
+          className="group rounded-[22px] border border-sky-100 bg-gradient-to-br from-sky-50 to-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[10px] font-black uppercase tracking-[0.16em] text-sky-700">
+              📦 Entregas
+            </span>
+            <strong className="text-xl font-black text-sky-700">
+              {pendingOrders.length}
+            </strong>
+          </div>
+          <p className="mt-2 text-xs font-bold text-slate-600">
+            Pedidos aguardando acompanhamento
+          </p>
+        </button>
 
-              <div className="mt-5 grid gap-3">
-                {workNow.length ? (
-                  workNow.map((item) => (
-                    <a
+        <button
+          type="button"
+          onClick={() =>
+            revealSection("retornos-hoje", () =>
+              setActivitiesOpen(true)
+            )
+          }
+          className="group rounded-[22px] border border-indigo-100 bg-gradient-to-br from-indigo-50 to-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[10px] font-black uppercase tracking-[0.16em] text-indigo-700">
+              ↩ Retornos
+            </span>
+            <strong className="text-xl font-black text-indigo-700">
+              {activities.length}
+            </strong>
+          </div>
+          <p className="mt-2 text-xs font-bold text-slate-600">
+            Compromissos comerciais de hoje
+          </p>
+        </button>
+
+        <button
+          type="button"
+          onClick={() =>
+            revealSection("acoes-central-ia", () =>
+              setActionsOpen(true)
+            )
+          }
+          className="group rounded-[22px] border border-teal-100 bg-gradient-to-br from-teal-50 to-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[10px] font-black uppercase tracking-[0.16em] text-teal-700">
+              ✦ Central IA
+            </span>
+            <strong className="text-xl font-black text-teal-700">
+              {data?.summary.totalActions || 0}
+            </strong>
+          </div>
+          <p className="mt-2 text-xs font-bold text-slate-600">
+            Recomendações comerciais
+          </p>
+        </button>
+      </section>
+
+      <section
+        id="prioridades-agora"
+        className="mt-4 scroll-mt-24 rounded-[26px] border border-slate-200/80 bg-white/95 p-4 shadow-sm md:p-5"
+      >
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-teal-700">
+              O que fazer agora
+            </p>
+            <h2 className="mt-1 text-xl font-black tracking-tight text-slate-950">
+              Prioridades do vendedor
+            </h2>
+            <p className="mt-1 text-xs font-semibold text-slate-500">
+              Só o que precisa de atenção primeiro. O restante fica organizado nas seções abaixo.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setPriorityOpen((value) => !value)}
+            className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-black text-slate-700 transition hover:bg-slate-100"
+          >
+            {priorityOpen ? "Minimizar" : `Mostrar ${workNow.length} prioridade(s)`}
+          </button>
+        </div>
+
+        {priorityOpen ? (
+          <div className="mt-4 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+            <div className="grid gap-2">
+              {workNow.length ? (
+                workNow.map((item) => {
+                  const toneMap = {
+                    red: "border-rose-100 bg-rose-50",
+                    amber: "border-orange-100 bg-orange-50",
+                    blue: "border-sky-100 bg-sky-50",
+                    emerald: "border-teal-100 bg-teal-50",
+                  };
+
+                  return (
+                    <div
                       key={item.id}
-                      href={item.href || "#"}
-                      className={`rounded-3xl border p-4 transition hover:-translate-y-0.5 hover:shadow-md ${
-                        item.tone === "red"
-                          ? "border-red-100 bg-red-50"
-                          : item.tone === "amber"
-                            ? "border-amber-100 bg-amber-50"
-                            : item.tone === "blue"
-                              ? "border-blue-100 bg-blue-50"
-                              : "border-emerald-100 bg-emerald-50"
-                      }`}
+                      className={`rounded-[18px] border px-4 py-3 ${toneMap[item.tone]}`}
                     >
-                      <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
-                        <div>
-                          <span className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
-                            {item.label}
-                          </span>
-                          <h3 className="mt-1 text-base font-black text-slate-950">{item.title}</h3>
-                          <p className="mt-1 text-sm font-bold leading-5 text-slate-600">{item.helper}</p>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">
+                              {item.label}
+                            </span>
+                            <strong className="truncate text-sm font-black text-slate-950">
+                              {item.title}
+                            </strong>
+                          </div>
+                          <p className="mt-1 line-clamp-1 text-[11px] font-semibold text-slate-600">
+                            {item.helper}
+                          </p>
                         </div>
-                        <span className="rounded-2xl bg-white px-4 py-2 text-xs font-black text-slate-700 shadow-sm">
-                          Abrir
-                        </span>
+
+                        {item.href ? (
+                          <a
+                            href={item.href}
+                            className="shrink-0 rounded-xl bg-white px-3 py-2 text-[10px] font-black text-slate-700 shadow-sm"
+                          >
+                            Abrir
+                          </a>
+                        ) : null}
                       </div>
-                    </a>
-                  ))
-                ) : (
-                  <div className="rounded-3xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-sm font-bold text-slate-500">
-                    Nenhuma prioridade crítica agora.
-                  </div>
-                )}
-              </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-200 p-5 text-xs font-bold text-slate-500">
+                  Nenhuma ação imediata encontrada.
+                </div>
+              )}
             </div>
 
-            <div className="rounded-[32px] border border-emerald-100 bg-emerald-50 p-5 shadow-sm md:p-6">
-              <p className="text-xs font-black uppercase tracking-[0.22em] text-emerald-700">
-                Leitura da IA
+            <div className="rounded-[22px] border border-indigo-100 bg-gradient-to-br from-indigo-950 to-slate-900 p-4 text-white">
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-indigo-200">
+                Leitura do assistente
               </p>
-              <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-950">
-                Diagnóstico rápido
-              </h2>
-              <div className="mt-5 grid gap-3">
-                {assistantSummary.map((line) => (
-                  <div key={line} className="rounded-2xl bg-white px-4 py-3 text-sm font-bold leading-6 text-slate-700 shadow-sm">
+              <h3 className="mt-1 text-lg font-black">
+                Diagnóstico resumido
+              </h3>
+
+              <div className="mt-3 grid gap-2">
+                {assistantSummary.map((line, index) => (
+                  <div
+                    key={`${line}-${index}`}
+                    className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-semibold leading-5 text-slate-100"
+                  >
                     {line}
                   </div>
                 ))}
               </div>
             </div>
-          </section>
+          </div>
+        ) : null}
+      </section>
 
-          <section className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-6">
-            <KpiCard label="Ações IA" value={data.summary.totalActions} helper="Clientes com recomendação" />
-            <KpiCard label="Retornos" value={activities.length} helper="Agendados para hoje" tone="blue" />
-            <KpiCard label="Entregas" value={deliverySummary?.total_orders || 0} helper="Dia selecionado" tone="amber" />
-            <KpiCard label="Boletos" value={data.summary.boletos} helper="Vencendo em até 7 dias" tone="red" />
-            <KpiCard label="Mix" value={data.summary.mix} helper="Produtos ausentes" tone="emerald" />
-            <KpiCard label="Potencial" value={data.summary.potentialFormatted || "—"} helper="Estimado pela IA" tone="emerald" />
-          </section>
+      <section
+        id="carteira-inteligente"
+        className="mt-4 scroll-mt-24 rounded-[26px] border border-orange-100 bg-white/95 p-4 shadow-sm md:p-5"
+      >
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-orange-700">
+              🛡 Proteção de carteira
+            </p>
+            <h2 className="mt-1 text-xl font-black tracking-tight text-slate-950">
+              Clientes que precisam de proteção ou recompra
+            </h2>
+            <p className="mt-1 text-xs font-semibold text-slate-500">
+              D+29, 30+ dias e padrões de compra aparecem aqui sem misturar com boleto, entrega ou cotação.
+            </p>
+          </div>
 
-          <section className="mt-5 rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm md:p-6">
-            <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-start">
-              <div>
-                <p className="text-xs font-black uppercase tracking-[0.22em] text-slate-600">
-                  Controle do dia
-                </p>
-                <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-950">
-                  Entregas
-                </h2>
-                <p className="mt-2 max-w-2xl text-sm font-semibold leading-6 text-slate-500">
-                  Área colapsável para não poluir a tela quando houver muitos pedidos. Mostre hoje ou amanhã e abra a lista só quando precisar.
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-xl bg-rose-50 px-3 py-2 text-[11px] font-black text-rose-700">
+              {portfolioSummary.critical} críticos
+            </span>
+            <span className="rounded-xl bg-orange-50 px-3 py-2 text-[11px] font-black text-orange-700">
+              {portfolioSummary.d29} no D+29
+            </span>
+            <span className="rounded-xl bg-sky-50 px-3 py-2 text-[11px] font-black text-sky-700">
+              {portfolioSummary.expectedToday} compra hoje
+            </span>
+            <button
+              type="button"
+              onClick={() => setPortfolioOpen((value) => !value)}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-black text-slate-700 transition hover:bg-slate-100"
+            >
+              {portfolioOpen ? "Minimizar" : "Abrir carteira"}
+            </button>
+          </div>
+        </div>
+
+        {portfolioOpen ? (
+          <>
+            <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-[18px] border border-rose-100 bg-rose-50/70 px-4 py-3">
+                <span className="text-[9px] font-black uppercase tracking-[0.14em] text-rose-500">
+                  Críticos
+                </span>
+                <strong className="mt-1 block text-xl font-black text-rose-700">
+                  {portfolioSummary.critical}
+                </strong>
+                <p className="text-[10px] font-bold text-rose-600">
+                  30+ dias
                 </p>
               </div>
 
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => setDeliveryDate(todayISO())}
-                  className={`rounded-2xl px-4 py-2 text-xs font-black transition ${
-                    deliveryDate === todayISO()
-                      ? "bg-slate-950 text-white"
-                      : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                  }`}
-                >
+              <div className="rounded-[18px] border border-orange-100 bg-orange-50/70 px-4 py-3">
+                <span className="text-[9px] font-black uppercase tracking-[0.14em] text-orange-500">
+                  D+29
+                </span>
+                <strong className="mt-1 block text-xl font-black text-orange-700">
+                  {portfolioSummary.d29}
+                </strong>
+                <p className="text-[10px] font-bold text-orange-600">
+                  Agir hoje
+                </p>
+              </div>
+
+              <div className="rounded-[18px] border border-sky-100 bg-sky-50/70 px-4 py-3">
+                <span className="text-[9px] font-black uppercase tracking-[0.14em] text-sky-500">
+                  Compra esperada
+                </span>
+                <strong className="mt-1 block text-xl font-black text-sky-700">
+                  {portfolioSummary.expectedToday}
+                </strong>
+                <p className="text-[10px] font-bold text-sky-600">
                   Hoje
-                </button>
-                <button
-                  onClick={() => setDeliveryDate(todayISO(1))}
-                  className={`rounded-2xl px-4 py-2 text-xs font-black transition ${
-                    deliveryDate === todayISO(1)
-                      ? "bg-slate-950 text-white"
-                      : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                  }`}
-                >
-                  Amanhã
-                </button>
-                <button
-                  onClick={() => setDeliveryOpen((v) => !v)}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-xs font-black text-slate-700 transition hover:bg-slate-50"
-                >
-                  {deliveryOpen ? "Minimizar" : "Mostrar"}
-                </button>
+                </p>
+              </div>
+
+              <div className="rounded-[18px] border border-violet-100 bg-violet-50/70 px-4 py-3">
+                <span className="text-[9px] font-black uppercase tracking-[0.14em] text-violet-500">
+                  Ritmo atrasado
+                </span>
+                <strong className="mt-1 block text-xl font-black text-violet-700">
+                  {portfolioSummary.overdueHabit}
+                </strong>
+                <p className="text-[10px] font-bold text-violet-600">
+                  Reposição pendente
+                </p>
               </div>
             </div>
 
-            <div className="mt-5 grid gap-3 md:grid-cols-3">
-              <div className="rounded-2xl bg-slate-50 px-4 py-3">
-                <p className="text-[11px] font-black uppercase text-slate-400">{formatDateLabel(deliveryDate)}</p>
-                <strong className="text-xl font-black text-slate-950">{deliverySummary?.total_orders || 0} pedidos</strong>
-              </div>
-              <div className="rounded-2xl bg-emerald-50 px-4 py-3">
-                <p className="text-[11px] font-black uppercase text-emerald-700">Valor previsto</p>
-                <strong className="text-xl font-black text-emerald-700">{brl(Number(deliverySummary?.total_sales || 0))}</strong>
-              </div>
-              <div className="rounded-2xl bg-amber-50 px-4 py-3">
-                <p className="text-[11px] font-black uppercase text-amber-700">Pendentes</p>
-                <strong className="text-xl font-black text-amber-700">{pendingOrders.length}</strong>
-              </div>
-            </div>
+            <div className="mt-4 grid gap-2 lg:grid-cols-[1fr_250px_auto]">
+              <input
+                value={portfolioSearch}
+                onChange={(event) => setPortfolioSearch(event.target.value)}
+                placeholder="Buscar cliente, ID PMG, documento ou ritmo..."
+                className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 outline-none transition focus:border-orange-300 focus:ring-4 focus:ring-orange-50"
+              />
 
-            {deliveryOpen ? (
-              <div className="mt-5 grid gap-3">
-                {visibleOrders.map((order: any) => (
-                  <DeliveryRow key={order.id} order={order} onUpdate={updateDeliveryStatus} />
-                ))}
-
-                {orders.length > 8 ? (
-                  <button
-                    onClick={() => setShowAllDeliveries((v) => !v)}
-                    className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 transition hover:bg-slate-50"
-                  >
-                    {showAllDeliveries ? "Mostrar menos" : `Mostrar todos os ${orders.length} pedidos`}
-                  </button>
-                ) : null}
-
-                {!orders.length ? (
-                  <div className="rounded-3xl border border-dashed border-slate-200 p-6 text-center text-sm font-bold text-slate-400">
-                    Nenhuma entrega prevista para {deliveryDate === todayISO() ? "hoje" : "amanhã"}.
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </section>
-
-          <section className="mt-5 grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
-            <div className="rounded-[32px] border border-blue-100 bg-blue-50 p-5 shadow-sm md:p-6">
-              <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-[0.22em] text-blue-700">
-                    Próximas ações
-                  </p>
-                  <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-950">
-                    Agenda de hoje
-                  </h2>
-                  <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">
-                    Retornos cadastrados pelo vendedor no Kanban ou na ficha do cliente.
-                  </p>
-                </div>
-
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                  <div className="rounded-2xl bg-white px-5 py-3 text-center shadow-sm">
-                    <p className="text-[11px] font-black uppercase text-blue-500">Atividades</p>
-                    <strong className="text-2xl font-black text-blue-700">{activities.length}</strong>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={openAgenda}
-                    className="rounded-2xl bg-blue-700 px-5 py-3 text-sm font-black text-white shadow-sm transition hover:bg-blue-800"
-                  >
-                    + Novo lembrete
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-5 grid gap-3">
-                {activities.length ? (
-                  activities.slice(0, 6).map((activity) => (
-                    <div key={activity.id}>
-                      <ActivityMiniCard activity={activity} />
-                      {activity.origin === "personal_agenda" ? (
-                        <div className="-mt-2 mb-1 flex flex-wrap justify-end gap-2 px-3">
-                          <button
-                            type="button"
-                            onClick={() => completeAgendaItem(activity.id)}
-                            className="rounded-xl bg-emerald-700 px-3 py-2 text-[11px] font-black text-white hover:bg-emerald-800"
-                          >
-                            ✓ Concluir
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => deleteAgendaItem(activity.id)}
-                            className="rounded-xl border border-red-200 bg-white px-3 py-2 text-[11px] font-black text-red-700 hover:bg-red-50"
-                          >
-                            Excluir
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  ))
-                ) : (
-                  <div className="rounded-3xl border border-dashed border-blue-200 bg-white/70 p-6 text-center text-sm font-bold text-slate-500">
-                    Nenhuma próxima ação para hoje.
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm md:p-6">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-[0.22em] text-emerald-700">
-                    Inteligência comercial
-                  </p>
-                  <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-950">
-                    Insights e mensagens prontas
-                  </h2>
-                </div>
-
-                <input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Buscar cliente, CNPJ, ID ou pedido..."
-                  className="min-h-[44px] w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-bold outline-none transition focus:border-emerald-500 md:w-[340px]"
-                />
-              </div>
-
-              <div className="mt-4 flex flex-wrap gap-2">
-                {tabs.map((item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => setTab(item.id)}
-                    className={`rounded-2xl px-4 py-2 text-xs font-black transition ${
-                      tab === item.id
-                        ? "bg-emerald-700 text-white shadow-sm"
-                        : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-
-              {tab === "supervisor" ? (
-                <div className="mt-5 grid gap-3">
-                  {data.supervisor?.sellers?.length ? (
-                    data.supervisor.sellers.map((seller) => (
-                      <div key={seller.seller} className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-4 md:items-center">
-                        <div>
-                          <p className="text-sm font-black text-slate-950">{seller.seller}</p>
-                          <p className="text-xs font-bold text-slate-500">Vendedor</p>
-                        </div>
-                        <div>
-                          <p className="text-lg font-black text-slate-950">{seller.actions}</p>
-                          <p className="text-xs font-bold text-slate-500">Ações</p>
-                        </div>
-                        <div>
-                          <p className="text-lg font-black text-red-700">{seller.highPriority}</p>
-                          <p className="text-xs font-bold text-slate-500">Alta prioridade</p>
-                        </div>
-                        <div>
-                          <p className="text-lg font-black text-emerald-700">{brl(seller.potential)}</p>
-                          <p className="text-xs font-bold text-slate-500">Potencial</p>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="rounded-2xl bg-slate-50 p-5 text-sm font-bold text-slate-500">
-                      Nenhum vendedor com ação no momento.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <div className="mt-5 grid gap-4">
-                  {actions.length ? (
-                    actions.map((action) => <ActionCard key={action.id} action={action} />)
-                  ) : (
-                    <div className="rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-sm">
-                      <h3 className="text-xl font-black text-slate-950">Nenhuma ação encontrada</h3>
-                      <p className="mt-2 text-sm font-semibold text-slate-500">
-                        Não há clientes nessa categoria agora.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </section>
-
-          {data.whatsappSummary ? (
-            <section className="mt-5 rounded-3xl border border-emerald-100 bg-emerald-50 p-5 shadow-sm">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-700">
-                Resumo para WhatsApp
-              </p>
-              <p className="mt-3 whitespace-pre-line text-sm font-bold leading-6 text-emerald-950">
-                {data.whatsappSummary}
-              </p>
-              <button
-                onClick={() => navigator.clipboard.writeText(data.whatsappSummary || "")}
-                className="mt-4 rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-black text-white shadow-sm transition hover:bg-emerald-800"
+              <select
+                value={portfolioFilter}
+                onChange={(event) => setPortfolioFilter(event.target.value)}
+                className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 outline-none"
               >
-                Copiar resumo
-              </button>
-            </section>
-          ) : null}
-        </>
-      ) : null}
-    
-      {agendaOpen ? (
-        <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-sm"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setAgendaOpen(false);
-          }}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="agenda-title"
-            className="max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-[28px] border border-slate-200 bg-white p-5 shadow-2xl md:p-6"
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-blue-700">
-                  Minha agenda
-                </p>
-                <h2 id="agenda-title" className="mt-1 text-2xl font-black text-slate-950">
-                  Novo lembrete
-                </h2>
-                <p className="mt-1 text-sm font-semibold text-slate-500">
-                  Anote uma tarefa e, se quiser, vincule um cliente e horário.
-                </p>
-              </div>
+                {PORTFOLIO_FILTERS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
 
               <button
                 type="button"
-                onClick={() => setAgendaOpen(false)}
-                className="h-10 w-10 rounded-2xl bg-slate-100 text-lg font-black text-slate-600 hover:bg-slate-200"
-                aria-label="Fechar"
+                onClick={() => {
+                  setPortfolioSearch("");
+                  setPortfolioFilter("all");
+                }}
+                className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-[11px] font-black text-slate-700 transition hover:bg-slate-50"
               >
-                ×
+                Limpar
+              </button>
+            </div>
+
+            <div className="mt-4 grid gap-2">
+              {portfolioItems.length ? (
+                portfolioItems.map((item) => (
+                  <PortfolioCard
+                    key={item.id}
+                    item={item}
+                    savingKey={portfolioSaving}
+                    onOpenPmg={openPmg}
+                    onRegister={registerPortfolioAction}
+                    onSchedule={openAgenda}
+                  />
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center">
+                  <strong className="text-sm font-black text-slate-800">
+                    Nenhum cliente neste filtro.
+                  </strong>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">
+                    Quando houver D+29, risco de carteira ou padrão forte de recompra, ele aparece aqui.
+                  </p>
+                </div>
+              )}
+            </div>
+          </>
+        ) : null}
+      </section>
+
+      <section id="entregas-dia" className="mt-4 scroll-mt-24 rounded-[26px] border border-sky-100 bg-white/95 p-4 shadow-sm md:p-5">
+        <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-sky-700">
+              📦 Controle do dia
+            </p>
+            <h2 className="mt-1 text-xl font-black tracking-tight text-slate-950">
+              Entregas
+            </h2>
+            <p className="mt-1 max-w-2xl text-xs font-semibold text-slate-500">
+              Acompanhe hoje ou amanhã sem poluir a visão principal.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setDeliveryDate(todayISO())}
+              className={`rounded-xl px-3 py-2 text-[11px] font-black transition ${
+                deliveryDate === todayISO()
+                  ? "bg-sky-700 text-white"
+                  : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              Hoje
+            </button>
+            <button
+              onClick={() => setDeliveryDate(todayISO(1))}
+              className={`rounded-xl px-3 py-2 text-[11px] font-black transition ${
+                deliveryDate === todayISO(1)
+                  ? "bg-sky-700 text-white"
+                  : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              Amanhã
+            </button>
+            <button
+              onClick={() => setDeliveryOpen((value) => !value)}
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-xs font-black text-slate-700 transition hover:bg-slate-50"
+            >
+              {deliveryOpen ? "Minimizar" : "Mostrar"}
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-2 md:grid-cols-3">
+          <div className="rounded-[18px] bg-slate-50 px-4 py-3">
+            <p className="text-[11px] font-black uppercase text-slate-400">
+              {formatDateLabel(deliveryDate)}
+            </p>
+            <strong className="text-xl font-black text-slate-950">
+              {deliverySummary?.total_orders || 0} pedidos
+            </strong>
+          </div>
+          <div className="rounded-[18px] bg-teal-50 px-4 py-3">
+            <p className="text-[11px] font-black uppercase text-emerald-700">
+              Valor previsto
+            </p>
+            <strong className="text-xl font-black text-emerald-700">
+              {brl(Number(deliverySummary?.total_sales || 0))}
+            </strong>
+          </div>
+          <div className="rounded-2xl bg-amber-50 px-4 py-3">
+            <p className="text-[11px] font-black uppercase text-amber-700">
+              Pendentes
+            </p>
+            <strong className="text-xl font-black text-amber-700">
+              {pendingOrders.length}
+            </strong>
+          </div>
+        </div>
+
+        {deliveryOpen ? (
+          <div className="mt-5 grid gap-3">
+            {visibleOrders.length ? (
+              visibleOrders.map((order: any) => (
+                <DeliveryRow
+                  key={order.id}
+                  order={order}
+                  onUpdate={updateDeliveryStatus}
+                />
+              ))
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm font-bold text-slate-500">
+                Nenhum pedido para a data selecionada.
+              </div>
+            )}
+
+            {orders.length > 8 ? (
+              <button
+                type="button"
+                onClick={() =>
+                  setShowAllDeliveries((value) => !value)
+                }
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black text-slate-700"
+              >
+                {showAllDeliveries
+                  ? "Mostrar menos"
+                  : `Mostrar todos (${orders.length})`}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+
+      <section id="retornos-hoje" className="mt-4 scroll-mt-24 rounded-[26px] border border-indigo-100 bg-white/95 p-4 shadow-sm md:p-5">
+        <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-indigo-700">
+              ↩ Agenda comercial
+            </p>
+            <h2 className="mt-1 text-xl font-black tracking-tight text-slate-950">
+              Retornos de hoje <span className="text-indigo-600">({activities.length})</span>
+            </h2>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => openAgenda()}
+              className="rounded-xl bg-indigo-700 px-3 py-2 text-[11px] font-black text-white transition hover:bg-indigo-800"
+            >
+              + Agendar
+            </button>
+            <button
+              type="button"
+              onClick={() => setActivitiesOpen((value) => !value)}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-black text-slate-700 transition hover:bg-slate-100"
+            >
+              {activitiesOpen ? "Minimizar" : "Mostrar retornos"}
+            </button>
+          </div>
+        </div>
+
+        {activitiesOpen ? (
+          <div className="mt-4 grid gap-2">
+          {activities.length ? (
+            activities.map((activity) => {
+              const phone = cleanPhone(
+                activity.customer?.whatsapp ||
+                  activity.customer?.phone ||
+                  activity.phone ||
+                  activity.lead?.phone
+              );
+
+              return (
+                <article
+                  key={activity.id}
+                  className="rounded-2xl border border-blue-100 bg-blue-50 p-4"
+                >
+                  <div className="flex flex-col justify-between gap-3 md:flex-row md:items-start">
+                    <div>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="rounded-full border border-blue-200 bg-white px-3 py-1 text-[10px] font-black uppercase text-blue-700">
+                          {activityTypeLabel(activity.type)}
+                        </span>
+                        <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[10px] font-black uppercase text-slate-600">
+                          {activity.priority || "média"}
+                        </span>
+                      </div>
+                      <strong className="mt-3 block text-base font-black text-slate-950">
+                        {activity.title}
+                      </strong>
+                      <p className="mt-1 text-sm font-bold text-slate-600">
+                        {getActivityName(activity)} ·{" "}
+                        {formatTime(activity.scheduled_at)}
+                      </p>
+                      {activity.description ? (
+                        <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">
+                          {activity.description}
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      {activity.customer?.id ? (
+                        <a
+                          href={`/crm/dashboard/customers?customer=${activity.customer.id}`}
+                          className="rounded-xl border border-blue-200 bg-white px-3 py-2 text-[11px] font-black text-blue-700"
+                        >
+                          Cliente
+                        </a>
+                      ) : null}
+                      {phone ? (
+                        <a
+                          href={`https://wa.me/${phone}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="rounded-xl bg-emerald-700 px-3 py-2 text-[11px] font-black text-white"
+                        >
+                          WhatsApp
+                        </a>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void completeActivity(activity.id)
+                        }
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black text-slate-700"
+                      >
+                        Concluir
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              );
+            })
+          ) : (
+            <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm font-bold text-slate-500">
+              Nenhum retorno pendente para hoje.
+            </div>
+          )}
+        </div>
+        ) : null}
+      </section>
+
+      <section id="acoes-central-ia" className="mt-4 scroll-mt-24 rounded-[26px] border border-teal-100 bg-white/95 p-4 shadow-sm md:p-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-teal-700">
+              ✦ Recomendações comerciais
+            </p>
+            <h2 className="mt-1 text-xl font-black tracking-tight text-slate-950">
+              Ações da Central IA <span className="text-teal-600">({data?.summary.totalActions || 0})</span>
+            </h2>
+            <p className="mt-1 text-xs font-semibold text-slate-500">
+              Abra somente quando quiser trabalhar as recomendações detalhadas.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setActionsOpen((value) => !value)}
+            className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-black text-slate-700 transition hover:bg-slate-100"
+          >
+            {actionsOpen ? "Minimizar" : "Abrir recomendações"}
+          </button>
+        </div>
+
+        {actionsOpen ? (
+          <>
+            <div className="mt-4">
+              <input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Buscar cliente, ID, documento ou pedido..."
+                className="h-10 w-full rounded-xl border border-slate-200 px-3 text-xs font-semibold outline-none focus:border-teal-400"
+              />
+            </div>
+
+            <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+          {tabs.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setTab(item.id)}
+              className={`whitespace-nowrap rounded-2xl px-4 py-2 text-xs font-black transition ${
+                tab === item.id
+                  ? "bg-slate-950 text-white"
+                  : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {tab === "supervisor" ? (
+          <div className="mt-5 grid gap-3">
+            {data?.supervisor?.sellers?.length ? (
+              data.supervisor.sellers.map((seller) => (
+                <div
+                  key={seller.seller}
+                  className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-4"
+                >
+                  <strong className="text-sm font-black text-slate-950">
+                    {seller.seller}
+                  </strong>
+                  <span className="text-xs font-bold text-slate-600">
+                    {seller.actions} ações
+                  </span>
+                  <span className="text-xs font-bold text-red-700">
+                    {seller.highPriority} alta prioridade
+                  </span>
+                  <span className="text-xs font-black text-emerald-700">
+                    {brl(Number(seller.potential || 0))}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm font-bold text-slate-500">
+                Sem dados de supervisão para este perfil.
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="mt-5 grid gap-4">
+            {actions.length ? (
+              actions.map((action) => (
+                <ActionCard key={action.id} action={action} />
+              ))
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-sm font-bold text-slate-500">
+                Nenhuma ação encontrada neste filtro.
+              </div>
+            )}
+          </div>
+        )}
+           </>
+        ) : null}
+      </section>
+      {data?.whatsappSummary ? (
+        <details className="mt-4 rounded-[24px] border border-teal-100 bg-teal-950 text-white shadow-sm">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-4">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-teal-300">
+                Resumo para WhatsApp
+              </p>
+              <p className="mt-1 text-xs font-semibold text-teal-100/80">
+                Abra apenas quando quiser copiar o resumo do dia.
+              </p>
+            </div>
+            <span className="rounded-xl bg-white/10 px-3 py-2 text-[10px] font-black text-white">
+              Abrir
+            </span>
+          </summary>
+
+          <div className="border-t border-white/10 px-4 pb-4">
+            <pre className="mt-4 whitespace-pre-wrap font-sans text-xs font-semibold leading-5 text-teal-50">
+              {data.whatsappSummary}
+            </pre>
+            <button
+              type="button"
+              onClick={() =>
+                void copyText(data.whatsappSummary || "").then(
+                  (copied) =>
+                    copied
+                      ? alert("Resumo copiado.")
+                      : alert("Não foi possível copiar.")
+                )
+              }
+              className="mt-3 rounded-xl bg-white px-3 py-2 text-[11px] font-black text-teal-950"
+            >
+              Copiar resumo
+            </button>
+          </div>
+        </details>
+      ) : null}
+
+      {agendaOpen ? (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
+          <div className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-[30px] border border-slate-200 bg-white p-5 shadow-2xl md:p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.2em] text-blue-700">
+                  Agenda comercial
+                </p>
+                <h2 className="mt-1 text-2xl font-black text-slate-950">
+                  Nova próxima ação
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAgendaOpen(false)}
+                className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-black text-slate-600"
+              >
+                Fechar
               </button>
             </div>
 
             <div className="mt-5 grid gap-4">
               <label className="grid gap-2">
-                <span className="text-xs font-black text-slate-700">O que você precisa fazer? *</span>
+                <span className="text-xs font-black text-slate-700">
+                  Cliente
+                </span>
                 <input
-                  autoFocus
+                  value={agendaCustomerSearch}
+                  onChange={(event) => {
+                    setAgendaCustomerSearch(event.target.value);
+                    if (
+                      event.target.value !== agendaForm.customerName
+                    ) {
+                      setAgendaForm((current) => ({
+                        ...current,
+                        customerId: "",
+                        customerName: "",
+                      }));
+                    }
+                  }}
+                  placeholder="Buscar nome, ID PMG ou telefone..."
+                  className="h-11 rounded-2xl border border-slate-200 px-4 text-sm font-semibold outline-none focus:border-blue-400"
+                />
+              </label>
+
+              {agendaForm.customerId ? (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-800">
+                  Selecionado: {agendaForm.customerName}
+                </div>
+              ) : (
+                <div className="max-h-52 overflow-y-auto rounded-2xl border border-slate-200">
+                  {agendaLoadingCustomers ? (
+                    <div className="p-4 text-sm font-bold text-slate-500">
+                      Carregando clientes...
+                    </div>
+                  ) : filteredAgendaCustomers.length ? (
+                    filteredAgendaCustomers.map((customer) => (
+                      <button
+                        key={customer.id}
+                        type="button"
+                        onClick={() => {
+                          const name = customerDisplayName(customer);
+                          setAgendaForm((current) => ({
+                            ...current,
+                            customerId: customer.id,
+                            customerName: name,
+                          }));
+                          setAgendaCustomerSearch(name);
+                        }}
+                        className="flex w-full items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 text-left last:border-b-0 hover:bg-slate-50"
+                      >
+                        <span>
+                          <strong className="block text-sm text-slate-900">
+                            {customerDisplayName(customer)}
+                          </strong>
+                          <small className="font-bold text-slate-500">
+                            ID{" "}
+                            {customer.internal_code ||
+                              customer.erp_code ||
+                              "não informado"}
+                          </small>
+                        </span>
+                        <span className="text-xs font-black text-blue-700">
+                          Selecionar
+                        </span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="p-4 text-sm font-bold text-slate-500">
+                      Nenhum cliente encontrado.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <label className="grid gap-2">
+                <span className="text-xs font-black text-slate-700">
+                  Título
+                </span>
+                <input
                   value={agendaForm.title}
-                  onChange={(e) => setAgendaForm((prev) => ({ ...prev, title: e.target.value }))}
-                  placeholder="Ex.: Ligar para o cliente sobre o pedido"
-                  className="min-h-[46px] rounded-2xl border border-slate-200 px-4 text-sm font-bold outline-none focus:border-blue-500"
+                  onChange={(event) =>
+                    setAgendaForm((current) => ({
+                      ...current,
+                      title: event.target.value,
+                    }))
+                  }
+                  className="h-11 rounded-2xl border border-slate-200 px-4 text-sm font-semibold outline-none focus:border-blue-400"
                 />
               </label>
 
               <label className="grid gap-2">
-                <span className="text-xs font-black text-slate-700">Observação</span>
+                <span className="text-xs font-black text-slate-700">
+                  Observação
+                </span>
                 <textarea
                   value={agendaForm.description}
-                  onChange={(e) => setAgendaForm((prev) => ({ ...prev, description: e.target.value }))}
-                  placeholder="Texto livre, detalhes do pedido, o que lembrar..."
-                  rows={3}
-                  className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold outline-none focus:border-blue-500"
+                  onChange={(event) =>
+                    setAgendaForm((current) => ({
+                      ...current,
+                      description: event.target.value,
+                    }))
+                  }
+                  rows={4}
+                  className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold outline-none focus:border-blue-400"
                 />
               </label>
 
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <p className="text-xs font-black text-slate-700">Cliente (opcional)</p>
-                <input
-                  value={agendaCustomerSearch}
-                  onChange={(e) => setAgendaCustomerSearch(e.target.value)}
-                  placeholder="Buscar por nome, comprador ou WhatsApp..."
-                  className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500"
-                />
-                <select
-                  value={agendaForm.customer_id}
-                  onChange={(e) => setAgendaForm((prev) => ({ ...prev, customer_id: e.target.value }))}
-                  className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold outline-none focus:border-blue-500"
-                >
-                  <option value="">Sem cliente vinculado</option>
-                  {filteredAgendaCustomers.map((customer) => (
-                    <option key={customer.id} value={customer.id}>
-                      {customer.trade_name || customer.legal_name}
-                      {customer.buyer_name ? ` • ${customer.buyer_name}` : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-4 md:grid-cols-2">
                 <label className="grid gap-2">
-                  <span className="text-xs font-black text-slate-700">Data *</span>
+                  <span className="text-xs font-black text-slate-700">
+                    Data
+                  </span>
                   <input
                     type="date"
                     value={agendaForm.date}
-                    onChange={(e) => setAgendaForm((prev) => ({ ...prev, date: e.target.value }))}
-                    className="min-h-[46px] rounded-2xl border border-slate-200 px-4 text-sm font-bold outline-none focus:border-blue-500"
+                    onChange={(event) =>
+                      setAgendaForm((current) => ({
+                        ...current,
+                        date: event.target.value,
+                      }))
+                    }
+                    className="h-11 rounded-2xl border border-slate-200 px-4 text-sm font-semibold"
                   />
                 </label>
 
                 <label className="grid gap-2">
-                  <span className="text-xs font-black text-slate-700">Horário (opcional)</span>
+                  <span className="text-xs font-black text-slate-700">
+                    Hora
+                  </span>
                   <input
                     type="time"
                     value={agendaForm.time}
-                    onChange={(e) => setAgendaForm((prev) => ({ ...prev, time: e.target.value }))}
-                    className="min-h-[46px] rounded-2xl border border-slate-200 px-4 text-sm font-bold outline-none focus:border-blue-500"
-                  />
-                </label>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="grid gap-2">
-                  <span className="text-xs font-black text-slate-700">Prioridade</span>
-                  <select
-                    value={agendaForm.priority}
-                    onChange={(e) =>
-                      setAgendaForm((prev) => ({
-                        ...prev,
-                        priority: e.target.value as AgendaForm["priority"],
+                    onChange={(event) =>
+                      setAgendaForm((current) => ({
+                        ...current,
+                        time: event.target.value,
                       }))
                     }
-                    className="min-h-[46px] rounded-2xl border border-slate-200 px-4 text-sm font-bold outline-none focus:border-blue-500"
-                  >
-                    <option value="baixa">Baixa</option>
-                    <option value="media">Média</option>
-                    <option value="alta">Alta</option>
-                  </select>
-                </label>
-
-                <label className="flex min-h-[46px] items-center gap-3 self-end rounded-2xl border border-slate-200 px-4">
-                  <input
-                    type="checkbox"
-                    checked={agendaForm.notify}
-                    onChange={(e) => setAgendaForm((prev) => ({ ...prev, notify: e.target.checked }))}
+                    className="h-11 rounded-2xl border border-slate-200 px-4 text-sm font-semibold"
                   />
-                  <span className="text-sm font-black text-slate-700">Ativar aviso</span>
                 </label>
               </div>
-            </div>
 
-            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <button
-                type="button"
-                onClick={() => setAgendaOpen(false)}
-                className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-black text-slate-700 hover:bg-slate-50"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={agendaSaving}
-                onClick={saveAgendaItem}
-                className="rounded-2xl bg-blue-700 px-5 py-3 text-sm font-black text-white shadow-sm hover:bg-blue-800 disabled:opacity-60"
-              >
-                {agendaSaving ? "Salvando..." : "Salvar lembrete"}
-              </button>
+              <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+                <button
+                  type="button"
+                  onClick={() => setAgendaOpen(false)}
+                  className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-black text-slate-700"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={agendaSaving}
+                  onClick={() => void saveAgenda()}
+                  className="rounded-2xl bg-blue-700 px-5 py-3 text-sm font-black text-white disabled:opacity-60"
+                >
+                  {agendaSaving ? "Salvando..." : "Salvar próxima ação"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
       ) : null}
-
     </main>
   );
 }
