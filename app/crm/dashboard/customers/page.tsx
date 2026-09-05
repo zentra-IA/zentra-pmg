@@ -37,6 +37,18 @@ type Customer = {
   distance_km?: string | number | null;
   created_at?: string;
   updated_at?: string;
+  promotion_link_generated?: boolean;
+  promotion_link_active?: boolean;
+  promotion_portal_accessed?: boolean;
+  promotion_push_enabled?: boolean;
+  promotion_status?: "none" | "link" | "accessed" | "push" | string;
+  promotion_access_count?: number;
+  promotion_last_access_at?: string | null;
+  promotion_push_permission?: string | null;
+  last_order_at?: string | null;
+  recent_order_count?: number;
+  last_quote_at?: string | null;
+  recent_quote_count?: number;
 };
 
 type CustomerActivity = {
@@ -94,7 +106,7 @@ const EMPTY_FORM = {
   purchase_weekdays: [] as string[],
   expected_ticket: "",
   commercial_notes: "",
-  status: "ativo",
+  status: "prospect",
 };
 
 const WEEKDAYS = [
@@ -115,11 +127,60 @@ const EMPTY_NEXT_ACTION = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  ativo: "Ativo",
-  risco: "Em risco",
+  prospect: "Prospectando",
+  cotacao: "Cotação enviada",
+  pedido: "Pedido em andamento",
+  ativo: "Compra ativa",
+  risco: "Inativo / atenção",
   inativo: "Inativo",
+  inadimplente: "Inadimplente",
   bloqueado: "Bloqueado",
 };
+
+const COMMERCIAL_KANBAN = [
+  {
+    id: "prospect",
+    label: "Prospectando",
+    helper: "Cliente ainda em abordagem",
+  },
+  {
+    id: "cotacao",
+    label: "Cotação enviada",
+    helper: "Aguardando retorno da cotação",
+  },
+  {
+    id: "pedido",
+    label: "Pedido em andamento",
+    helper: "Negociação virou pedido",
+  },
+  {
+    id: "ativo",
+    label: "Compra ativa",
+    helper: "Cliente comprando regularmente",
+  },
+  {
+    id: "inativo",
+    label: "Inativo",
+    helper: "Sem compra / precisa reativar",
+  },
+  {
+    id: "inadimplente",
+    label: "Inadimplente",
+    helper: "Pendência financeira",
+  },
+  {
+    id: "bloqueado",
+    label: "Bloqueado",
+    helper: "Cadastro bloqueado",
+  },
+];
+
+const PORTAL_KANBAN = [
+  { id: "none", label: "Sem link", helper: "Portal ainda não criado" },
+  { id: "link", label: "Link gerado", helper: "Link pronto para envio" },
+  { id: "accessed", label: "Portal acessado", helper: "Cliente já entrou" },
+  { id: "push", label: "Push ativado", helper: "Notificações liberadas" },
+];
 
 function money(value: unknown) {
   const num = Number(value || 0);
@@ -182,6 +243,74 @@ function formatAddress(customer: Customer) {
   return [line1, line2].filter(Boolean).join(" — ") || "Endereço não informado";
 }
 
+function commercialStage(customer: Customer) {
+  const status = String(customer.status || "").toLowerCase();
+
+  // Compatibilidade com registros antigos "risco".
+  if (status === "risco") return "inativo";
+
+  if (
+    ["prospect", "cotacao", "pedido", "ativo", "inativo", "inadimplente", "bloqueado"].includes(
+      status
+    )
+  ) {
+    return status;
+  }
+
+  return "prospect";
+}
+
+function daysSince(value?: string | null) {
+  if (!value) return null;
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const now = new Date();
+  const startNow = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate()
+  ).getTime();
+  const startDate = new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate()
+  ).getTime();
+
+  return Math.max(0, Math.floor((startNow - startDate) / 86400000));
+}
+
+function statusPillClasses(status?: string | null) {
+  const normalized = String(status || "").toLowerCase();
+
+  if (normalized === "prospect") {
+    return "border-blue-200 bg-blue-50 text-blue-700";
+  }
+
+  if (normalized === "cotacao") {
+    return "border-violet-200 bg-violet-50 text-violet-700";
+  }
+
+  if (normalized === "pedido") {
+    return "border-cyan-200 bg-cyan-50 text-cyan-700";
+  }
+
+  if (normalized === "ativo") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+
+  if (normalized === "inativo" || normalized === "risco") {
+    return "border-amber-200 bg-amber-50 text-amber-800";
+  }
+
+  if (normalized === "inadimplente") {
+    return "border-red-200 bg-red-50 text-red-700";
+  }
+
+  return "border-slate-200 bg-slate-100 text-slate-700";
+}
+
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [form, setForm] = useState(EMPTY_FORM);
@@ -216,6 +345,18 @@ export default function CustomersPage() {
     segment: "",
   });
 
+  const [viewMode, setViewMode] = useState<"cards" | "kanban">("cards");
+  const [kanbanMode, setKanbanMode] = useState<"commercial" | "portal">(
+    "commercial"
+  );
+  const [portalFilter, setPortalFilter] = useState("");
+  const [draggingCustomerId, setDraggingCustomerId] = useState<string | null>(
+    null
+  );
+  const [movingCustomerId, setMovingCustomerId] = useState<string | null>(
+    null
+  );
+
   async function loadCustomers() {
     setLoading(true);
 
@@ -249,6 +390,36 @@ export default function CustomersPage() {
     }
   }
 
+  async function clearPortfolioFilters() {
+    setFilters({
+      q: "",
+      status: "",
+      segment: "",
+    });
+    setPortalFilter("");
+    setLoading(true);
+
+    try {
+      const res = await fetch("/api/crm/customers", {
+        cache: "no-store",
+        credentials: "include",
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        alert(data.error || "Erro ao limpar filtros.");
+        return;
+      }
+
+      setCustomers(
+        Array.isArray(data.customers) ? data.customers : []
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
     loadCustomers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -256,17 +427,38 @@ export default function CustomersPage() {
 
   const stats = useMemo(() => {
     const total = customers.length;
-    const ativos = customers.filter(
-      (item) => item.status === "ativo"
+    const prospects = customers.filter(
+      (item) => commercialStage(item) === "prospect"
     ).length;
-    const risco = customers.filter(
-      (item) => item.status === "risco"
+    const cotacoes = customers.filter(
+      (item) => commercialStage(item) === "cotacao"
+    ).length;
+    const pedidos = customers.filter(
+      (item) => commercialStage(item) === "pedido"
+    ).length;
+    const ativos = customers.filter(
+      (item) => commercialStage(item) === "ativo"
     ).length;
     const inativos = customers.filter(
-      (item) => item.status === "inativo"
+      (item) => commercialStage(item) === "inativo"
+    ).length;
+    const inadimplentes = customers.filter(
+      (item) => commercialStage(item) === "inadimplente"
+    ).length;
+    const bloqueados = customers.filter(
+      (item) => commercialStage(item) === "bloqueado"
     ).length;
 
-    return { total, ativos, risco, inativos };
+    return {
+      total,
+      prospects,
+      cotacoes,
+      pedidos,
+      ativos,
+      inativos,
+      inadimplentes,
+      bloqueados,
+    };
   }, [customers]);
 
   const segments = useMemo(() => {
@@ -278,6 +470,30 @@ export default function CustomersPage() {
       )
     ).sort();
   }, [customers]);
+
+  const visibleCustomers = useMemo(() => {
+    if (!portalFilter) return customers;
+
+    return customers.filter(
+      (customer) => promotionStage(customer) === portalFilter
+    );
+  }, [customers, portalFilter]);
+
+  const kanbanColumns = useMemo(() => {
+    const base =
+      kanbanMode === "commercial"
+        ? COMMERCIAL_KANBAN
+        : PORTAL_KANBAN;
+
+    return base.map((column) => ({
+      ...column,
+      customers: visibleCustomers.filter((customer) =>
+        kanbanMode === "commercial"
+          ? commercialStage(customer) === column.id
+          : promotionStage(customer) === column.id
+      ),
+    }));
+  }, [kanbanMode, visibleCustomers]);
 
   function updateField(name: string, value: string) {
     setForm((prev) => ({
@@ -336,7 +552,10 @@ export default function CustomersPage() {
       purchase_weekdays: customer.purchase_weekdays || [],
       expected_ticket: String(customer.expected_ticket || ""),
       commercial_notes: customer.commercial_notes || "",
-      status: customer.status || "ativo",
+      status:
+        customer.status === "risco"
+          ? "inativo"
+          : customer.status || "prospect",
     });
 
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -601,6 +820,23 @@ export default function CustomersPage() {
         [customer.id]: data.promotion_url!,
       }));
 
+      setCustomers((current) =>
+        current.map((item) =>
+          item.id === customer.id
+            ? {
+                ...item,
+                promotion_link_generated: true,
+                promotion_link_active: true,
+                promotion_status:
+                  item.promotion_status === "none" ||
+                  !item.promotion_status
+                    ? "link"
+                    : item.promotion_status,
+              }
+            : item
+        )
+      );
+
       return data.promotion_url;
     } finally {
       setGeneratingLinkFor(null);
@@ -628,9 +864,127 @@ export default function CustomersPage() {
     }
   }
 
+  async function openPmgCustomer(customer: Customer) {
+    const pmgId = String(
+      customer.internal_code || customer.erp_code || ""
+    ).trim();
+
+    if (pmgId) {
+      await copyText(pmgId);
+    }
+
+    window.open(
+      "https://sistema.pmg.com.br/Default.aspx",
+      "_blank",
+      "noopener,noreferrer"
+    );
+
+    if (pmgId) {
+      window.setTimeout(() => {
+        alert(
+          `Sistema PMG aberto.\n\nID ${pmgId} copiado para a área de transferência.`
+        );
+      }, 120);
+    } else {
+      window.setTimeout(() => {
+        alert(
+          "Sistema PMG aberto.\n\nEste cliente ainda não possui ID PMG cadastrado."
+        );
+      }, 120);
+    }
+  }
+
+  async function updateCustomerStatusOnly(
+    customer: Customer,
+    status: string
+  ) {
+    if (!customer.id || customer.status === status) return;
+
+    setMovingCustomerId(customer.id);
+
+    const previousStatus = customer.status;
+
+    setCustomers((current) =>
+      current.map((item) =>
+        item.id === customer.id ? { ...item, status } : item
+      )
+    );
+
+    setSelected((current) =>
+      current?.id === customer.id
+        ? { ...current, status }
+        : current
+    );
+
+    try {
+      const res = await fetch("/api/crm/customers", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          id: customer.id,
+          status,
+          status_only: true,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(
+          data.error || "Erro ao atualizar status do cliente."
+        );
+      }
+    } catch (error) {
+      setCustomers((current) =>
+        current.map((item) =>
+          item.id === customer.id
+            ? { ...item, status: previousStatus }
+            : item
+        )
+      );
+
+      setSelected((current) =>
+        current?.id === customer.id
+          ? { ...current, status: previousStatus }
+          : current
+      );
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Erro ao atualizar status do cliente."
+      );
+    } finally {
+      setMovingCustomerId(null);
+      setDraggingCustomerId(null);
+    }
+  }
+
+  function promotionStage(customer: Customer) {
+    if (customer.promotion_push_enabled) return "push";
+    if (customer.promotion_portal_accessed) return "accessed";
+    if (customer.promotion_link_generated) return "link";
+    return "none";
+  }
+
+  function promotionStageLabel(customer: Customer) {
+    const stage = promotionStage(customer);
+
+    if (stage === "push") return "Push ativado";
+    if (stage === "accessed") return "Portal acessado";
+    if (stage === "link") return "Link gerado";
+    return "Sem link";
+  }
+
   async function generatePromotionLink(customer: Customer) {
     try {
-      const hasCurrentLink = Boolean(promotionLinks[customer.id]);
+      const hasCurrentLink = Boolean(
+        promotionLinks[customer.id] ||
+          customer.promotion_link_generated
+      );
 
       if (
         hasCurrentLink &&
@@ -923,6 +1277,250 @@ export default function CustomersPage() {
     });
   }
 
+  function renderCustomerCard(customer: Customer) {
+    const generatedLink = promotionLinks[customer.id];
+    const linkLoading = generatingLinkFor === customer.id;
+    const hasPortal =
+      Boolean(generatedLink) || Boolean(customer.promotion_link_generated);
+    const pmgId =
+      customer.internal_code ||
+      customer.erp_code ||
+      "Não informado";
+    const lastOrderDays = daysSince(customer.last_order_at);
+    const lastQuoteDays = daysSince(customer.last_quote_at);
+    const stage = commercialStage(customer);
+
+    return (
+      <article
+        key={customer.id}
+        className="relative overflow-hidden rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md"
+        onClick={() => openCustomer(customer)}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <strong className="block break-words text-[15px] font-black leading-5 text-slate-950">
+              {customer.trade_name || customer.legal_name}
+            </strong>
+            <span className="mt-1 block break-words text-[11px] font-bold leading-4 text-slate-500">
+              {customer.legal_name}
+            </span>
+          </div>
+
+          <span
+            className={`shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-black ${statusPillClasses(
+              stage
+            )}`}
+          >
+            {STATUS_LABELS[stage] || stage}
+          </span>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl bg-slate-50 px-3 py-2">
+          <span className="text-[11px] font-bold text-slate-500">
+            ID PMG:
+          </span>
+          <strong className="text-[11px] font-black text-slate-950">
+            {pmgId}
+          </strong>
+
+          <span
+            className={`ml-auto rounded-full px-2 py-1 text-[10px] font-black ${
+              customer.promotion_push_enabled
+                ? "bg-emerald-100 text-emerald-700"
+                : customer.promotion_portal_accessed
+                  ? "bg-blue-100 text-blue-700"
+                  : hasPortal
+                    ? "bg-amber-100 text-amber-700"
+                    : "bg-slate-200 text-slate-600"
+            }`}
+          >
+            {promotionStageLabel(customer)}
+          </span>
+        </div>
+
+        <div className="mt-3 grid gap-1.5 text-[11px] font-semibold leading-4 text-slate-600">
+          <span>
+            <strong className="text-slate-800">Documento:</strong>{" "}
+            {customer.document || "Não informado"}
+          </span>
+          <span>
+            <strong className="text-slate-800">Comprador:</strong>{" "}
+            {customer.buyer_name || "Não informado"}
+          </span>
+          <span>
+            <strong className="text-slate-800">WhatsApp:</strong>{" "}
+            {customer.whatsapp || customer.phone || "Não informado"}
+          </span>
+
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            <span className="rounded-full bg-emerald-50 px-2 py-1 font-black text-emerald-700">
+              {priceTableLabel(customer.price_table)} ·{" "}
+              {formatDistance(customer.distance_km)}
+            </span>
+
+            {lastOrderDays !== null ? (
+              <span className="rounded-full bg-cyan-50 px-2 py-1 font-black text-cyan-700">
+                📦 Último pedido há {lastOrderDays}d
+              </span>
+            ) : (
+              <span className="rounded-full bg-slate-100 px-2 py-1 font-black text-slate-500">
+                📦 Sem pedido recente
+              </span>
+            )}
+
+            {lastQuoteDays !== null ? (
+              <span className="rounded-full bg-violet-50 px-2 py-1 font-black text-violet-700">
+                🧾 Cotação há {lastQuoteDays}d
+              </span>
+            ) : null}
+
+            {customer.habitual_purchase_day ? (
+              <span className="rounded-full bg-amber-50 px-2 py-1 font-black text-amber-700">
+                📅 {customer.habitual_purchase_day}
+              </span>
+            ) : null}
+
+            {customer.promotion_push_enabled ? (
+              <span className="rounded-full bg-emerald-50 px-2 py-1 font-black text-emerald-700">
+                🔔 Push ativo
+              </span>
+            ) : hasPortal ? (
+              <span className="rounded-full bg-amber-50 px-2 py-1 font-black text-amber-700">
+                🔔 Push pendente
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="mt-3 border-t border-slate-100 pt-3">
+          <label
+            className="grid gap-1"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <span className="text-[10px] font-black uppercase tracking-[0.08em] text-slate-400">
+              Fase comercial
+            </span>
+            <select
+              value={stage}
+              disabled={movingCustomerId === customer.id}
+              onChange={(event) =>
+                void updateCustomerStatusOnly(
+                  customer,
+                  event.target.value
+                )
+              }
+              className="relative z-10 min-h-[36px] w-full rounded-xl border border-slate-200 bg-white px-3 text-[11px] font-black text-slate-700 outline-none focus:border-emerald-500"
+            >
+              {COMMERCIAL_KANBAN.map((column) => (
+                <option key={column.id} value={column.id}>
+                  {column.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="relative z-10 mt-3 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            className="min-h-[36px] rounded-xl border border-emerald-200 bg-emerald-50 px-2 text-[11px] font-black text-emerald-800"
+            onClick={(e) => {
+              e.stopPropagation();
+              void openPmgCustomer(customer);
+            }}
+          >
+            Abrir PMG
+          </button>
+
+          <button
+            type="button"
+            disabled={linkLoading}
+            className="min-h-[36px] rounded-xl border border-slate-200 bg-slate-50 px-2 text-[11px] font-black text-slate-700 disabled:opacity-50"
+            onClick={(e) => {
+              e.stopPropagation();
+              void generatePromotionLink(customer);
+            }}
+          >
+            {linkLoading
+              ? "Gerando..."
+              : hasPortal
+                ? "Atualizar link"
+                : "Gerar link"}
+          </button>
+
+          <button
+            type="button"
+            disabled={linkLoading}
+            className="min-h-[36px] rounded-xl border border-slate-200 bg-white px-2 text-[11px] font-black text-slate-700 disabled:opacity-50"
+            onClick={(e) => {
+              e.stopPropagation();
+              void openPromotionPortal(customer);
+            }}
+          >
+            Abrir portal
+          </button>
+
+          <button
+            type="button"
+            disabled={linkLoading}
+            className="min-h-[36px] rounded-xl border border-slate-200 bg-white px-2 text-[11px] font-black text-slate-700 disabled:opacity-50"
+            onClick={(e) => {
+              e.stopPropagation();
+              void copyPromotionLink(customer);
+            }}
+          >
+            Copiar link
+          </button>
+
+          <button
+            type="button"
+            disabled={linkLoading}
+            className="min-h-[36px] rounded-xl border border-emerald-200 bg-white px-2 text-[11px] font-black text-emerald-700 disabled:opacity-50"
+            onClick={(e) => {
+              e.stopPropagation();
+              void sendPromotionWhatsApp(customer);
+            }}
+          >
+            WhatsApp
+          </button>
+
+          <button
+            type="button"
+            className="min-h-[36px] rounded-xl border border-blue-200 bg-blue-50 px-2 text-[11px] font-black text-blue-700"
+            onClick={(e) => {
+              e.stopPropagation();
+              openNextAction(customer);
+            }}
+          >
+            Próxima ação
+          </button>
+
+          <button
+            type="button"
+            className="min-h-[36px] rounded-xl border border-slate-200 bg-white px-2 text-[11px] font-black text-slate-700"
+            onClick={(e) => {
+              e.stopPropagation();
+              editCustomer(customer);
+            }}
+          >
+            Editar
+          </button>
+
+          <button
+            type="button"
+            className="min-h-[36px] rounded-xl border border-red-200 bg-red-50 px-2 text-[11px] font-black text-red-700"
+            onClick={(e) => {
+              e.stopPropagation();
+              void deleteCustomer(customer);
+            }}
+          >
+            Excluir
+          </button>
+        </div>
+      </article>
+    );
+  }
+
   return (
     <div className="customers-page">
       <section className="hero">
@@ -970,19 +1568,39 @@ export default function CustomersPage() {
           <strong>{stats.total}</strong>
         </div>
 
-        <div className="stat-card good">
-          <span>Ativos</span>
-          <strong>{stats.ativos}</strong>
+        <div className="stat-card">
+          <span>Prospectando</span>
+          <strong>{stats.prospects}</strong>
         </div>
 
         <div className="stat-card warn">
-          <span>Em risco</span>
-          <strong>{stats.risco}</strong>
+          <span>Cotação enviada</span>
+          <strong>{stats.cotacoes}</strong>
+        </div>
+
+        <div className="stat-card">
+          <span>Pedido em andamento</span>
+          <strong>{stats.pedidos}</strong>
+        </div>
+
+        <div className="stat-card good">
+          <span>Compra ativa</span>
+          <strong>{stats.ativos}</strong>
         </div>
 
         <div className="stat-card danger">
           <span>Inativos</span>
           <strong>{stats.inativos}</strong>
+        </div>
+
+        <div className="stat-card overdue">
+          <span>Inadimplentes</span>
+          <strong>{stats.inadimplentes}</strong>
+        </div>
+
+        <div className="stat-card blocked">
+          <span>Bloqueados</span>
+          <strong>{stats.bloqueados}</strong>
         </div>
       </section>
 
@@ -1281,9 +1899,12 @@ export default function CustomersPage() {
                 updateField("status", e.target.value)
               }
             >
-              <option value="ativo">Ativo</option>
-              <option value="risco">Em risco</option>
-              <option value="inativo">Inativo</option>
+              <option value="prospect">Prospectando</option>
+              <option value="cotacao">Cotação enviada</option>
+              <option value="pedido">Pedido em andamento</option>
+              <option value="ativo">Compra ativa</option>
+              <option value="inativo">Inativo / reativar</option>
+              <option value="inadimplente">Inadimplente</option>
               <option value="bloqueado">Bloqueado</option>
             </select>
           </label>
@@ -1375,7 +1996,7 @@ export default function CustomersPage() {
                 q: e.target.value,
               }))
             }
-            placeholder="Buscar por nome, CNPJ, WhatsApp, cidade..."
+            placeholder="Buscar por nome, ID PMG, CNPJ, WhatsApp, cidade..."
           />
 
           <select
@@ -1387,10 +2008,13 @@ export default function CustomersPage() {
               }))
             }
           >
-            <option value="">Todos os status</option>
-            <option value="ativo">Ativos</option>
-            <option value="risco">Em risco</option>
+            <option value="">Todas as fases</option>
+            <option value="prospect">Prospectando</option>
+            <option value="cotacao">Cotação enviada</option>
+            <option value="pedido">Pedido em andamento</option>
+            <option value="ativo">Compra ativa</option>
             <option value="inativo">Inativos</option>
+            <option value="inadimplente">Inadimplentes</option>
             <option value="bloqueado">Bloqueados</option>
           </select>
 
@@ -1420,188 +2044,307 @@ export default function CustomersPage() {
           </button>
         </div>
 
-        <div className="customers-grid">
-          {!loading &&
-            customers.map((customer) => {
-              const generatedLink =
-                promotionLinks[customer.id];
-              const linkLoading =
-                generatingLinkFor === customer.id;
+        <div className="portfolio-toolbar">
+          <div className="view-switch">
+            <button
+              type="button"
+              className={viewMode === "cards" ? "active" : ""}
+              onClick={() => setViewMode("cards")}
+            >
+              ▦ Cards
+            </button>
+            <button
+              type="button"
+              className={viewMode === "kanban" ? "active" : ""}
+              onClick={() => setViewMode("kanban")}
+            >
+              ▤ Kanban
+            </button>
+          </div>
 
-              return (
-                <article
-                  key={customer.id}
-                  className="customer-card"
-                  onClick={() => openCustomer(customer)}
-                >
-                  <div className="customer-top">
-                    <div>
-                      <strong>
-                        {customer.trade_name ||
-                          customer.legal_name}
-                      </strong>
-                      <span>{customer.legal_name}</span>
-                    </div>
+          <div className="portfolio-tools">
+            {viewMode === "kanban" ? (
+              <select
+                value={kanbanMode}
+                onChange={(e) =>
+                  setKanbanMode(
+                    e.target.value as "commercial" | "portal"
+                  )
+                }
+              >
+                <option value="commercial">
+                  Kanban por fase comercial
+                </option>
+                <option value="portal">
+                  Kanban por portal de promoções
+                </option>
+              </select>
+            ) : null}
 
-                    <em
-                      className={`status ${customer.status}`}
-                    >
-                      {STATUS_LABELS[customer.status] ||
-                        customer.status}
-                    </em>
-                  </div>
+            <select
+              value={portalFilter}
+              onChange={(e) => setPortalFilter(e.target.value)}
+            >
+              <option value="">Todos os portais</option>
+              <option value="none">Sem link</option>
+              <option value="link">Link gerado</option>
+              <option value="accessed">Portal acessado</option>
+              <option value="push">Push ativado</option>
+            </select>
 
-                  <div className="customer-meta">
-                    <span>
-                      Documento:{" "}
-                      {customer.document || "Não informado"}
-                    </span>
-
-                    <span>
-                      Comprador:{" "}
-                      {customer.buyer_name ||
-                        "Não informado"}
-                    </span>
-
-                    <span>
-                      WhatsApp:{" "}
-                      {customer.whatsapp ||
-                        customer.phone ||
-                        "Não informado"}
-                    </span>
-
-                    <span>
-                      CEP: {customer.cep || "Não informado"}
-                    </span>
-
-                    <span className="distance-preview">
-                      {priceTableLabel(customer.price_table)} ·{" "}
-                      {formatDistance(customer.distance_km)}
-                    </span>
-
-                    <span className="address-preview">
-                      {formatAddress(customer)}
-                    </span>
-                  </div>
-
-                  <div className="customer-bottom">
-                    <small>
-                      {customer.segment ||
-                        customer.category ||
-                        "Sem segmento"}
-                    </small>
-
-                    <strong>
-                      {money(customer.expected_ticket)}
-                    </strong>
-                  </div>
-
-                  {generatedLink && (
-                    <div className="link-ready">
-                      Portal de promoções pronto
-                    </div>
-                  )}
-
-                  <div className="card-actions">
-                    <button
-                      type="button"
-                      disabled={linkLoading}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        generatePromotionLink(customer);
-                      }}
-                    >
-                      {linkLoading
-                        ? "Gerando..."
-                        : generatedLink
-                          ? "Atualizar link"
-                          : "Gerar link"}
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={linkLoading}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openPromotionPortal(customer);
-                      }}
-                    >
-                      Abrir portal
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={linkLoading}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        copyPromotionLink(customer);
-                      }}
-                    >
-                      Copiar
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={linkLoading}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        sendPromotionWhatsApp(customer);
-                      }}
-                    >
-                      WhatsApp
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openNextAction(customer);
-                      }}
-                    >
-                      Próxima ação
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        editCustomer(customer);
-                      }}
-                    >
-                      Editar
-                    </button>
-
-                    <button
-                      type="button"
-                      className="danger-button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteCustomer(customer);
-                      }}
-                    >
-                      Excluir
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
-
-          {loading && (
-            <div className="empty-state">
-              <strong>Carregando clientes...</strong>
-            </div>
-          )}
-
-          {!loading && customers.length === 0 && (
-            <div className="empty-state">
-              <strong>Nenhum cliente encontrado.</strong>
-              <span>
-                Ajuste os filtros ou cadastre o primeiro
-                cliente.
-              </span>
-            </div>
-          )}
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => void clearPortfolioFilters()}
+            >
+              Limpar visual
+            </button>
+          </div>
         </div>
+
+        {viewMode === "cards" ? (
+          <div className="customers-grid">
+            {!loading &&
+              visibleCustomers.map((customer) =>
+                renderCustomerCard(customer)
+              )}
+
+            {loading && (
+              <div className="empty-state">
+                <strong>Carregando clientes...</strong>
+              </div>
+            )}
+
+            {!loading && visibleCustomers.length === 0 && (
+              <div className="empty-state">
+                <strong>Nenhum cliente encontrado.</strong>
+                <span>
+                  Ajuste os filtros ou cadastre o primeiro cliente.
+                </span>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="kanban-shell">
+            <div className="kanban-guide">
+              {kanbanMode === "commercial" ? (
+                <>
+                  <strong>Funil da carteira</strong>
+                  <span>
+                    Prospect → cotação → pedido → compra ativa. Arraste o card
+                    para atualizar somente a fase comercial.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <strong>Portal de promoções</strong>
+                  <span>
+                    As colunas refletem dados reais do portal e do Push.
+                    Nesta visão os cards não são arrastáveis.
+                  </span>
+                </>
+              )}
+            </div>
+
+            <div className="kanban-board">
+              {kanbanColumns.map((column) => (
+                <section
+                  key={`${kanbanMode}-${column.id}`}
+                  className={`kanban-column column-${column.id}`}
+                  onDragOver={(event) => {
+                    if (kanbanMode === "commercial") {
+                      event.preventDefault();
+                    }
+                  }}
+                  onDrop={(event) => {
+                    if (kanbanMode !== "commercial") return;
+
+                    event.preventDefault();
+
+                    const customerId =
+                      draggingCustomerId ||
+                      event.dataTransfer.getData("text/customer-id");
+
+                    const customer = customers.find(
+                      (item) => item.id === customerId
+                    );
+
+                    if (customer) {
+                      void updateCustomerStatusOnly(
+                        customer,
+                        column.id
+                      );
+                    }
+                  }}
+                >
+                  <div className="kanban-column-head">
+                    <div>
+                      <strong>{column.label}</strong>
+                      <span>{column.helper}</span>
+                    </div>
+                    <em>{column.customers.length}</em>
+                  </div>
+
+                  <div className="kanban-column-body">
+                    {column.customers.map((customer) => {
+                      const pmgId =
+                        customer.internal_code ||
+                        customer.erp_code ||
+                        "Sem ID";
+
+                      const hasPortal =
+                        customer.promotion_link_generated ||
+                        Boolean(promotionLinks[customer.id]);
+
+                      return (
+                        <article
+                          key={customer.id}
+                          className={`kanban-card ${
+                            draggingCustomerId === customer.id
+                              ? "dragging"
+                              : ""
+                          } ${
+                            movingCustomerId === customer.id
+                              ? "moving"
+                              : ""
+                          }`}
+                          draggable={kanbanMode === "commercial"}
+                          onDragStart={(event) => {
+                            if (kanbanMode !== "commercial") return;
+                            setDraggingCustomerId(customer.id);
+                            event.dataTransfer.effectAllowed = "move";
+                            event.dataTransfer.setData(
+                              "text/customer-id",
+                              customer.id
+                            );
+                          }}
+                          onDragEnd={() =>
+                            setDraggingCustomerId(null)
+                          }
+                          onClick={() => openCustomer(customer)}
+                        >
+                          <div className="kanban-card-top">
+                            <div>
+                              <strong>
+                                {customer.trade_name ||
+                                  customer.legal_name}
+                              </strong>
+                              <span>ID PMG: {pmgId}</span>
+                            </div>
+
+                            <span
+                              className={`mini-status ${commercialStage(
+                                customer
+                              )}`}
+                            >
+                              {STATUS_LABELS[commercialStage(customer)] ||
+                                commercialStage(customer)}
+                            </span>
+                          </div>
+
+                          <div className="kanban-card-details">
+                            <span>
+                              👤{" "}
+                              {customer.buyer_name ||
+                                "Comprador não informado"}
+                            </span>
+                            <span>
+                              💬{" "}
+                              {customer.whatsapp ||
+                                customer.phone ||
+                                "Sem WhatsApp"}
+                            </span>
+                            <span>
+                              🏷{" "}
+                              {customer.segment ||
+                                customer.category ||
+                                "Sem segmento"}
+                            </span>
+
+                            {customer.habitual_purchase_day ? (
+                              <span>
+                                📅 Compra:{" "}
+                                {customer.habitual_purchase_day}
+                              </span>
+                            ) : null}
+                          </div>
+
+                          <div className="kanban-card-badges">
+                            <span
+                              className={`portal-badge portal-${promotionStage(
+                                customer
+                              )}`}
+                            >
+                              {promotionStageLabel(customer)}
+                            </span>
+
+                            {customer.promotion_push_enabled ? (
+                              <span className="tiny-good">
+                                🔔 Push ativo
+                              </span>
+                            ) : hasPortal ? (
+                              <span className="tiny-neutral">
+                                Push pendente
+                              </span>
+                            ) : null}
+                          </div>
+
+                          <div className="kanban-card-actions">
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void openPmgCustomer(customer);
+                              }}
+                            >
+                              PMG
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void sendPromotionWhatsApp(customer);
+                              }}
+                            >
+                              WhatsApp
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openNextAction(customer);
+                              }}
+                            >
+                              Próxima ação
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                editCustomer(customer);
+                              }}
+                            >
+                              Editar
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+
+                    {!column.customers.length ? (
+                      <div className="kanban-empty">
+                        Nenhum cliente nesta etapa.
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+              ))}
+            </div>
+          </div>
+        )}
       </section>
 
       {selected && (
@@ -1620,6 +2363,20 @@ export default function CustomersPage() {
           <p>{selected.legal_name}</p>
 
           <div className="drawer-grid">
+            <div>
+              <small>ID PMG</small>
+              <strong>
+                {selected.internal_code ||
+                  selected.erp_code ||
+                  "Não informado"}
+              </strong>
+            </div>
+
+            <div>
+              <small>Portal de promoções</small>
+              <strong>{promotionStageLabel(selected)}</strong>
+            </div>
+
             <div>
               <small>Documento</small>
               <strong>
@@ -1754,6 +2511,13 @@ export default function CustomersPage() {
           </div>
 
           <div className="drawer-actions">
+            <button
+              className="pmg-action-button"
+              onClick={() => void openPmgCustomer(selected)}
+            >
+              Abrir PMG + copiar ID
+            </button>
+
             <button
               className="primary-button"
               onClick={() => openNextAction(selected)}
@@ -1983,7 +2747,7 @@ export default function CustomersPage() {
 
         .stats-grid {
           display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
+          grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
           gap: 12px;
         }
 
@@ -2016,6 +2780,14 @@ export default function CustomersPage() {
 
         .stat-card.danger strong {
           color: #dc2626;
+        }
+
+        .stat-card.overdue strong {
+          color: #b91c1c;
+        }
+
+        .stat-card.blocked strong {
+          color: #334155;
         }
 
         .panel {
@@ -2111,6 +2883,12 @@ export default function CustomersPage() {
           border-color: #166534;
           background: #f0fdf4;
           color: #166534;
+        }
+
+        .pmg-action-button {
+          border-color: #15803d;
+          background: #052e16;
+          color: #fff;
         }
 
         .address-section {
@@ -2230,6 +3008,24 @@ export default function CustomersPage() {
           white-space: nowrap;
         }
 
+        .status.prospect,
+        .mini-status.prospect {
+          background: #dbeafe;
+          color: #1d4ed8;
+        }
+
+        .status.cotacao,
+        .mini-status.cotacao {
+          background: #ede9fe;
+          color: #6d28d9;
+        }
+
+        .status.pedido,
+        .mini-status.pedido {
+          background: #cffafe;
+          color: #0e7490;
+        }
+
         .status.ativo {
           background: #dcfce7;
           color: #166534;
@@ -2245,15 +3041,92 @@ export default function CustomersPage() {
           color: #991b1b;
         }
 
+        .status.inadimplente {
+          background: #fff1f2;
+          color: #be123c;
+        }
+
         .status.bloqueado {
           background: #e5e7eb;
           color: #111827;
+        }
+
+        .customer-id-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          flex-wrap: wrap;
+          margin-top: 12px;
+          padding: 9px 10px;
+          border-radius: 12px;
+          background: #f8fafc;
+          color: #475569;
+          font-size: 11px;
+          font-weight: 800;
+        }
+
+        .customer-id-row strong {
+          color: #0f172a;
+          font-weight: 950;
         }
 
         .customer-meta {
           display: grid;
           gap: 6px;
           margin-top: 14px;
+        }
+
+        .customer-commercial-flags {
+          display: flex;
+          gap: 6px;
+          flex-wrap: wrap;
+          margin-top: 10px;
+        }
+
+        .customer-commercial-flags span {
+          border-radius: 999px;
+          background: #f8fafc;
+          color: #475569;
+          padding: 5px 8px;
+          font-size: 10px;
+          font-weight: 900;
+        }
+
+        .customer-commercial-flags .flag-good {
+          background: #ecfdf5;
+          color: #047857;
+        }
+
+        .portal-badge {
+          display: inline-flex;
+          align-items: center;
+          width: fit-content;
+          border-radius: 999px;
+          padding: 5px 8px;
+          font-size: 10px;
+          font-weight: 950;
+          white-space: nowrap;
+        }
+
+        .portal-none {
+          background: #f1f5f9;
+          color: #64748b;
+        }
+
+        .portal-link {
+          background: #eff6ff;
+          color: #1d4ed8;
+        }
+
+        .portal-accessed {
+          background: #fef3c7;
+          color: #92400e;
+        }
+
+        .portal-push {
+          background: #dcfce7;
+          color: #166534;
         }
 
         .distance-preview {
@@ -2315,6 +3188,338 @@ export default function CustomersPage() {
 
         .card-actions .danger-button {
           color: #dc2626;
+        }
+
+        .card-actions .pmg-button {
+          border-color: #bbf7d0;
+          background: #f0fdf4;
+          color: #166534;
+        }
+
+        .portfolio-toolbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          flex-wrap: wrap;
+          margin-top: 16px;
+          padding: 10px;
+          border: 1px solid #e2e8f0;
+          border-radius: 16px;
+          background: #f8fafc;
+        }
+
+        .view-switch {
+          display: flex;
+          gap: 6px;
+          padding: 4px;
+          border-radius: 14px;
+          background: #fff;
+          border: 1px solid #e2e8f0;
+        }
+
+        .view-switch button {
+          min-height: 36px;
+          border: 0;
+          background: transparent;
+          color: #64748b;
+        }
+
+        .view-switch button.active {
+          background: #15803d;
+          color: #fff;
+        }
+
+        .portfolio-tools {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+          align-items: center;
+        }
+
+        .portfolio-tools select {
+          width: auto;
+          min-width: 185px;
+        }
+
+        .kanban-shell {
+          margin-top: 16px;
+        }
+
+        .kanban-guide {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          flex-wrap: wrap;
+          margin-bottom: 10px;
+          padding: 12px 14px;
+          border: 1px solid #dbeafe;
+          border-radius: 14px;
+          background: #eff6ff;
+        }
+
+        .kanban-guide strong {
+          color: #1e3a8a;
+          font-size: 12px;
+        }
+
+        .kanban-guide span {
+          color: #64748b;
+          font-size: 11px;
+          font-weight: 700;
+        }
+
+        .kanban-board {
+          display: grid;
+          grid-auto-flow: column;
+          grid-auto-columns: minmax(270px, 1fr);
+          gap: 12px;
+          overflow-x: auto;
+          padding-bottom: 8px;
+        }
+
+        .kanban-column {
+          min-height: 420px;
+          border: 1px solid #e2e8f0;
+          border-radius: 18px;
+          background: #f8fafc;
+          overflow: hidden;
+        }
+
+        .kanban-column-head {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 13px 14px;
+          border-bottom: 1px solid #e2e8f0;
+          background: #fff;
+        }
+
+        .kanban-column-head strong {
+          display: block;
+          color: #0f172a;
+          font-size: 13px;
+          font-weight: 950;
+        }
+
+        .kanban-column-head span {
+          display: block;
+          margin-top: 2px;
+          color: #94a3b8;
+          font-size: 10px;
+          font-weight: 700;
+        }
+
+        .kanban-column-head em {
+          min-width: 28px;
+          height: 28px;
+          display: grid;
+          place-items: center;
+          border-radius: 999px;
+          background: #e2e8f0;
+          color: #334155;
+          font-size: 11px;
+          font-style: normal;
+          font-weight: 950;
+        }
+
+        .column-prospect .kanban-column-head {
+          border-top: 3px solid #3b82f6;
+        }
+
+        .column-cotacao .kanban-column-head {
+          border-top: 3px solid #8b5cf6;
+        }
+
+        .column-pedido .kanban-column-head {
+          border-top: 3px solid #06b6d4;
+        }
+
+        .column-ativo .kanban-column-head {
+          border-top: 3px solid #22c55e;
+        }
+
+        .column-risco .kanban-column-head,
+        .column-accessed .kanban-column-head {
+          border-top: 3px solid #f59e0b;
+        }
+
+        .column-inativo .kanban-column-head,
+        .column-inadimplente .kanban-column-head {
+          border-top: 3px solid #ef4444;
+        }
+
+        .column-bloqueado .kanban-column-head,
+        .column-none .kanban-column-head {
+          border-top: 3px solid #64748b;
+        }
+
+        .column-link .kanban-column-head {
+          border-top: 3px solid #3b82f6;
+        }
+
+        .column-push .kanban-column-head {
+          border-top: 3px solid #16a34a;
+        }
+
+        .kanban-column-body {
+          display: grid;
+          gap: 9px;
+          align-content: start;
+          padding: 10px;
+          min-height: 360px;
+        }
+
+        .kanban-card {
+          border: 1px solid #e2e8f0;
+          border-radius: 16px;
+          background: #fff;
+          padding: 12px;
+          cursor: pointer;
+          box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
+          transition: 0.18s ease;
+        }
+
+        .kanban-card[draggable="true"] {
+          cursor: grab;
+        }
+
+        .kanban-card[draggable="true"]:active {
+          cursor: grabbing;
+        }
+
+        .kanban-card:hover {
+          border-color: #86efac;
+          transform: translateY(-1px);
+        }
+
+        .kanban-card.dragging {
+          opacity: 0.45;
+        }
+
+        .kanban-card.moving {
+          opacity: 0.6;
+          pointer-events: none;
+        }
+
+        .kanban-card-top {
+          display: flex;
+          justify-content: space-between;
+          gap: 8px;
+          align-items: flex-start;
+        }
+
+        .kanban-card-top > div > strong {
+          display: block;
+          color: #0f172a;
+          font-size: 12px;
+          font-weight: 950;
+          line-height: 1.35;
+        }
+
+        .kanban-card-top > div > span {
+          display: block;
+          margin-top: 3px;
+          color: #64748b;
+          font-size: 10px;
+          font-weight: 800;
+        }
+
+        .mini-status {
+          border-radius: 999px;
+          padding: 4px 7px;
+          background: #f1f5f9;
+          color: #475569;
+          font-size: 9px;
+          font-weight: 950;
+          white-space: nowrap;
+        }
+
+        .mini-status.ativo {
+          background: #dcfce7;
+          color: #166534;
+        }
+
+        .mini-status.risco {
+          background: #fef3c7;
+          color: #92400e;
+        }
+
+        .mini-status.inativo,
+        .mini-status.inadimplente {
+          background: #fee2e2;
+          color: #991b1b;
+        }
+
+        .mini-status.bloqueado {
+          background: #e2e8f0;
+          color: #334155;
+        }
+
+        .kanban-card-details {
+          display: grid;
+          gap: 5px;
+          margin-top: 10px;
+          color: #64748b;
+          font-size: 10px;
+          font-weight: 700;
+        }
+
+        .kanban-card-badges {
+          display: flex;
+          gap: 6px;
+          flex-wrap: wrap;
+          margin-top: 9px;
+        }
+
+        .tiny-good,
+        .tiny-neutral {
+          border-radius: 999px;
+          padding: 5px 7px;
+          font-size: 9px;
+          font-weight: 900;
+        }
+
+        .tiny-good {
+          background: #ecfdf5;
+          color: #047857;
+        }
+
+        .tiny-neutral {
+          background: #f1f5f9;
+          color: #64748b;
+        }
+
+        .kanban-card-actions {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 6px;
+          margin-top: 10px;
+          padding-top: 10px;
+          border-top: 1px solid #f1f5f9;
+        }
+
+        .kanban-card-actions button {
+          min-height: 31px;
+          padding: 0 6px;
+          background: #f8fafc;
+          color: #334155;
+          font-size: 9px;
+        }
+
+        .kanban-empty {
+          min-height: 80px;
+          display: grid;
+          place-items: center;
+          border: 1px dashed #cbd5e1;
+          border-radius: 14px;
+          color: #94a3b8;
+          font-size: 10px;
+          font-weight: 800;
+          text-align: center;
+          padding: 12px;
         }
 
         .empty-state {

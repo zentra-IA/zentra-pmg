@@ -5,6 +5,17 @@ import { requireCompanyAccess } from "@/lib/server-company";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+const CUSTOMER_STATUSES = new Set([
+  "prospect",
+  "cotacao",
+  "pedido",
+  "ativo",
+  "risco",
+  "inativo",
+  "inadimplente",
+  "bloqueado",
+]);
+
 const PMG_ORIGIN = {
   latitude: -23.718094084605312,
   longitude: -46.89524968501926,
@@ -756,6 +767,73 @@ async function calculateCustomerClassification(
   };
 }
 
+
+function promotionState(customer: any) {
+  const access = customer.webPromotionAccess || null;
+  const subscriptions = Array.isArray(customer.pushSubscriptions)
+    ? customer.pushSubscriptions
+    : [];
+
+  const activeAccess = Boolean(access?.active);
+  const linkGenerated = Boolean(access);
+  const portalAccessed = Boolean(
+    access?.first_access_at ||
+      access?.last_access_at ||
+      Number(access?.access_count || 0) > 0
+  );
+
+  const pushEnabled = subscriptions.some(
+    (subscription: any) =>
+      subscription?.active !== false &&
+      String(subscription?.permission || "granted").toLowerCase() ===
+        "granted"
+  );
+
+  const status = pushEnabled
+    ? "push"
+    : portalAccessed
+      ? "accessed"
+      : linkGenerated
+        ? "link"
+        : "none";
+
+  return {
+    promotion_link_generated: linkGenerated,
+    promotion_link_active: activeAccess,
+    promotion_portal_accessed: portalAccessed,
+    promotion_push_enabled: pushEnabled,
+    promotion_status: status,
+    promotion_access_count: Number(access?.access_count || 0),
+    promotion_last_access_at: access?.last_access_at || null,
+    promotion_push_permission:
+      access?.push_permission || "not_requested",
+  };
+}
+
+function serializeCustomer(
+  customer: any,
+  context?: {
+    lastOrderAt?: Date | null;
+    recentOrderCount?: number;
+    lastQuoteAt?: Date | null;
+    recentQuoteCount?: number;
+  }
+) {
+  const { webPromotionAccess, pushSubscriptions, ...base } = customer;
+
+  return {
+    ...base,
+    ...promotionState({
+      webPromotionAccess,
+      pushSubscriptions,
+    }),
+    last_order_at: context?.lastOrderAt || null,
+    recent_order_count: Number(context?.recentOrderCount || 0),
+    last_quote_at: context?.lastQuoteAt || null,
+    recent_quote_count: Number(context?.recentQuoteCount || 0),
+  };
+}
+
 export async function GET(req: NextRequest) {
   try {
     const access = await requireCompanyAccess(req);
@@ -780,7 +858,10 @@ export async function GET(req: NextRequest) {
     const where: any = canAccessWhere(access, role);
 
     if (status) {
-      where.status = status;
+      where.status =
+        status === "inativo"
+          ? { in: ["inativo", "risco"] }
+          : status;
     }
 
     if (segment) {
@@ -794,6 +875,8 @@ export async function GET(req: NextRequest) {
       where.OR = [
         { legal_name: { contains: q, mode: "insensitive" } },
         { trade_name: { contains: q, mode: "insensitive" } },
+        { internal_code: { contains: q, mode: "insensitive" } },
+        { erp_code: { contains: q, mode: "insensitive" } },
         { document: { contains: q, mode: "insensitive" } },
         { whatsapp: { contains: q, mode: "insensitive" } },
         { buyer_name: { contains: q, mode: "insensitive" } },
@@ -804,12 +887,165 @@ export async function GET(req: NextRequest) {
 
     const customers = await prisma.salesCustomer.findMany({
       where,
+      include: {
+        webPromotionAccess: {
+          select: {
+            active: true,
+            first_access_at: true,
+            last_access_at: true,
+            access_count: true,
+            push_permission: true,
+          },
+        },
+        pushSubscriptions: {
+          where: {
+            active: true,
+          },
+          select: {
+            id: true,
+            active: true,
+            permission: true,
+          },
+          take: 3,
+        },
+      },
       orderBy: [{ updated_at: "desc" }],
       take: 300,
     });
 
+    const customerIds = customers.map((customer) => customer.id);
+    const customerByKey = new Map<string, string>();
+
+    for (const customer of customers) {
+      [
+        customer.id,
+        customer.internal_code,
+        customer.erp_code,
+        customer.document,
+      ]
+        .filter(Boolean)
+        .forEach((value) => {
+          customerByKey.set(String(value), customer.id);
+        });
+    }
+
+    const start180 = new Date();
+    start180.setDate(start180.getDate() - 180);
+
+    const orderStats =
+      customerIds.length > 0
+        ? await prisma.salesOrder.groupBy({
+            by: ["customer_id"],
+            where: {
+              company_id: access.companyId,
+              customer_id: {
+                in: customerIds,
+              },
+              created_at: {
+                gte: start180,
+              },
+              ...(role === "VENDEDOR"
+                ? { seller_id: access.userId }
+                : {}),
+            },
+            _max: {
+              created_at: true,
+            },
+            _count: {
+              _all: true,
+            },
+          })
+        : [];
+
+    const orderContext = new Map<
+      string,
+      { lastOrderAt: Date | null; recentOrderCount: number }
+    >();
+
+    for (const row of orderStats) {
+      if (!row.customer_id) continue;
+
+      orderContext.set(row.customer_id, {
+        lastOrderAt: row._max.created_at || null,
+        recentOrderCount: Number(row._count._all || 0),
+      });
+    }
+
+    const quoteLogs = await prisma.activity_logs.findMany({
+      where: {
+        company_id: access.companyId,
+        action: "quote_saved",
+        created_at: {
+          gte: start180,
+        },
+        ...(role === "VENDEDOR"
+          ? { user_id: access.userId }
+          : {}),
+      },
+      select: {
+        created_at: true,
+        metadata: true,
+      },
+      orderBy: {
+        created_at: "desc",
+      },
+      take: 1000,
+    });
+
+    const quoteContext = new Map<
+      string,
+      { lastQuoteAt: Date | null; recentQuoteCount: number }
+    >();
+
+    for (const log of quoteLogs) {
+      const metadata =
+        log.metadata &&
+        typeof log.metadata === "object" &&
+        !Array.isArray(log.metadata)
+          ? (log.metadata as any)
+          : {};
+
+      const keys = [
+        metadata.customerId,
+        metadata.customerInternalCode,
+        metadata.clientId,
+        metadata.document,
+      ].filter(Boolean);
+
+      const customerId = keys
+        .map((value) => customerByKey.get(String(value)))
+        .find(Boolean);
+
+      if (!customerId) continue;
+
+      const current = quoteContext.get(customerId) || {
+        lastQuoteAt: null,
+        recentQuoteCount: 0,
+      };
+
+      current.recentQuoteCount += 1;
+
+      if (
+        !current.lastQuoteAt ||
+        log.created_at.getTime() > current.lastQuoteAt.getTime()
+      ) {
+        current.lastQuoteAt = log.created_at;
+      }
+
+      quoteContext.set(customerId, current);
+    }
+
     return NextResponse.json({
-      customers,
+      customers: customers.map((customer) =>
+        serializeCustomer(customer, {
+          lastOrderAt: orderContext.get(customer.id)?.lastOrderAt || null,
+          recentOrderCount:
+            orderContext.get(customer.id)?.recentOrderCount || 0,
+          lastQuoteAt: quoteContext.get(customer.id)?.lastQuoteAt || null,
+          recentQuoteCount:
+            quoteContext.get(customer.id)?.recentQuoteCount || 0,
+        })
+      ),
       price_table_rules: {
         origin: PMG_ORIGIN.address,
         ranges: [
@@ -937,6 +1173,36 @@ export async function PATCH(req: NextRequest) {
         { error: "Cliente não encontrado ou sem permissão." },
         { status: 404 }
       );
+    }
+
+    if (body?.status_only === true) {
+      const nextStatus = cleanText(body?.status).toLowerCase();
+
+      if (!CUSTOMER_STATUSES.has(nextStatus)) {
+        return NextResponse.json(
+          {
+            error:
+              "Status inválido. Use prospect, cotacao, pedido, ativo, inativo, inadimplente ou bloqueado.",
+          },
+          { status: 400 }
+        );
+      }
+
+      const customer = await prisma.salesCustomer.update({
+        where: {
+          id: existing.id,
+        },
+        data: {
+          status: nextStatus,
+          updated_at: new Date(),
+        },
+      });
+
+      return NextResponse.json({
+        success: true,
+        customer,
+        status_only: true,
+      });
     }
 
     const mapped = mapCustomerPayload(body, access, role);
