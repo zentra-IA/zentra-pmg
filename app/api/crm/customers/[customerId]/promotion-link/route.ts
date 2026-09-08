@@ -62,10 +62,10 @@ async function getAuthorizedCustomer(
   });
 
   if (!customer) throw new Error("CUSTOMER_NOT_FOUND");
-  if (String(customer.status).trim().toLowerCase() !== "ativo") {
-    throw new Error("CUSTOMER_INACTIVE");
-  }
 
+  // O portal de promoções pode ser gerado para qualquer fase comercial.
+  // Cliente prospectando, ativo, inativo, inadimplente ou bloqueado continua
+  // elegível, desde que pertença à empresa/usuário autorizado.
   return customer;
 }
 
@@ -108,13 +108,6 @@ function responseError(error: unknown) {
     return NextResponse.json(
       { error: "Cliente não encontrado ou sem permissão." },
       { status: 404 }
-    );
-  }
-
-  if (message === "CUSTOMER_INACTIVE") {
-    return NextResponse.json(
-      { error: "O cliente está inativo." },
-      { status: 409 }
     );
   }
 
