@@ -541,15 +541,49 @@ export default function ContactsDispatchPage() {
         return;
       }
 
-      setContacts(
-        Array.isArray(data?.leads)
-          ? data.leads
-          : Array.isArray(data)
-            ? data
-            : []
-      );
+      const nextContacts = Array.isArray(data?.leads)
+        ? data.leads
+        : Array.isArray(data)
+          ? data
+          : [];
 
-      setSelectedIds([]);
+      setContacts(nextContacts);
+
+      /*
+       * Integração com a Prospecção:
+       * a tela recebe os IDs recém-criados via sessionStorage e já abre
+       * esses contatos marcados no disparador. A chave é removida logo
+       * após o consumo para não reselecionar em atualizações futuras.
+       */
+      let preselected: string[] = [];
+
+      try {
+        const raw = window.sessionStorage.getItem(
+          "zentra_contacts_preselect"
+        );
+
+        if (raw) {
+          const parsed = JSON.parse(raw);
+
+          if (Array.isArray(parsed)) {
+            const availableIds = new Set(
+              nextContacts.map((item: any) => String(item.id))
+            );
+
+            preselected = parsed
+              .map(String)
+              .filter((id) => availableIds.has(id));
+          }
+
+          window.sessionStorage.removeItem(
+            "zentra_contacts_preselect"
+          );
+        }
+      } catch {
+        preselected = [];
+      }
+
+      setSelectedIds(preselected);
     } finally {
       setLoading(false);
     }

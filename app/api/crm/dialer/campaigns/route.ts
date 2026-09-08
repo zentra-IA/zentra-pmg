@@ -34,6 +34,8 @@ function normalizeManualContacts(value: unknown) {
   const contacts: Array<{
     name: string;
     phone: string;
+    externalLeadId: string | null;
+    cnpj: string | null;
   }> = [];
 
   for (const item of value) {
@@ -48,6 +50,13 @@ function normalizeManualContacts(value: unknown) {
     contacts.push({
       name: name.slice(0, 180),
       phone,
+      externalLeadId:
+        clean(item?.externalLeadId || item?.external_lead_id)
+          .slice(0, 100) || null,
+      cnpj:
+        clean(item?.cnpj)
+          .replace(/\D/g, "")
+          .slice(0, 14) || null,
     });
 
     if (contacts.length >= MAX_MANUAL_CONTACTS) {
@@ -131,6 +140,10 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const name = String(body?.name || "").trim();
     const manualContacts = normalizeManualContacts(body?.manualContacts);
+    const manualSource =
+      clean(body?.source).toUpperCase() === "PROSPECTING"
+        ? "PROSPECTING"
+        : "DIALER_MANUAL";
 
     const prospectIds: string[] = Array.isArray(body?.prospectIds)
       ? Array.from(
@@ -225,10 +238,16 @@ export async function POST(req: NextRequest) {
             phone1: contact.phone,
             active: true,
             sourcePayload: {
-              source: "DIALER_MANUAL",
+              source: manualSource,
               ownerUserId: userId,
-              createdFrom: "DIALER_MANUAL_CAMPAIGN",
+              createdFrom:
+                manualSource === "PROSPECTING"
+                  ? "PROSPECTING_BULK_CAMPAIGN"
+                  : "DIALER_MANUAL_CAMPAIGN",
               campaignId: created.id,
+              externalProspectLeadId:
+                contact.externalLeadId,
+              cnpj: contact.cnpj,
               responsibleName: null,
               responsibleRole: null,
               whatsapp: null,
@@ -282,7 +301,9 @@ export async function POST(req: NextRequest) {
         name: campaign.name,
         total: campaign.total,
         status: campaign.status,
-        source: isManualCampaign ? "MANUAL" : "RADAR",
+        source: isManualCampaign
+          ? manualSource
+          : "RADAR",
       },
     });
   } catch (error: any) {

@@ -396,6 +396,13 @@ export default function DialerPage() {
             + Criar pelo Radar
           </Link>
 
+          <Link
+            href="/crm/dashboard/prospeccao"
+            style={styles.prospectingLink}
+          >
+            + Criar pela Prospecção
+          </Link>
+
           <button
             type="button"
             style={styles.manualCampaignButton}
@@ -806,6 +813,15 @@ const styles: Record<string, any> = {
     display: "flex",
     gap: 10,
     flexWrap: "wrap",
+  },
+  prospectingLink: {
+    textDecoration: "none",
+    border: "1px solid rgba(37,99,235,.22)",
+    background: "#eff6ff",
+    color: "#1d4ed8",
+    borderRadius: 14,
+    padding: "12px 18px",
+    fontWeight: 950,
   },
   manualCampaignButton: {
     border: "1px solid rgba(22,163,74,.25)",

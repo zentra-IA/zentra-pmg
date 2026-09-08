@@ -734,6 +734,10 @@ model companies {
   promotionAudienceMembers  PromotionAudienceMember[]
   billingProfiles           admin_billing_profiles[]
   billingPayments           admin_billing_payments[]
+  externalProspectCompanies  ExternalProspectCompany[]
+  externalProspectLeads      ExternalProspectLead[]
+  externalProspectSearches   ExternalProspectSearch[]
+  externalProspectActivities ExternalProspectActivity[]
 }
 
 model branches {
@@ -1960,6 +1964,157 @@ model PushDelivery {
   @@index([company_id, seller_id, created_at])
   @@index([promotion_id, status])
   @@map("push_deliveries")
+}
+
+model CnpjProspectingCompany {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  cnpj                 String    @unique(map: "uq_cnpj_prospecting_companies_cnpj")
+  cnpj_basico          String
+  cnpj_ordem           String
+  cnpj_dv              String
+
+  trade_name           String?
+  legal_name           String?
+
+  cnae_main            String
+  cnae_secondary       String[]  @default([])
+  cnae_description     String?
+  segment_tags         String[]  @default([])
+
+  status_code          String    @default("02")
+  start_date           DateTime? @db.Date
+
+  uf                   String    @default("SP")
+  city_code            String
+  city                 String
+  city_search          String
+  neighborhood         String?
+  neighborhood_search  String?
+
+  street_type          String?
+  street               String?
+  number               String?
+  complement           String?
+  postal_code          String?
+
+  phone                String
+  phone_digits         String
+  email                String?
+
+  company_size_code    String?
+  capital_social       Decimal?  @db.Decimal(18, 2)
+
+  source_month         String
+  source_snapshot_date DateTime? @db.Date
+  imported_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([uf, city_search], map: "idx_cnpj_prospecting_uf_city")
+  @@index([neighborhood_search], map: "idx_cnpj_prospecting_neighborhood")
+  @@index([cnae_main], map: "idx_cnpj_prospecting_cnae")
+  @@index([phone_digits], map: "idx_cnpj_prospecting_phone")
+  @@index([source_month], map: "idx_cnpj_prospecting_source_month")
+  @@index([segment_tags], type: Gin, map: "idx_cnpj_prospecting_segment_tags")
+  @@map("cnpj_prospecting_companies")
+}
+
+model ExternalProspectCompany {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id          String   @db.Uuid
+  source              String   @default("google_places")
+  source_external_id  String
+  google_place_id     String?
+  segment_hint        String?
+  city_hint           String?
+  region_hint         String?
+  created_by          String?  @db.Uuid
+  created_at          DateTime @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  companies companies             @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  lead      ExternalProspectLead?
+
+  @@unique([company_id, source, source_external_id], name: "company_id_source_source_external_id", map: "uq_ext_prospect_company_source_ref")
+  @@index([company_id], map: "idx_ext_prospect_company_company")
+  @@index([created_by], map: "idx_ext_prospect_company_created_by")
+  @@index([source, source_external_id], map: "idx_ext_prospect_company_source_external")
+  @@map("external_prospect_companies")
+}
+
+model ExternalProspectLead {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id            String    @db.Uuid
+  prospect_company_id   String    @unique(map: "uq_ext_prospect_lead_company") @db.Uuid
+  seller_id             String    @db.Uuid
+  status                String    @default("novo")
+  priority              String    @default("media")
+  company_name          String?
+  owner_name            String?
+  buyer_name            String?
+  phone                 String?
+  whatsapp              String?
+  email                 String?
+  cnpj                  String?
+  site                  String?
+  address               String?
+  notes                 String?
+  next_action_at        DateTime? @db.Timestamptz(6)
+  last_contact_at       DateTime? @db.Timestamptz(6)
+  claimed_at            DateTime  @default(now()) @db.Timestamptz(6)
+  converted_at          DateTime? @db.Timestamptz(6)
+  converted_customer_id String?   @db.Uuid
+  created_at            DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  companies         companies                  @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  prospect_company  ExternalProspectCompany    @relation(fields: [prospect_company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  activities        ExternalProspectActivity[]
+
+  @@index([company_id], map: "idx_ext_prospect_lead_company")
+  @@index([seller_id], map: "idx_ext_prospect_lead_seller")
+  @@index([status], map: "idx_ext_prospect_lead_status")
+  @@index([next_action_at], map: "idx_ext_prospect_lead_next_action")
+  @@map("external_prospect_leads")
+}
+
+model ExternalProspectSearch {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id      String   @db.Uuid
+  seller_id       String   @db.Uuid
+  segment         String
+  city            String
+  region          String?
+  query_text      String
+  source          String   @default("google_places")
+  result_count    Int      @default(0)
+  available_count Int      @default(0)
+  created_at      DateTime @default(now()) @db.Timestamptz(6)
+
+  companies companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_ext_prospect_search_company")
+  @@index([seller_id], map: "idx_ext_prospect_search_seller")
+  @@index([created_at], map: "idx_ext_prospect_search_created")
+  @@map("external_prospect_searches")
+}
+
+model ExternalProspectActivity {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id String   @db.Uuid
+  lead_id    String   @db.Uuid
+  seller_id  String?  @db.Uuid
+  action     String
+  metadata   Json?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  companies companies            @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  lead      ExternalProspectLead @relation(fields: [lead_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id], map: "idx_ext_prospect_activity_company")
+  @@index([lead_id], map: "idx_ext_prospect_activity_lead")
+  @@index([seller_id], map: "idx_ext_prospect_activity_seller")
+  @@index([created_at], map: "idx_ext_prospect_activity_created")
+  @@map("external_prospect_activities")
 }
 
 enum CategoryType {
