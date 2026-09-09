@@ -13,12 +13,6 @@ export async function getCustomerPromotionAccess(token: string) {
       token_hash: hashToken(token),
       token_value: token,
       active: true,
-      customer: {
-        status: {
-          equals: "ativo",
-          mode: "insensitive",
-        },
-      },
     },
     select: {
       id: true,
