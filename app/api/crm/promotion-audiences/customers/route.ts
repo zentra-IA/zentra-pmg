@@ -34,10 +34,6 @@ export async function GET(request: NextRequest) {
       where: {
         company_id: access.companyId,
         seller_id: sellerId,
-        status: {
-          equals: "ativo",
-          mode: "insensitive",
-        },
         ...(q
           ? {
               OR: [

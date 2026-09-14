@@ -356,13 +356,6 @@ async function queueMissingDeliveries(
           },
           company_id: options.companyId,
           seller_id: options.sellerId,
-          status: {
-
-            equals: "ativo",
-
-            mode: "insensitive",
-
-          },
 
           webPromotionAccess: {
 
@@ -392,13 +385,6 @@ async function queueMissingDeliveries(
       where: {
         company_id: options.companyId,
         seller_id: options.sellerId,
-        status: {
-
-          equals: "ativo",
-
-          mode: "insensitive",
-
-        },
 
         webPromotionAccess: {
 

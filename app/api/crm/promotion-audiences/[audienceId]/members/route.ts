@@ -160,10 +160,6 @@ export async function POST(
         id: { in: customerIds },
         company_id: access.companyId,
         seller_id: sellerId,
-        status: {
-          equals: "ativo",
-          mode: "insensitive",
-        },
       },
       select: {
         id: true,
@@ -174,7 +170,7 @@ export async function POST(
       return NextResponse.json(
         {
           error:
-            "Um ou mais clientes não pertencem à sua carteira ou estão inativos.",
+            "Um ou mais clientes não pertencem à sua carteira.",
         },
         { status: 403 }
       );

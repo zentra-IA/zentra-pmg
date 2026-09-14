@@ -346,8 +346,9 @@ export default function ProspeccaoPage() {
   const [saving, setSaving] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
+  const [bulkStatus, setBulkStatus] = useState("");
   const [bulkBusy, setBulkBusy] = useState<
-    "messages" | "dialer" | null
+    "messages" | "dialer" | "status" | null
   >(null);
 
   const loadLeads = useCallback(async () => {
@@ -748,6 +749,173 @@ export default function ProspeccaoPage() {
       await navigator.clipboard.writeText(text);
     } catch {
       window.prompt("Copie o telefone:", text);
+    }
+  }
+
+  async function copySelectedNameAndPhone() {
+    const chosen = visibleLeads.filter((lead) =>
+      selectedLeadIds.includes(lead.id)
+    );
+
+    if (!chosen.length) {
+      window.alert("Selecione pelo menos um prospect.");
+      return;
+    }
+
+    const rows = chosen
+      .map((lead) => {
+        const number =
+          operationalWhatsapp({
+            phone: lead.phone,
+            whatsapp: lead.whatsapp,
+            whatsappOperational: lead.whatsappOperational,
+            whatsappSuggested: lead.whatsappSuggested,
+            phoneType: lead.phoneType,
+          }) ||
+          whatsappDigits(lead.whatsapp) ||
+          onlyDigits(lead.phone);
+
+        if (!number) return null;
+
+        /*
+         * Para celular antigo provável, prioriza o WhatsApp operacional
+         * com +9. Para os demais, preserva o melhor número disponível.
+         * O DDI 55 é removido para ficar no formato Nome, Número.
+         */
+        const nationalNumber =
+          number.startsWith("55") && number.length >= 12
+            ? number.slice(2)
+            : number;
+
+        return `${safeText(lead.company_name) || "Contato"}, ${nationalNumber}`;
+      })
+      .filter((row): row is string => Boolean(row));
+
+    if (!rows.length) {
+      window.alert(
+        "Nenhum dos contatos selecionados possui telefone para copiar."
+      );
+      return;
+    }
+
+    const content = rows.join("\n");
+
+    try {
+      await navigator.clipboard.writeText(content);
+      window.alert(
+        `${rows.length} contato(s) copiado(s) no formato Nome, Número.`
+      );
+    } catch {
+      window.prompt("Copie os contatos:", content);
+    }
+  }
+
+  async function applyBulkLeadStatus() {
+    const chosen = visibleLeads.filter((lead) =>
+      selectedLeadIds.includes(lead.id)
+    );
+
+    if (!chosen.length) {
+      window.alert("Selecione pelo menos um prospect.");
+      return;
+    }
+
+    if (!bulkStatus || !STATUS[bulkStatus]) {
+      window.alert("Escolha o status para mover os contatos.");
+      return;
+    }
+
+    const targetLabel = STATUS[bulkStatus].label;
+
+    if (
+      !window.confirm(
+        `Mover ${chosen.length} contato(s) para "${targetLabel}"?`
+      )
+    ) {
+      return;
+    }
+
+    setBulkBusy("status");
+
+    let updated = 0;
+    const failedIds: string[] = [];
+    const errors: string[] = [];
+
+    try {
+      const batchSize = 8;
+
+      for (let index = 0; index < chosen.length; index += batchSize) {
+        const batch = chosen.slice(index, index + batchSize);
+
+        const settled = await Promise.allSettled(
+          batch.map(async (lead) => {
+            const response = await fetch(
+              "/api/crm/prospecting/leads",
+              {
+                method: "PATCH",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  id: lead.id,
+                  status: bulkStatus,
+                }),
+              }
+            );
+
+            const payload = await response.json().catch(() => ({}));
+
+            if (!response.ok) {
+              throw new Error(
+                payload?.error || "Falha ao atualizar prospect."
+              );
+            }
+
+            return lead.id;
+          })
+        );
+
+        settled.forEach((result, resultIndex) => {
+          const lead = batch[resultIndex];
+
+          if (result.status === "fulfilled") {
+            updated += 1;
+            return;
+          }
+
+          failedIds.push(lead.id);
+          errors.push(
+            `${lead.company_name}: ${
+              result.reason instanceof Error
+                ? result.reason.message
+                : "falha ao atualizar"
+            }`
+          );
+        });
+      }
+
+      await loadLeads();
+
+      if (!failedIds.length) {
+        setSelectedLeadIds([]);
+        setBulkStatus("");
+        window.alert(
+          `✅ ${updated} contato(s) movido(s) para "${targetLabel}".`
+        );
+        return;
+      }
+
+      setSelectedLeadIds(failedIds);
+
+      window.alert(
+        [
+          `✅ ${updated} contato(s) atualizado(s).`,
+          `❌ ${failedIds.length} contato(s) apresentaram erro.`,
+          ...errors.slice(0, 5),
+        ].join("\n")
+      );
+    } finally {
+      setBulkBusy(null);
     }
   }
 
@@ -1693,6 +1861,53 @@ export default function ProspeccaoPage() {
             </label>
 
             <div className="bulk-actions">
+              <select
+                className="bulk-status-select"
+                value={bulkStatus}
+                onChange={(event) =>
+                  setBulkStatus(event.target.value)
+                }
+                disabled={
+                  !selectedLeadIds.length ||
+                  bulkBusy !== null
+                }
+                aria-label="Mover contatos selecionados para outro status"
+              >
+                <option value="">Mover para...</option>
+                {Object.entries(STATUS).map(([value, item]) => (
+                  <option key={value} value={value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+
+              <button
+                type="button"
+                className="bulk-status-button"
+                disabled={
+                  !selectedLeadIds.length ||
+                  !bulkStatus ||
+                  bulkBusy !== null
+                }
+                onClick={() => void applyBulkLeadStatus()}
+              >
+                {bulkBusy === "status"
+                  ? "Movendo..."
+                  : "✓ Aplicar status"}
+              </button>
+
+              <button
+                type="button"
+                className="bulk-copy"
+                disabled={
+                  !selectedLeadIds.length ||
+                  bulkBusy !== null
+                }
+                onClick={() => void copySelectedNameAndPhone()}
+              >
+                📋 Copiar nome + número
+              </button>
+
               <button
                 type="button"
                 className="bulk-message"
@@ -3049,9 +3264,35 @@ export default function ProspeccaoPage() {
           font-weight: 900;
         }
 
-        .bulk-actions button:disabled {
+        .bulk-actions button:disabled,
+        .bulk-actions select:disabled {
           opacity: 0.55;
           cursor: wait;
+        }
+
+        .bulk-status-select {
+          width: auto;
+          min-width: 150px;
+          min-height: 36px;
+          padding: 0 10px;
+          border: 1px solid #dbe3ea;
+          border-radius: 10px;
+          color: #344054;
+          background: #fff;
+          font-size: 10px;
+          font-weight: 850;
+        }
+
+        .bulk-status-button {
+          border: 1px solid #a7f3d0;
+          color: #047857;
+          background: #ecfdf5;
+        }
+
+        .bulk-copy {
+          border: 1px solid #fde68a;
+          color: #92400e;
+          background: #fffbeb;
         }
 
         .bulk-message {
@@ -3541,6 +3782,10 @@ export default function ProspeccaoPage() {
           .bulk-actions {
             display: grid;
             grid-template-columns: 1fr 1fr;
+            width: 100%;
+          }
+
+          .bulk-status-select {
             width: 100%;
           }
 

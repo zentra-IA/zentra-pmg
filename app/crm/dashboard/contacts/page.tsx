@@ -7,14 +7,16 @@ const SESSIONS = [1, 2, 3, 4, 5];
 
 const STATUS_OPTIONS = [
   { value: "", label: "Todos os status" },
-  { value: "novo", label: "Novo" },
+  { value: "novo", label: "Novo lead" },
   { value: "campanha", label: "Em campanha" },
   { value: "enviado", label: "Mensagem enviada" },
-  { value: "respondeu", label: "Respondeu" },
-  { value: "cotacao", label: "Em cotação" },
-  { value: "pedido", label: "Pedido" },
-  { value: "reagendar_futuro", label: "Contatar depois" },
+  { value: "respondeu", label: "Cliente respondeu" },
+  { value: "em_negociacao", label: "Em negociação" },
+  { value: "cotacao_enviada", label: "Cotação enviada" },
+  { value: "pedido_fechado", label: "Pedido fechado" },
+  { value: "cliente_inativo", label: "Cliente inativo" },
   { value: "sem_interesse", label: "Sem interesse" },
+  { value: "perdido", label: "Perdido" },
 ];
 
 type SessionStatus = {
@@ -53,16 +55,34 @@ type QueueOperationItem = {
 };
 
 function normalizeStatus(value?: string | null) {
-  const status = String(value || "novo").trim().toLowerCase();
+  const status = String(value || "novo")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\s-]+/g, "_");
 
   const legacy: Record<string, string> = {
+    new: "novo",
+    novo_lead: "novo",
     respondido: "respondeu",
-    interesse: "cotacao",
-    quer_agendar_entrevista: "cotacao",
-    entrevista_agendada: "pedido",
-    contratado: "pedido",
-    reativar_futuro: "reagendar_futuro",
-    finalizado: "pedido",
+    cliente_respondeu: "respondeu",
+    primeiro_contato: "respondeu",
+    interesse: "em_negociacao",
+    negociacao: "em_negociacao",
+    quer_cotacao: "em_negociacao",
+    proposta: "cotacao_enviada",
+    cotacao: "cotacao_enviada",
+    orcamento_enviado: "cotacao_enviada",
+    pedido: "pedido_fechado",
+    aprovado: "pedido_fechado",
+    contratado: "pedido_fechado",
+    finalizado: "pedido_fechado",
+    cliente_ativo: "pedido_fechado",
+    pos_venda: "pedido_fechado",
+    reagendar_futuro: "cliente_inativo",
+    reativar_futuro: "cliente_inativo",
+    descartado: "perdido",
   };
 
   return legacy[status] || status || "novo";
@@ -421,6 +441,9 @@ export default function ContactsDispatchPage() {
     null
   );
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkStatus, setBulkStatus] = useState("");
+  const [bulkStatusSaving, setBulkStatusSaving] = useState(false);
+  const [contactSavingId, setContactSavingId] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
 
   const [filters, setFilters] = useState({
@@ -752,9 +775,12 @@ export default function ContactsDispatchPage() {
           normalizeStatus(item.status) === "respondeu"
       ).length,
       oportunidades: filteredContacts.filter((item) =>
-        ["cotacao", "pedido", "campanha"].includes(
-          normalizeStatus(item.status)
-        )
+        [
+          "campanha",
+          "em_negociacao",
+          "cotacao_enviada",
+          "pedido_fechado",
+        ].includes(normalizeStatus(item.status))
       ).length,
     }),
     [filteredContacts]
@@ -789,6 +815,194 @@ export default function ContactsDispatchPage() {
     return filteredContacts.filter((item) =>
       selectedIds.includes(item.id)
     );
+  }
+
+  async function patchContact(
+    id: string,
+    data: Record<string, unknown>
+  ) {
+    const response = await fetch("/api/crm/leads", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({
+        id,
+        ...data,
+      }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(
+        payload?.error || "Erro ao atualizar contato."
+      );
+    }
+
+    const updated = payload?.lead;
+
+    if (updated?.id) {
+      setContacts((current) =>
+        current.map((item) =>
+          item.id === updated.id
+            ? {
+                ...item,
+                ...updated,
+              }
+            : item
+        )
+      );
+    }
+
+    return updated;
+  }
+
+  async function editContactName(contact: any) {
+    if (contactSavingId) return;
+
+    const currentName = String(
+      contact?.name || contact?.nome || ""
+    ).trim();
+
+    const nextName = window.prompt(
+      "Nome do contato:",
+      currentName
+    );
+
+    if (nextName === null) return;
+
+    const name = nextName.trim();
+
+    if (!name) {
+      alert("Informe um nome para o contato.");
+      return;
+    }
+
+    if (name === currentName) return;
+
+    setContactSavingId(String(contact.id));
+
+    try {
+      await patchContact(String(contact.id), { name });
+    } catch (error: any) {
+      alert(
+        error?.message || "Erro ao editar o nome do contato."
+      );
+    } finally {
+      setContactSavingId(null);
+    }
+  }
+
+  async function changeContactStatus(
+    contactId: string,
+    status: string
+  ) {
+    if (!status || contactSavingId) return;
+
+    setContactSavingId(contactId);
+
+    try {
+      await patchContact(contactId, { status });
+    } catch (error: any) {
+      alert(
+        error?.message || "Erro ao atualizar o status do contato."
+      );
+      await loadContacts();
+    } finally {
+      setContactSavingId(null);
+    }
+  }
+
+  async function applyBulkStatus() {
+    const ids: string[] = [
+      ...new Set<string>(selectedIds),
+    ].filter((id): id is string => Boolean(id));
+
+    if (!ids.length) {
+      alert("Selecione pelo menos um contato.");
+      return;
+    }
+
+    if (!bulkStatus) {
+      alert("Escolha o novo status.");
+      return;
+    }
+
+    const label = statusLabel(bulkStatus);
+
+    if (
+      !confirm(
+        `Alterar ${ids.length} contato(s) para "${label}"?`
+      )
+    ) {
+      return;
+    }
+
+    setBulkStatusSaving(true);
+
+    let updated = 0;
+    const errors: string[] = [];
+
+    try {
+      /*
+       * Processa em pequenos lotes para não abrir dezenas de requisições
+       * simultâneas contra a API e o Supabase.
+       */
+      const BATCH_SIZE = 10;
+
+      for (let index = 0; index < ids.length; index += BATCH_SIZE) {
+        const batch = ids.slice(index, index + BATCH_SIZE);
+
+        const results = await Promise.allSettled(
+          batch.map((id) =>
+            patchContact(id, { status: bulkStatus })
+          )
+        );
+
+        results.forEach((result, resultIndex) => {
+          if (result.status === "fulfilled") {
+            updated++;
+            return;
+          }
+
+          const id = batch[resultIndex];
+          const contact = contacts.find(
+            (item) => String(item.id) === String(id)
+          );
+
+          errors.push(
+            `${contact?.name || contact?.nome || id}: ${
+              result.reason instanceof Error
+                ? result.reason.message
+                : "erro ao atualizar"
+            }`
+          );
+        });
+      }
+
+      await loadContacts();
+
+      if (!errors.length) {
+        setSelectedIds([]);
+        setBulkStatus("");
+        alert(
+          `${updated} contato(s) atualizado(s) para "${label}". O Kanban passa a usar o mesmo status.`
+        );
+        return;
+      }
+
+      alert(
+        [
+          `✅ ${updated} contato(s) atualizado(s).`,
+          `❌ ${errors.length} contato(s) apresentaram erro.`,
+          ...errors.slice(0, 5),
+        ].join("\n")
+      );
+    } finally {
+      setBulkStatusSaving(false);
+    }
   }
 
   async function createLead(payload: any) {
@@ -2403,6 +2617,49 @@ export default function ContactsDispatchPage() {
           </button>
         </div>
 
+        {selectedIds.length > 0 && (
+          <div className="bulk-status-bar">
+            <div>
+              <strong>
+                {selectedIds.length} contato(s) selecionado(s)
+              </strong>
+              <span>
+                Altere o status em lote. O mesmo status será refletido no Kanban Comercial.
+              </span>
+            </div>
+
+            <div className="bulk-status-actions">
+              <select
+                value={bulkStatus}
+                onChange={(event) =>
+                  setBulkStatus(event.target.value)
+                }
+                disabled={bulkStatusSaving}
+              >
+                <option value="">Alterar status para...</option>
+                {STATUS_OPTIONS.filter((item) => item.value).map(
+                  (item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  )
+                )}
+              </select>
+
+              <button
+                type="button"
+                className="button primary"
+                disabled={!bulkStatus || bulkStatusSaving}
+                onClick={() => void applyBulkStatus()}
+              >
+                {bulkStatusSaving
+                  ? "Atualizando..."
+                  : `Aplicar aos ${selectedIds.length}`}
+              </button>
+            </div>
+          </div>
+        )}
+
         {loading && (
           <div className="empty">
             Carregando contatos...
@@ -2466,11 +2723,27 @@ export default function ContactsDispatchPage() {
                             </strong>
                           </td>
                           <td>
-                            <strong>
-                              {contact.name ||
-                                contact.nome ||
-                                "Sem nome"}
-                            </strong>
+                            <div className="contact-name-cell">
+                              <strong>
+                                {contact.name ||
+                                  contact.nome ||
+                                  "Sem nome"}
+                              </strong>
+                              <button
+                                type="button"
+                                className="inline-edit"
+                                disabled={
+                                  contactSavingId === String(contact.id)
+                                }
+                                onClick={() =>
+                                  void editContactName(contact)
+                                }
+                              >
+                                {contactSavingId === String(contact.id)
+                                  ? "Salvando..."
+                                  : "Editar nome"}
+                              </button>
+                            </div>
                           </td>
                           <td>
                             {formatPhone(
@@ -2483,11 +2756,30 @@ export default function ContactsDispatchPage() {
                             {contact.email || "-"}
                           </td>
                           <td>
-                            <span className="status">
-                              {statusLabel(
-                                contact.status
-                              )}
-                            </span>
+                            <select
+                              className="contact-status-select"
+                              value={normalizeStatus(contact.status)}
+                              disabled={
+                                contactSavingId === String(contact.id)
+                              }
+                              onChange={(event) =>
+                                void changeContactStatus(
+                                  String(contact.id),
+                                  event.target.value
+                                )
+                              }
+                            >
+                              {STATUS_OPTIONS.filter(
+                                (item) => item.value
+                              ).map((item) => (
+                                <option
+                                  key={item.value}
+                                  value={item.value}
+                                >
+                                  {item.label}
+                                </option>
+                              ))}
+                            </select>
                           </td>
                           <td>
                             {contact.last_message ||
@@ -2507,6 +2799,19 @@ export default function ContactsDispatchPage() {
                               >
                                 WhatsApp
                               </a>
+
+                              <button
+                                type="button"
+                                className="button secondary"
+                                disabled={
+                                  contactSavingId === String(contact.id)
+                                }
+                                onClick={() =>
+                                  void editContactName(contact)
+                                }
+                              >
+                                Editar
+                              </button>
 
                               <button
                                 className="button danger"
@@ -2548,9 +2853,30 @@ export default function ContactsDispatchPage() {
                           Selecionar
                         </label>
 
-                        <span className="status">
-                          {statusLabel(contact.status)}
-                        </span>
+                        <select
+                          className="contact-status-select mobile"
+                          value={normalizeStatus(contact.status)}
+                          disabled={
+                            contactSavingId === String(contact.id)
+                          }
+                          onChange={(event) =>
+                            void changeContactStatus(
+                              String(contact.id),
+                              event.target.value
+                            )
+                          }
+                        >
+                          {STATUS_OPTIONS.filter(
+                            (item) => item.value
+                          ).map((item) => (
+                            <option
+                              key={item.value}
+                              value={item.value}
+                            >
+                              {item.label}
+                            </option>
+                          ))}
+                        </select>
                       </div>
 
                       <h3>
@@ -2597,6 +2923,21 @@ export default function ContactsDispatchPage() {
                         >
                           Abrir WhatsApp
                         </a>
+
+                        <button
+                          type="button"
+                          className="button secondary"
+                          disabled={
+                            contactSavingId === String(contact.id)
+                          }
+                          onClick={() =>
+                            void editContactName(contact)
+                          }
+                        >
+                          {contactSavingId === String(contact.id)
+                            ? "Salvando..."
+                            : "Editar nome"}
+                        </button>
 
                         <button
                           className="button danger"
@@ -3044,6 +3385,80 @@ export default function ContactsDispatchPage() {
         .danger {
           color: #ffffff;
           background: #dc2626;
+        }
+
+        .bulk-status-bar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 14px;
+          margin-top: 12px;
+          padding: 12px 14px;
+          border: 1px solid #86efac;
+          border-radius: 16px;
+          background: #f0fdf4;
+        }
+
+        .bulk-status-bar > div:first-child {
+          display: grid;
+          gap: 3px;
+        }
+
+        .bulk-status-bar strong {
+          color: #166534;
+          font-size: 13px;
+        }
+
+        .bulk-status-bar span {
+          color: #64748b;
+          font-size: 11px;
+        }
+
+        .bulk-status-actions {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .bulk-status-actions select {
+          min-width: 210px;
+          background: #ffffff;
+        }
+
+        .contact-name-cell {
+          display: grid;
+          gap: 4px;
+        }
+
+        .inline-edit {
+          width: max-content;
+          border: 0;
+          padding: 0;
+          color: #15803d;
+          background: transparent;
+          cursor: pointer;
+          font-size: 10px;
+          font-weight: 900;
+        }
+
+        .inline-edit:disabled {
+          opacity: 0.55;
+          cursor: wait;
+        }
+
+        .contact-status-select {
+          min-width: 150px;
+          min-height: 34px;
+          border-radius: 10px;
+          padding: 6px 9px;
+          font-size: 11px;
+          font-weight: 850;
+          background: #f0fdf4;
+        }
+
+        .contact-status-select.mobile {
+          width: auto;
+          max-width: 180px;
         }
 
         .empty {
@@ -3522,6 +3937,21 @@ export default function ContactsDispatchPage() {
           .panel-heading {
             align-items: stretch;
             flex-direction: column;
+          }
+
+          .bulk-status-bar {
+            align-items: stretch;
+            flex-direction: column;
+          }
+
+          .bulk-status-actions {
+            display: grid;
+            grid-template-columns: 1fr;
+          }
+
+          .bulk-status-actions select,
+          .bulk-status-actions .button {
+            width: 100%;
           }
 
           .dispatch-grid .button,
