@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
+import ZentraGlobalChat from "@/components/ZentraGlobalChat";
 
 type IconName =
   | "kanban"
@@ -493,6 +494,8 @@ export default function CrmDashboardLayout({ children }: { children: ReactNode }
 
         <main className="pmg-page">{children}</main>
       </section>
+
+      <ZentraGlobalChat />
 
       <a
         href="https://site-suporte-zentra-pmg.vercel.app/"

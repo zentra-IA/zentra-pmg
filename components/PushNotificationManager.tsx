@@ -43,6 +43,7 @@ function isStandaloneMode() {
 
 export default function PushNotificationManager({ portalToken }: Props) {
   const [supported, setSupported] = useState(false);
+  const [checking, setChecking] = useState(true);
   const [loading, setLoading] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
@@ -54,7 +55,10 @@ export default function PushNotificationManager({ portalToken }: Props) {
   );
 
   useEffect(() => {
-    if (!portalToken) return;
+    if (!portalToken) {
+      setChecking(false);
+      return;
+    }
 
     const ios = isIOSDevice();
     const standalone = isStandaloneMode();
@@ -69,7 +73,10 @@ export default function PushNotificationManager({ portalToken }: Props) {
 
     setSupported(isSupported);
 
-    if (!isSupported) return;
+    if (!isSupported) {
+      setChecking(false);
+      return;
+    }
 
     async function initializePush() {
       try {
@@ -81,11 +88,45 @@ export default function PushNotificationManager({ portalToken }: Props) {
         );
       } catch (error) {
         console.error("Erro ao registrar Service Worker:", error);
+      } finally {
+        setChecking(false);
       }
     }
 
     void initializePush();
   }, [portalToken]);
+
+  useEffect(() => {
+    if (!portalToken || !supported) return;
+
+    async function refreshEnabledState() {
+      try {
+        const registration = await navigator.serviceWorker.ready;
+        const subscription = await registration.pushManager.getSubscription();
+
+        setEnabled(
+          Boolean(subscription) && Notification.permission === "granted"
+        );
+      } catch {
+        // Mantém o estado atual; a inicialização principal continua responsável por erros.
+      }
+    }
+
+    const onFocus = () => void refreshEnabledState();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void refreshEnabledState();
+      }
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [portalToken, supported]);
 
   async function testNotification() {
     try {
@@ -208,31 +249,33 @@ export default function PushNotificationManager({ portalToken }: Props) {
     );
   }
 
-  if (!supported) return null;
+  if (!supported || checking) return null;
 
-  return (
-    <div className="fixed bottom-5 right-5 z-50 flex flex-col items-end gap-2">
-      {enabled && (
+  if (enabled) {
+    return (
+      <div className="fixed bottom-5 left-5 z-[125] flex flex-col items-start gap-2 max-[600px]:bottom-[max(12px,env(safe-area-inset-bottom))] max-[600px]:left-3">
         <button
           type="button"
           onClick={testNotification}
-          className="rounded-xl border border-green-700 bg-white px-4 py-2 text-sm font-bold text-green-800 shadow-lg"
+          title="Clique para testar o Push neste aparelho"
+          className="flex items-center gap-2 rounded-xl border border-green-200 bg-white px-3 py-2 text-xs font-black text-green-800 shadow-lg"
         >
-          Testar notificação
+          <span aria-hidden="true">✅</span>
+          <span>Notificações ativadas</span>
         </button>
-      )}
+      </div>
+    );
+  }
 
+  return (
+    <div className="fixed bottom-5 left-5 z-[125] max-[600px]:bottom-[max(12px,env(safe-area-inset-bottom))] max-[600px]:left-3">
       <button
         type="button"
         onClick={enablePush}
-        disabled={loading || enabled}
+        disabled={loading}
         className="rounded-xl bg-green-600 px-4 py-3 font-semibold text-white shadow-lg disabled:bg-gray-500"
       >
-        {loading
-          ? "Ativando..."
-          : enabled
-            ? "Notificações ativadas"
-            : "Ativar notificações"}
+        {loading ? "Ativando..." : "🔔 Ativar notificações"}
       </button>
     </div>
   );

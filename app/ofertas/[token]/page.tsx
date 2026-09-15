@@ -5,6 +5,7 @@ import { getCustomerPromotionAccess } from "@/lib/promotions/customer-access";
 import PushNotificationManager from "@/components/PushNotificationManager";
 import PromotionGallery from "@/components/PromotionGallery";
 import PromotionAnalyticsTracker from "@/components/PromotionAnalyticsTracker";
+import CustomerPortalChat from "@/components/CustomerPortalChat";
 
 type PageProps = {
   params: Promise<{ token: string }>;
@@ -170,6 +171,7 @@ export default async function CustomerOffersPage({
         </div>
       </section>
 
+      <CustomerPortalChat portalToken={token} />
       <PromotionAnalyticsTracker portalToken={token} />
       <PushNotificationManager portalToken={token} />
     </main>
