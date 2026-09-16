@@ -2307,6 +2307,7 @@ model PortalConversation {
   last_sender_type String?
   seller_unread    Int      @default(0)
   customer_unread  Int      @default(0)
+  ai_paused       Boolean  @default(false)
   created_at       DateTime @default(now()) @db.Timestamptz(6)
   updated_at       DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
@@ -2315,6 +2316,29 @@ model PortalConversation {
   @@index([customer_id])
   @@index([company_id, seller_id, last_message_at])
   @@map("portal_conversations")
+}
+
+
+model PortalChatAutomation {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id          String   @db.Uuid
+  seller_id           String   @db.Uuid
+  name                String
+  intent              String?
+  trigger_keywords    String[] @default([])
+  match_type          String   @default("contains")
+  response_text       String
+  response_variations String[] @default([])
+  is_fallback         Boolean  @default(false)
+  priority            Int      @default(0)
+  active              Boolean  @default(true)
+  created_at          DateTime @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([company_id, seller_id, active, priority])
+  @@index([company_id])
+  @@index([seller_id])
+  @@map("portal_chat_automations")
 }
 
 model PortalMessage {

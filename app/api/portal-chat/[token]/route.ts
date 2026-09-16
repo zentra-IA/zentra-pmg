@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { processPortalAutomaticReply } from "@/lib/portal-chat-automation";
 import {
   getPortalChatAccess,
   portalChatClean,
@@ -242,9 +243,34 @@ export async function POST(
       }),
     ]);
 
+    let automaticReply = null;
+
+    /*
+     * O chatbot do Portal é separado do WhatsApp.
+     * Ele só é executado para mensagens recebidas do cliente nesta rota.
+     * Falha no chatbot nunca desfaz a mensagem que o cliente acabou de enviar.
+     */
+    if (content) {
+      try {
+        automaticReply = await processPortalAutomaticReply({
+          conversationId: conversation.id,
+          companyId: access.company_id,
+          sellerId: access.seller_id,
+          customerId: access.customer_id,
+          customerMessage: content,
+          portalToken: token,
+          origin: new URL(req.url).origin,
+        });
+      } catch (automationError) {
+        console.error("[PORTAL_CHAT_AUTOMATION_WARNING]", automationError);
+      }
+    }
+
     return NextResponse.json({
       success: true,
       message,
+      automatic_reply: automaticReply?.message || null,
+      detected_intent: automaticReply?.intent || null,
     });
   } catch (error: any) {
     const message = error?.message || "Erro ao enviar mensagem.";

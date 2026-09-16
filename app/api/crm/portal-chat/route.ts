@@ -393,6 +393,75 @@ export async function GET(req: NextRequest) {
   }
 }
 
+
+export async function PATCH(req: NextRequest) {
+  try {
+    const access = await requireSeller(req);
+    const body = await req.json().catch(() => ({}));
+    const conversationId = portalChatClean(
+      body?.conversationId || body?.conversation_id
+    );
+
+    if (!conversationId || typeof body?.aiPaused !== "boolean") {
+      return NextResponse.json(
+        { success: false, error: "Conversa ou estado da IA não informado." },
+        { status: 400 }
+      );
+    }
+
+    const conversation = await prisma.portalConversation.findFirst({
+      where: {
+        id: conversationId,
+        company_id: access.companyId,
+        seller_id: access.sellerId,
+      },
+    });
+
+    if (!conversation) {
+      return NextResponse.json(
+        { success: false, error: "Conversa não encontrada." },
+        { status: 404 }
+      );
+    }
+
+    const updated = await prisma.portalConversation.update({
+      where: { id: conversation.id },
+      data: {
+        ai_paused: body.aiPaused,
+        updated_at: new Date(),
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      conversation: updated,
+    });
+  } catch (error: any) {
+    const message = error?.message || "Erro ao alterar chatbot.";
+
+    if (message === "AUTH_NOT_FOUND") {
+      return NextResponse.json(
+        { success: false, error: "Usuário não identificado." },
+        { status: 401 }
+      );
+    }
+
+    if (message === "ACCESS_DENIED") {
+      return NextResponse.json(
+        { success: false, error: "Acesso negado." },
+        { status: 403 }
+      );
+    }
+
+    console.error("PATCH /api/crm/portal-chat:", error);
+
+    return NextResponse.json(
+      { success: false, error: "Erro ao alterar chatbot da conversa." },
+      { status: 500 }
+    );
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const access = await requireSeller(req);
@@ -492,6 +561,7 @@ export async function POST(req: NextRequest) {
           last_message: preview.slice(0, 500),
           last_message_at: now,
           last_sender_type: "seller",
+          ai_paused: true,
           customer_unread: {
             increment: 1,
           },

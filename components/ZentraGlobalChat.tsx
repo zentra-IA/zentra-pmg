@@ -127,6 +127,7 @@ export default function ZentraGlobalChat() {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [aiUpdating, setAiUpdating] = useState(false);
   const [mediaDraft, setMediaDraft] = useState<MediaDraft | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
@@ -311,6 +312,14 @@ export default function ZentraGlobalChat() {
         }
 
         setMessages(Array.isArray(data?.messages) ? data.messages : []);
+
+        if (data?.conversation) {
+          setSelected((current: any) =>
+            current && String(current.id) === String(conversationId)
+              ? { ...current, ...data.conversation }
+              : current
+          );
+        }
 
         setConversations((current) =>
           current.map((item) =>
@@ -551,6 +560,56 @@ export default function ZentraGlobalChat() {
       window.alert(error?.message || "Erro ao enviar mensagem.");
     } finally {
       setSending(false);
+    }
+  }
+
+
+  async function toggleChatbot() {
+    if (!selected?.id || aiUpdating) return;
+
+    const nextPaused = !Boolean(selected?.ai_paused);
+    setAiUpdating(true);
+
+    try {
+      const response = await fetch("/api/crm/portal-chat", {
+        method: "PATCH",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          conversationId: selected.id,
+          aiPaused: nextPaused,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error || "Erro ao alterar chatbot."
+        );
+      }
+
+      if (data?.conversation) {
+        setSelected((current: any) => ({
+          ...current,
+          ...data.conversation,
+        }));
+        setConversations((current) =>
+          current.map((item) =>
+            String(item.id) === String(selected.id)
+              ? { ...item, ...data.conversation }
+              : item
+          )
+        );
+      }
+    } catch (error: any) {
+      window.alert(
+        error?.message || "Erro ao alterar chatbot."
+      );
+    } finally {
+      setAiUpdating(false);
     }
   }
 
@@ -911,10 +970,32 @@ export default function ZentraGlobalChat() {
           ) : (
             <div className="pc-seller-chat-screen">
               <div className="pc-seller-person">
-                <strong>{customerName(selected)}</strong>
-                {selected?.customer_phone && (
-                  <span>{selected.customer_phone}</span>
-                )}
+                <div className="pc-seller-person-main">
+                  <strong>{customerName(selected)}</strong>
+                  {selected?.customer_phone && (
+                    <span>{selected.customer_phone}</span>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  className={`pc-seller-ai-toggle ${
+                    selected?.ai_paused ? "paused" : "active"
+                  }`}
+                  disabled={aiUpdating}
+                  onClick={() => void toggleChatbot()}
+                  title={
+                    selected?.ai_paused
+                      ? "Reativar respostas automáticas"
+                      : "Pausar respostas automáticas e assumir manualmente"
+                  }
+                >
+                  {aiUpdating
+                    ? "..."
+                    : selected?.ai_paused
+                      ? "👤 Manual"
+                      : "🤖 IA ativa"}
+                </button>
               </div>
 
               <div className="pc-seller-messages">
@@ -1398,10 +1479,18 @@ export default function ZentraGlobalChat() {
         }
 
         .pc-seller-person {
-          display: grid;
-          gap: 2px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
           padding: 9px 12px;
           border-bottom: 1px solid #edf0f3;
+        }
+
+        .pc-seller-person-main {
+          min-width: 0;
+          display: grid;
+          gap: 2px;
         }
 
         .pc-seller-person strong {
@@ -1413,6 +1502,30 @@ export default function ZentraGlobalChat() {
         .pc-seller-person span {
           color: #667085;
           font-size: 9px;
+        }
+
+        .pc-seller-ai-toggle {
+          flex: 0 0 auto;
+          min-height: 30px;
+          border: 1px solid #bbf7d0;
+          border-radius: 999px;
+          padding: 5px 9px;
+          background: #f0fdf4;
+          color: #15803d;
+          font-size: 9px;
+          font-weight: 950;
+          cursor: pointer;
+        }
+
+        .pc-seller-ai-toggle.paused {
+          border-color: #fed7aa;
+          background: #fff7ed;
+          color: #c2410c;
+        }
+
+        .pc-seller-ai-toggle:disabled {
+          opacity: 0.6;
+          cursor: wait;
         }
 
         .pc-seller-messages {

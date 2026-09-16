@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import PortalChatAutomationManager from "@/components/PortalChatAutomationManager";
 
 type Customer = {
   id: string;
@@ -64,6 +65,7 @@ async function readJson(response: Response) {
 }
 
 export default function PortalBroadcastsPage() {
+  const [workspaceMode, setWorkspaceMode] = useState<"broadcasts" | "chatbot">("broadcasts");
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [lists, setLists] = useState<BroadcastList[]>([]);
   const [filterOptions, setFilterOptions] =
@@ -469,11 +471,11 @@ export default function PortalBroadcastsPage() {
       <section className="hero">
         <div>
           <span>ZENTRA SALES AI · PORTAL + PUSH</span>
-          <h1>Transmissões Push</h1>
+          <h1>Central Portal + Push</h1>
           <p>
-            Crie listas da sua carteira, filtre clientes e envie a
-            mesma abordagem para todos. Cada mensagem entra em uma
-            conversa privada entre você e o cliente.
+            Faça transmissões segmentadas e configure o chatbot que
+            responde automaticamente os clientes no Chat do Portal.
+            WhatsApp e Portal continuam com configurações separadas.
           </p>
         </div>
 
@@ -493,6 +495,24 @@ export default function PortalBroadcastsPage() {
         </div>
       </section>
 
+      <nav className="module-tabs" aria-label="Módulos Portal + Push">
+        <button
+          type="button"
+          className={workspaceMode === "broadcasts" ? "active" : ""}
+          onClick={() => setWorkspaceMode("broadcasts")}
+        >
+          📣 Transmissões Push
+        </button>
+        <button
+          type="button"
+          className={workspaceMode === "chatbot" ? "active" : ""}
+          onClick={() => setWorkspaceMode("chatbot")}
+        >
+          🤖 Chatbot do Portal
+        </button>
+      </nav>
+
+      {workspaceMode === "broadcasts" ? (
       <section className="broadcast-layout">
         <aside className="lists-panel">
           <div className="panel-title">
@@ -934,6 +954,9 @@ export default function PortalBroadcastsPage() {
           </section>
         </section>
       </section>
+      ) : (
+        <PortalChatAutomationManager />
+      )}
 
       <style jsx>{`
         .broadcast-page {
@@ -941,6 +964,36 @@ export default function PortalBroadcastsPage() {
           margin: 0 auto;
           padding: 4px;
           color: #182230;
+        }
+
+        .module-tabs {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 14px 0;
+          border: 1px solid #e5e7eb;
+          border-radius: 16px;
+          padding: 6px;
+          background: #fff;
+          box-shadow: 0 10px 30px rgba(15, 23, 42, 0.04);
+        }
+
+        .module-tabs button {
+          flex: 0 0 auto;
+          border: 1px solid transparent;
+          border-radius: 11px;
+          padding: 10px 14px;
+          background: transparent;
+          color: #667085;
+          font-size: 11px;
+          font-weight: 900;
+          cursor: pointer;
+        }
+
+        .module-tabs button.active {
+          border-color: #bbf7d0;
+          background: #f0fdf4;
+          color: #15803d;
         }
 
         .hero,
