@@ -237,6 +237,24 @@ export default function CustomerPortalChat({
   );
 
   useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("pmg:portal-chat-open", {
+        detail: { open },
+      })
+    );
+
+    return () => {
+      if (open) {
+        window.dispatchEvent(
+          new CustomEvent("pmg:portal-chat-open", {
+            detail: { open: false },
+          })
+        );
+      }
+    };
+  }, [open]);
+
+  useEffect(() => {
     if (!open) return;
 
     void loadMessages(false);
@@ -649,25 +667,24 @@ export default function CustomerPortalChat({
         </section>
       )}
 
-      <button
-        type="button"
-        className="pc-customer-float"
-        onClick={() => {
-          setOpen((current) => !current);
-
-          if (
-            "Notification" in window &&
-            Notification.permission === "default"
-          ) {
-            void Notification.requestPermission();
-          }
-
-          playIncomingSound();
-        }}
-      >
-        <span>💬</span>
-        <b>Falar com vendedor</b>
-      </button>
+      {!open && (
+        <button
+          type="button"
+          className="pc-customer-float"
+          onClick={() => {
+            setOpen(true);
+            playIncomingSound();
+          }}
+          aria-label="Falar diretamente com seu vendedor"
+        >
+          <span className="pc-customer-float-icon">💬</span>
+          <span className="pc-customer-float-copy">
+            <b>FALE COM SEU VENDEDOR</b>
+            <small>Pedidos, cotações e dúvidas por aqui</small>
+          </span>
+          <i className="pc-customer-live-dot" aria-hidden="true" />
+        </button>
+      )}
 
       <style jsx>{`
         .pc-customer-float {
@@ -675,34 +692,77 @@ export default function CustomerPortalChat({
           right: 18px;
           bottom: max(18px, env(safe-area-inset-bottom));
           z-index: 120;
-          min-height: 58px;
-          display: flex;
+          width: min(340px, calc(100vw - 28px));
+          min-height: 66px;
+          display: grid;
+          grid-template-columns: 44px minmax(0, 1fr) 10px;
           align-items: center;
-          gap: 9px;
-          border: 0;
-          border-radius: 999px;
-          padding: 8px 17px 8px 10px;
+          gap: 10px;
+          border: 2px solid rgba(255,255,255,.9);
+          border-radius: 20px;
+          padding: 9px 12px 9px 9px;
           color: #fff;
           background: linear-gradient(135deg, #15803d, #166534);
-          box-shadow: 0 18px 45px rgba(21, 128, 61, 0.32);
+          box-shadow:
+            0 20px 50px rgba(21, 128, 61, .36),
+            0 0 0 5px rgba(34,197,94,.10);
           cursor: pointer;
           font: inherit;
+          text-align: left;
+          animation: pcCustomerAttention 2.4s ease-in-out infinite;
         }
 
-        .pc-customer-float span {
-          width: 40px;
-          height: 40px;
+        .pc-customer-float-icon {
+          width: 44px;
+          height: 44px;
           display: grid;
           place-items: center;
-          border-radius: 999px;
+          border-radius: 14px;
           color: #15803d;
           background: #fff;
-          font-size: 19px;
+          font-size: 21px;
         }
 
-        .pc-customer-float b {
+        .pc-customer-float-copy {
+          min-width: 0;
+          display: grid;
+          gap: 2px;
+        }
+
+        .pc-customer-float-copy b {
           font-size: 12px;
-          font-weight: 900;
+          line-height: 1.15;
+          font-weight: 950;
+          letter-spacing: .01em;
+        }
+
+        .pc-customer-float-copy small {
+          opacity: .92;
+          font-size: 9.5px;
+          line-height: 1.2;
+          font-weight: 650;
+        }
+
+        .pc-customer-live-dot {
+          width: 9px;
+          height: 9px;
+          border: 2px solid rgba(255,255,255,.9);
+          border-radius: 999px;
+          background: #ef4444;
+          box-shadow: 0 0 0 0 rgba(239,68,68,.6);
+          animation: pcCustomerDot 1.45s ease-out infinite;
+        }
+
+        @keyframes pcCustomerAttention {
+          0%, 82%, 100% { transform: translateY(0); }
+          88% { transform: translateY(-3px); }
+          94% { transform: translateY(0); }
+        }
+
+        @keyframes pcCustomerDot {
+          0% { box-shadow: 0 0 0 0 rgba(239,68,68,.58); }
+          70% { box-shadow: 0 0 0 7px rgba(239,68,68,0); }
+          100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
         }
 
         .pc-customer-panel {
@@ -979,14 +1039,26 @@ export default function CustomerPortalChat({
           .pc-customer-float {
             right: 12px;
             bottom: max(12px, env(safe-area-inset-bottom));
+            width: min(340px, calc(100vw - 24px));
+            min-height: 64px;
+            grid-template-columns: 42px minmax(0, 1fr) 9px;
+            border-radius: 18px;
+            padding: 8px 11px 8px 8px;
           }
 
-          .pc-customer-float b {
-            display: none;
+          .pc-customer-float-icon {
+            width: 42px;
+            height: 42px;
           }
 
-          .pc-customer-float {
-            padding: 7px;
+          .pc-customer-float-copy b {
+            display: block;
+            font-size: 11.5px;
+          }
+
+          .pc-customer-float-copy small {
+            display: block;
+            font-size: 9px;
           }
 
           .pc-customer-panel {

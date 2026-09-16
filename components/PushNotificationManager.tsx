@@ -48,6 +48,7 @@ export default function PushNotificationManager({ portalToken }: Props) {
   const [enabled, setEnabled] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
   const [isStandalone, setIsStandalone] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
 
   const needsIOSInstall = useMemo(
     () => Boolean(portalToken && isIOS && !isStandalone),
@@ -128,28 +129,19 @@ export default function PushNotificationManager({ portalToken }: Props) {
     };
   }, [portalToken, supported]);
 
-  async function testNotification() {
-    try {
-      if (Notification.permission !== "granted") {
-        throw new Error("Ative as notificações primeiro.");
-      }
-
-      const registration = await navigator.serviceWorker.ready;
-
-      await registration.showNotification("PMG Atacadista", {
-        body: "Teste concluído. As notificações estão funcionando neste aparelho.",
-        icon: "/logo-pmg.png",
-        badge: "/logo-pmg.png",
-        tag: "pmg-push-test",
-      });
-    } catch (error) {
-      alert(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível exibir a notificação de teste."
-      );
+  useEffect(() => {
+    function handleChatState(event: Event) {
+      const customEvent = event as CustomEvent<{ open?: boolean }>;
+      setChatOpen(Boolean(customEvent.detail?.open));
     }
-  }
+
+    window.addEventListener("pmg:portal-chat-open", handleChatState);
+
+    return () => {
+      window.removeEventListener("pmg:portal-chat-open", handleChatState);
+    };
+  }, []);
+
 
   async function enablePush() {
     if (!portalToken) return;
@@ -224,7 +216,7 @@ export default function PushNotificationManager({ portalToken }: Props) {
     }
   }
 
-  if (!portalToken) return null;
+  if (!portalToken || chatOpen) return null;
 
   if (needsIOSInstall) {
     return (
@@ -254,15 +246,13 @@ export default function PushNotificationManager({ portalToken }: Props) {
   if (enabled) {
     return (
       <div className="fixed bottom-5 left-5 z-[125] flex flex-col items-start gap-2 max-[600px]:bottom-[max(12px,env(safe-area-inset-bottom))] max-[600px]:left-3">
-        <button
-          type="button"
-          onClick={testNotification}
-          title="Clique para testar o Push neste aparelho"
+        <div
+          title="Este aparelho está recebendo notificações da PMG"
           className="flex items-center gap-2 rounded-xl border border-green-200 bg-white px-3 py-2 text-xs font-black text-green-800 shadow-lg"
         >
           <span aria-hidden="true">✅</span>
           <span>Notificações ativadas</span>
-        </button>
+        </div>
       </div>
     );
   }

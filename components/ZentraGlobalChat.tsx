@@ -115,11 +115,15 @@ function customerName(conversation: any) {
 
 export default function ZentraGlobalChat() {
   const [open, setOpen] = useState(false);
-  const [screen, setScreen] = useState<"list" | "chat">("list");
+  const [screen, setScreen] = useState<"list" | "chat" | "new">("list");
   const [conversations, setConversations] = useState<any[]>([]);
   const [selected, setSelected] = useState<any>(null);
   const [messages, setMessages] = useState<any[]>([]);
   const [search, setSearch] = useState("");
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [customerLoading, setCustomerLoading] = useState(false);
+  const [newCustomerError, setNewCustomerError] = useState("");
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
@@ -352,6 +356,102 @@ export default function ZentraGlobalChat() {
       if (current?.previewUrl) URL.revokeObjectURL(current.previewUrl);
       return null;
     });
+  }
+
+  const loadCustomers = useCallback(async (query = "") => {
+    setCustomerLoading(true);
+    setNewCustomerError("");
+
+    try {
+      const response = await fetch(
+        `/api/crm/portal-chat?mode=customers&search=${encodeURIComponent(
+          query.trim()
+        )}&t=${Date.now()}`,
+        {
+          credentials: "include",
+          cache: "no-store",
+        }
+      );
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error || "Erro ao carregar clientes da sua carteira."
+        );
+      }
+
+      setCustomers(
+        Array.isArray(data?.customers) ? data.customers : []
+      );
+    } catch (error: any) {
+      setCustomers([]);
+      setNewCustomerError(
+        error?.message || "Erro ao carregar clientes."
+      );
+    } finally {
+      setCustomerLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open || screen !== "new") return;
+
+    const timer = window.setTimeout(() => {
+      void loadCustomers(customerSearch);
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [open, screen, customerSearch, loadCustomers]);
+
+  async function startCustomerConversation(customer: any) {
+    if (!customer?.id || !customer?.portal_ready) return;
+
+    setCustomerLoading(true);
+    setNewCustomerError("");
+
+    try {
+      const response = await fetch("/api/crm/portal-chat", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          customerId: customer.id,
+          createOnly: true,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error || "Não foi possível iniciar a conversa."
+        );
+      }
+
+      const conversation = data?.conversation;
+
+      if (!conversation?.id) {
+        throw new Error("Conversa não retornada pelo servidor.");
+      }
+
+      setSelected(conversation);
+      setMessages([]);
+      setScreen("chat");
+
+      await Promise.all([
+        loadMessages(String(conversation.id), false),
+        loadConversations(true),
+      ]);
+    } catch (error: any) {
+      setNewCustomerError(
+        error?.message || "Erro ao iniciar conversa."
+      );
+    } finally {
+      setCustomerLoading(false);
+    }
   }
 
   async function openConversation(item: any) {
@@ -633,13 +733,21 @@ export default function ZentraGlobalChat() {
               <span>
                 {screen === "chat" && selected
                   ? customerName(selected)
-                  : `${unreadTotal} não lida(s)`}
+                  : screen === "new"
+                    ? "Escolha um cliente da sua carteira"
+                    : `${unreadTotal} não lida(s)`}
               </span>
             </div>
 
             <div className="pc-seller-head-actions">
-              {screen === "chat" && (
-                <button type="button" onClick={() => setScreen("list")}>
+              {screen !== "list" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setScreen("list");
+                    setNewCustomerError("");
+                  }}
+                >
                   ←
                 </button>
               )}
@@ -650,11 +758,25 @@ export default function ZentraGlobalChat() {
 
           {screen === "list" ? (
             <div className="pc-seller-list-screen">
+              <div className="pc-seller-new-bar">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomerSearch("");
+                    setNewCustomerError("");
+                    setScreen("new");
+                  }}
+                >
+                  ＋ Nova conversa
+                </button>
+                <small>Chame um cliente da sua carteira pelo Portal/Push</small>
+              </div>
+
               <div className="pc-seller-search">
                 <input
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Buscar cliente do portal..."
+                  placeholder="Buscar conversa..."
                 />
               </div>
 
@@ -688,6 +810,100 @@ export default function ZentraGlobalChat() {
                     {loading
                       ? "Carregando..."
                       : "Nenhuma conversa do portal ainda."}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : screen === "new" ? (
+            <div className="pc-seller-list-screen">
+              <div className="pc-seller-new-intro">
+                <strong>Iniciar conversa</strong>
+                <span>
+                  Selecione um cliente. Ao enviar a primeira mensagem, ele
+                  receberá o Push se já tiver ativado as notificações.
+                </span>
+              </div>
+
+              <div className="pc-seller-search">
+                <input
+                  autoFocus
+                  value={customerSearch}
+                  onChange={(event) =>
+                    setCustomerSearch(event.target.value)
+                  }
+                  placeholder="Nome, código, CNPJ ou WhatsApp..."
+                />
+              </div>
+
+              {newCustomerError && (
+                <div className="pc-seller-new-error">
+                  {newCustomerError}
+                </div>
+              )}
+
+              <div className="pc-seller-list">
+                {customers.map((customer) => (
+                  <button
+                    type="button"
+                    key={customer.id}
+                    className="pc-seller-conversation pc-seller-customer-option"
+                    disabled={!customer.portal_ready || customerLoading}
+                    onClick={() =>
+                      void startCustomerConversation(customer)
+                    }
+                  >
+                    <span className="pc-seller-avatar">
+                      {clean(customer.customer_name)
+                        .slice(0, 1)
+                        .toUpperCase() || "C"}
+                    </span>
+
+                    <span className="pc-seller-copy">
+                      <b>{customer.customer_name || "Cliente"}</b>
+                      <small>
+                        {[
+                          customer.internal_code
+                            ? `Cód. ${customer.internal_code}`
+                            : "",
+                          customer.city,
+                          customer.state,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ") || customer.phone || "Cliente da carteira"}
+                      </small>
+                      <span className="pc-seller-channel-badges">
+                        <em
+                          className={
+                            customer.portal_ready ? "ready" : "missing"
+                          }
+                        >
+                          {customer.portal_ready
+                            ? "Portal ativo"
+                            : "Sem portal"}
+                        </em>
+                        <em
+                          className={
+                            customer.push_enabled ? "push" : "neutral"
+                          }
+                        >
+                          {customer.push_enabled
+                            ? "Push ativo"
+                            : "Push não ativado"}
+                        </em>
+                      </span>
+                    </span>
+
+                    <span className="pc-seller-start-arrow">
+                      {customer.portal_ready ? "›" : "—"}
+                    </span>
+                  </button>
+                ))}
+
+                {!customers.length && (
+                  <div className="pc-seller-empty">
+                    {customerLoading
+                      ? "Buscando clientes..."
+                      : "Nenhum cliente encontrado na sua carteira."}
                   </div>
                 )}
               </div>
@@ -986,6 +1202,62 @@ export default function ZentraGlobalChat() {
           flex-direction: column;
         }
 
+        .pc-seller-new-bar {
+          display: grid;
+          gap: 5px;
+          padding: 10px;
+          border-bottom: 1px solid #dcfce7;
+          background: #f0fdf4;
+        }
+
+        .pc-seller-new-bar button {
+          min-height: 42px;
+          border: 0;
+          border-radius: 12px;
+          color: #fff;
+          background: #15803d;
+          cursor: pointer;
+          font: inherit;
+          font-size: 12px;
+          font-weight: 950;
+        }
+
+        .pc-seller-new-bar small {
+          color: #64748b;
+          font-size: 9px;
+          text-align: center;
+        }
+
+        .pc-seller-new-intro {
+          display: grid;
+          gap: 3px;
+          padding: 12px;
+          color: #14532d;
+          background: #f0fdf4;
+        }
+
+        .pc-seller-new-intro strong {
+          font-size: 12px;
+          font-weight: 950;
+        }
+
+        .pc-seller-new-intro span {
+          color: #475569;
+          font-size: 9px;
+          line-height: 1.35;
+        }
+
+        .pc-seller-new-error {
+          margin: 8px 10px 0;
+          border: 1px solid #fecaca;
+          border-radius: 10px;
+          padding: 8px 10px;
+          color: #991b1b;
+          background: #fff7f7;
+          font-size: 9px;
+          font-weight: 800;
+        }
+
         .pc-seller-search {
           padding: 10px;
           border-bottom: 1px solid #edf0f3;
@@ -1064,6 +1336,52 @@ export default function ZentraGlobalChat() {
         .pc-seller-copy small {
           color: #667085;
           font-size: 10px;
+        }
+
+        .pc-seller-customer-option:disabled {
+          opacity: .58;
+          cursor: not-allowed;
+        }
+
+        .pc-seller-channel-badges {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 4px;
+          margin-top: 2px;
+        }
+
+        .pc-seller-channel-badges em {
+          border-radius: 999px;
+          padding: 2px 6px;
+          font-size: 7.5px;
+          font-style: normal;
+          font-weight: 900;
+        }
+
+        .pc-seller-channel-badges em.ready {
+          color: #166534;
+          background: #dcfce7;
+        }
+
+        .pc-seller-channel-badges em.push {
+          color: #1d4ed8;
+          background: #dbeafe;
+        }
+
+        .pc-seller-channel-badges em.missing {
+          color: #991b1b;
+          background: #fee2e2;
+        }
+
+        .pc-seller-channel-badges em.neutral {
+          color: #64748b;
+          background: #f1f5f9;
+        }
+
+        .pc-seller-start-arrow {
+          color: #15803d;
+          font-size: 22px;
+          font-weight: 950;
         }
 
         .pc-seller-unread {

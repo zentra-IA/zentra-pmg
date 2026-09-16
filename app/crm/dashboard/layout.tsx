@@ -52,6 +52,7 @@ const FULL_MENU: MenuItem[] = [
   icon: "megaphone",
   description: "Portal e Push"
 },
+  { label: "Transmissões Push", href: "/crm/dashboard/broadcasts", icon: "megaphone", description: "Listas e mensagens em massa" },
   { label: "Mensagens IA", href: "/crm/dashboard/messages", icon: "mail", description: "Templates comerciais" },
   { label: "Conteúdo IA", href: "/crm/dashboard/creative-generator", icon: "spark", description: "Criativos e textos" },
   { label: "BI Comercial", href: "/crm/dashboard/bi", icon: "chart", description: "Indicadores gerenciais" },
@@ -73,6 +74,7 @@ const SELLER_MENU: MenuItem[] = [
   icon: "megaphone",
   description: "Portal e Push",
 },
+  { label: "Transmissões Push", href: "/crm/dashboard/broadcasts", icon: "megaphone", description: "Listas e mensagens em massa" },
   { label: "Radar Comercial", href: "/crm/dashboard/radar", icon: "target", description: "Prospecção inteligente" },
   { label: "Prospecção", href: "/crm/dashboard/prospeccao", icon: "spark", description: "Novos clientes externos" },
   { label: "Discador", href: "/crm/dashboard/dialer", icon: "phone", description: "Ligações comerciais" },
