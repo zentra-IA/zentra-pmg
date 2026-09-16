@@ -2364,3 +2364,100 @@ model PortalMessage {
   @@index([company_id, seller_id, created_at])
   @@map("portal_messages")
 }
+
+
+model PortalPriceTableVersion {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id      String   @db.Uuid
+  price_table     Int
+  table_date      DateTime @db.Date
+  pdf_name        String
+  status          String   @default("ready")
+  product_count   Int      @default(0)
+  unmatched_count Int      @default(0)
+  parser_engine   String?
+  imported_by     String?  @db.Uuid
+  activated_at    DateTime? @db.Timestamptz(6)
+  created_at      DateTime @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  items PortalPriceTableItem[]
+
+  @@index([company_id, price_table, status, table_date])
+  @@index([company_id, table_date])
+  @@map("portal_price_table_versions")
+}
+
+model PortalPriceTableItem {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  version_id         String   @db.Uuid
+  company_id         String   @db.Uuid
+  price_table        Int
+  catalog_product_id String?  @db.Uuid
+  code               String
+  product_name       String
+  sell_unit          String
+  price              Decimal  @db.Decimal(12, 2)
+  raw_line           String?
+  created_at         DateTime @default(now()) @db.Timestamptz(6)
+
+  version PortalPriceTableVersion @relation(fields: [version_id], references: [id], onDelete: Cascade)
+
+  @@unique([version_id, code])
+  @@index([company_id, price_table, code])
+  @@index([version_id])
+  @@map("portal_price_table_items")
+}
+
+model PortalQuoteSession {
+  id                     String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id             String    @db.Uuid
+  seller_id              String?   @db.Uuid
+  customer_id            String    @db.Uuid
+  conversation_id        String?   @db.Uuid
+  source                 String    @default("portal_chat")
+  status                 String    @default("collecting")
+  raw_request            String?
+  normalized_request     String?
+  price_table            Int?
+  price_table_version_id String?   @db.Uuid
+  table_date             DateTime? @db.Date
+  total                  Decimal?  @db.Decimal(14, 2)
+  output_text            String?
+  metadata               Json?
+  completed_at           DateTime? @db.Timestamptz(6)
+  created_at             DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  items PortalQuoteItem[]
+
+  @@index([company_id, seller_id, created_at])
+  @@index([company_id, customer_id, created_at])
+  @@index([conversation_id])
+  @@index([status])
+  @@map("portal_quote_sessions")
+}
+
+model PortalQuoteItem {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  quote_session_id    String   @db.Uuid
+  raw_term            String?
+  product_code        String?
+  product_name        String?
+  requested_quantity Decimal? @db.Decimal(12, 3)
+  requested_unit      String?
+  sell_unit           String?
+  unit_price          Decimal? @db.Decimal(12, 2)
+  subtotal            Decimal? @db.Decimal(14, 2)
+  status              String   @default("pending")
+  candidates_snapshot Json?
+  price_snapshot      Json?
+  created_at          DateTime @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  quoteSession PortalQuoteSession @relation(fields: [quote_session_id], references: [id], onDelete: Cascade)
+
+  @@index([quote_session_id])
+  @@index([product_code])
+  @@map("portal_quote_items")
+}

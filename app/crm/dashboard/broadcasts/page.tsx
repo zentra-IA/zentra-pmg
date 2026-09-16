@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import PortalChatAutomationManager from "@/components/PortalChatAutomationManager";
+import PortalPriceTableManager from "@/components/PortalPriceTableManager";
 
 type Customer = {
   id: string;
@@ -65,7 +66,7 @@ async function readJson(response: Response) {
 }
 
 export default function PortalBroadcastsPage() {
-  const [workspaceMode, setWorkspaceMode] = useState<"broadcasts" | "chatbot">("broadcasts");
+  const [workspaceMode, setWorkspaceMode] = useState<"broadcasts" | "chatbot" | "prices">("broadcasts");
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [lists, setLists] = useState<BroadcastList[]>([]);
   const [filterOptions, setFilterOptions] =
@@ -473,8 +474,8 @@ export default function PortalBroadcastsPage() {
           <span>ZENTRA SALES AI · PORTAL + PUSH</span>
           <h1>Central Portal + Push</h1>
           <p>
-            Faça transmissões segmentadas e configure o chatbot que
-            responde automaticamente os clientes no Chat do Portal.
+            Faça transmissões segmentadas, configure o chatbot e mantenha
+            as tabelas oficiais de preço do Portal separadas por cliente.
             WhatsApp e Portal continuam com configurações separadas.
           </p>
         </div>
@@ -509,6 +510,13 @@ export default function PortalBroadcastsPage() {
           onClick={() => setWorkspaceMode("chatbot")}
         >
           🤖 Chatbot do Portal
+        </button>
+        <button
+          type="button"
+          className={workspaceMode === "prices" ? "active" : ""}
+          onClick={() => setWorkspaceMode("prices")}
+        >
+          💰 Tabelas de Preço
         </button>
       </nav>
 
@@ -954,8 +962,10 @@ export default function PortalBroadcastsPage() {
           </section>
         </section>
       </section>
-      ) : (
+      ) : workspaceMode === "chatbot" ? (
         <PortalChatAutomationManager />
+      ) : (
+        <PortalPriceTableManager />
       )}
 
       <style jsx>{`
