@@ -62,6 +62,15 @@ type CustomerActivity = {
   customer_id?: string | null;
 };
 
+type CustomerCreditCheck = {
+  protest_status: "NOT_CHECKED" | "NO_PROTEST" | "HAS_PROTEST";
+  protest_checked_at?: string | null;
+  protest_checked_by?: string | null;
+  boleto_requested: boolean;
+  boleto_requested_at?: string | null;
+  boleto_requested_by?: string | null;
+};
+
 type PromotionLinkResponse = {
   success?: boolean;
   promotion_url?: string;
@@ -319,6 +328,15 @@ export default function CustomersPage() {
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [creditCheck, setCreditCheck] =
+    useState<CustomerCreditCheck | null>(null);
+  const [loadingCreditCheck, setLoadingCreditCheck] = useState(false);
+  const [savingCreditCheck, setSavingCreditCheck] = useState(false);
+  const [financeMessage, setFinanceMessage] = useState("");
+  const [financeMessageOpen, setFinanceMessageOpen] = useState(false);
+  const [financeMessageCustomer, setFinanceMessageCustomer] =
+    useState<Customer | null>(null);
+  const [creditFeedback, setCreditFeedback] = useState("");
 
   const [activities, setActivities] = useState<CustomerActivity[]>([]);
   const [loadingActivities, setLoadingActivities] = useState(false);
@@ -1135,9 +1153,238 @@ export default function CustomersPage() {
     }
   }
 
+  async function loadCustomerCreditCheck(customerId: string) {
+    setLoadingCreditCheck(true);
+    setCreditFeedback("");
+
+    try {
+      const res = await fetch(
+        `/api/crm/customers/credit-check?customerId=${encodeURIComponent(
+          customerId
+        )}`,
+        {
+          cache: "no-store",
+          credentials: "include",
+        }
+      );
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(
+          data?.error || "Erro ao carregar análise de crédito."
+        );
+      }
+
+      setCreditCheck(data.credit_check || null);
+    } catch (error: any) {
+      setCreditCheck(null);
+      setCreditFeedback(
+        error?.message || "Erro ao carregar análise de crédito."
+      );
+    } finally {
+      setLoadingCreditCheck(false);
+    }
+  }
+
+  function financeRequestMessage(customer: Customer) {
+    const establishment =
+      customer.trade_name || customer.legal_name || "Não informado";
+    const buyerName = customer.buyer_name || "Não informado";
+    const document = customer.document || "Não informado";
+    const email = customer.email || "Não informado";
+    const phone =
+      customer.whatsapp || customer.phone || "Não informado";
+    const address = formatAddress(customer);
+
+    return `Olá, tudo bem?
+
+Por favor, poderiam analisar a liberação de boleto para o cliente abaixo?
+
+Estabelecimento: ${establishment}
+Nome do cliente/Comprador: ${buyerName}
+Razão social: ${customer.legal_name}
+CNPJ/Documento: ${document}
+E-mail: ${email}
+Celular/WhatsApp: ${phone}
+Endereço: ${address}
+
+Já realizei a consulta indicativa de protestos na CENPROT e, aparentemente, não constam protestos para este CNPJ no momento da consulta.
+
+Limite solicitado: R$ [PREENCHER]
+Prazo de boleto solicitado: [PREENCHER] dias
+
+Quando possível, por gentileza, peço que analisem a possibilidade de liberação do limite e do prazo de boleto informados acima para este cliente.
+
+Obrigado!`;
+  }
+
+  async function openCenprot(customer: Customer) {
+    const document = String(customer.document || "").replace(/\D/g, "");
+
+    if (!document) {
+      alert("Este cliente não possui CNPJ/documento cadastrado.");
+      return;
+    }
+
+    const cenprotWindow = window.open(
+      "https://www.pesquisaprotesto.com.br/consulta",
+      "_blank",
+      "noopener,noreferrer"
+    );
+
+    try {
+      await navigator.clipboard.writeText(document);
+      setCreditFeedback(
+        `CNPJ ${document} copiado. Cole na consulta da CENPROT.`
+      );
+    } catch {
+      setCreditFeedback(
+        `Não consegui copiar automaticamente. CNPJ: ${document}`
+      );
+    }
+
+    if (!cenprotWindow) {
+      setCreditFeedback(
+        `CNPJ ${document}. O navegador bloqueou a nova aba; libere pop-ups e tente novamente.`
+      );
+    }
+  }
+
+  async function saveProtestResult(
+    customer: Customer,
+    result: "NO_PROTEST" | "HAS_PROTEST"
+  ) {
+    setSavingCreditCheck(true);
+    setCreditFeedback("");
+
+    try {
+      const res = await fetch("/api/crm/customers/credit-check", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          customerId: customer.id,
+          action: "set_protest_result",
+          result,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(
+          data?.error || "Erro ao salvar resultado da CENPROT."
+        );
+      }
+
+      setCreditCheck(data.credit_check || null);
+
+      if (result === "NO_PROTEST") {
+        setFinanceMessageCustomer(customer);
+        setFinanceMessage(financeRequestMessage(customer));
+        setFinanceMessageOpen(true);
+        setCreditFeedback(
+          "Sem protesto registrado. A mensagem para o Financeiro foi preparada."
+        );
+      } else {
+        setFinanceMessageCustomer(null);
+        setFinanceMessage("");
+        setFinanceMessageOpen(false);
+        setCreditFeedback(
+          "Protesto registrado. Solicitação de boleto não foi liberada."
+        );
+      }
+    } catch (error: any) {
+      setCreditFeedback(
+        error?.message || "Erro ao salvar resultado da CENPROT."
+      );
+    } finally {
+      setSavingCreditCheck(false);
+    }
+  }
+
+  function openFinanceMessage(customer: Customer) {
+    setFinanceMessageCustomer(customer);
+    setFinanceMessage(financeRequestMessage(customer));
+    setFinanceMessageOpen(true);
+  }
+
+  async function copyFinanceMessage() {
+    try {
+      await navigator.clipboard.writeText(financeMessage);
+      setCreditFeedback(
+        "Mensagem copiada. Depois de enviar ao Financeiro, confirme em “Marcar como solicitado”."
+      );
+    } catch {
+      alert("Não foi possível copiar automaticamente. Selecione o texto e copie manualmente.");
+    }
+  }
+
+  async function markBoletoRequested(customer: Customer) {
+    setSavingCreditCheck(true);
+
+    try {
+      const res = await fetch("/api/crm/customers/credit-check", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          customerId: customer.id,
+          action: "mark_boleto_requested",
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(
+          data?.error || "Erro ao registrar solicitação de boleto."
+        );
+      }
+
+      setCreditCheck(data.credit_check || null);
+      setFinanceMessageOpen(false);
+      setFinanceMessageCustomer(null);
+      setCreditFeedback(
+        "Boleto marcado como solicitado ao Financeiro."
+      );
+    } catch (error: any) {
+      setCreditFeedback(
+        error?.message || "Erro ao registrar solicitação de boleto."
+      );
+    } finally {
+      setSavingCreditCheck(false);
+    }
+  }
+
+  function formatCreditDate(value?: string | null) {
+    if (!value) return "—";
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) return "—";
+
+    return date.toLocaleString("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
   function openCustomer(customer: Customer) {
     setSelected(customer);
+    setCreditCheck(null);
+    setCreditFeedback("");
+    setFinanceMessageOpen(false);
     loadCustomerActivities(customer.id);
+    void loadCustomerCreditCheck(customer.id);
   }
 
   function openNextAction(customer: Customer) {
@@ -1493,6 +1740,41 @@ export default function CustomersPage() {
             }}
           >
             Próxima ação
+          </button>
+
+          <button
+            type="button"
+            className="col-span-2 min-h-[36px] rounded-xl border border-blue-200 bg-blue-50 px-2 text-[11px] font-black text-blue-700 hover:bg-blue-100"
+            onClick={(e) => {
+              e.stopPropagation();
+              void openCenprot(customer);
+            }}
+          >
+            🛡️ Consultar CENPROT + copiar CNPJ
+          </button>
+
+          <button
+            type="button"
+            disabled={savingCreditCheck}
+            className="min-h-[36px] rounded-xl border border-emerald-200 bg-emerald-50 px-2 text-[10px] font-black text-emerald-700 disabled:opacity-50"
+            onClick={(e) => {
+              e.stopPropagation();
+              void saveProtestResult(customer, "NO_PROTEST");
+            }}
+          >
+            ✅ Não tem protesto
+          </button>
+
+          <button
+            type="button"
+            disabled={savingCreditCheck}
+            className="min-h-[36px] rounded-xl border border-red-200 bg-red-50 px-2 text-[10px] font-black text-red-700 disabled:opacity-50"
+            onClick={(e) => {
+              e.stopPropagation();
+              void saveProtestResult(customer, "HAS_PROTEST");
+            }}
+          >
+            ⚠️ Tem protesto
           </button>
 
           <button
@@ -2442,6 +2724,134 @@ export default function CustomersPage() {
             </div>
           </div>
 
+          <section className="mt-4 rounded-2xl border border-blue-200 bg-blue-50/70 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <small className="block text-[10px] font-black uppercase tracking-[0.08em] text-blue-600">
+                  Análise de crédito
+                </small>
+                <strong className="mt-1 block text-[14px] font-black text-slate-950">
+                  🛡️ CENPROT + solicitação de boleto
+                </strong>
+              </div>
+
+              {creditCheck?.protest_status === "NO_PROTEST" ? (
+                <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[9px] font-black text-emerald-700">
+                  ✅ SEM PROTESTO
+                </span>
+              ) : creditCheck?.protest_status === "HAS_PROTEST" ? (
+                <span className="rounded-full bg-red-100 px-2.5 py-1 text-[9px] font-black text-red-700">
+                  ⚠️ TEM PROTESTO
+                </span>
+              ) : (
+                <span className="rounded-full bg-slate-200 px-2.5 py-1 text-[9px] font-black text-slate-600">
+                  NÃO CONSULTADO
+                </span>
+              )}
+            </div>
+
+            <p className="mt-2 text-[11px] font-semibold leading-5 text-slate-600">
+              O Zentra abre a consulta oficial e copia o CNPJ. O resultado
+              continua sendo informado manualmente por você.
+            </p>
+
+            <button
+              type="button"
+              className="mt-3 min-h-[40px] w-full rounded-xl bg-blue-700 px-3 text-[11px] font-black text-white hover:bg-blue-800"
+              onClick={() => void openCenprot(selected)}
+            >
+              🔎 Abrir CENPROT + copiar CNPJ
+            </button>
+
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={savingCreditCheck}
+                className="min-h-[40px] rounded-xl border border-emerald-200 bg-white px-2 text-[10px] font-black text-emerald-700 disabled:opacity-50"
+                onClick={() =>
+                  void saveProtestResult(selected, "NO_PROTEST")
+                }
+              >
+                ✅ Não tem protesto
+              </button>
+
+              <button
+                type="button"
+                disabled={savingCreditCheck}
+                className="min-h-[40px] rounded-xl border border-red-200 bg-white px-2 text-[10px] font-black text-red-700 disabled:opacity-50"
+                onClick={() =>
+                  void saveProtestResult(selected, "HAS_PROTEST")
+                }
+              >
+                ⚠️ Tem protesto
+              </button>
+            </div>
+
+            {loadingCreditCheck ? (
+              <p className="mt-3 text-[10px] font-bold text-slate-500">
+                Carregando análise...
+              </p>
+            ) : creditCheck?.protest_checked_at ? (
+              <p className="mt-3 text-[10px] font-bold text-slate-500">
+                Última consulta registrada:{" "}
+                {formatCreditDate(creditCheck.protest_checked_at)}
+              </p>
+            ) : null}
+
+            {creditCheck?.protest_status === "NO_PROTEST" && (
+              <div className="mt-3 rounded-xl border border-emerald-200 bg-white p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <small className="block text-[9px] font-black uppercase text-slate-400">
+                      Boleto
+                    </small>
+                    <strong
+                      className={`text-[11px] font-black ${
+                        creditCheck.boleto_requested
+                          ? "text-emerald-700"
+                          : "text-amber-700"
+                      }`}
+                    >
+                      {creditCheck.boleto_requested
+                        ? "✅ Solicitado ao Financeiro"
+                        : "⏳ Ainda não solicitado"}
+                    </strong>
+                  </div>
+                </div>
+
+                {creditCheck.boleto_requested_at && (
+                  <p className="mt-1 text-[9px] font-bold text-slate-500">
+                    Registrado em{" "}
+                    {formatCreditDate(
+                      creditCheck.boleto_requested_at
+                    )}
+                  </p>
+                )}
+
+                <button
+                  type="button"
+                  className="mt-2 min-h-[36px] w-full rounded-xl border border-emerald-200 bg-emerald-50 px-2 text-[10px] font-black text-emerald-800"
+                  onClick={() => openFinanceMessage(selected)}
+                >
+                  ✉️ Gerar mensagem para o Financeiro
+                </button>
+              </div>
+            )}
+
+            {creditCheck?.protest_status === "HAS_PROTEST" && (
+              <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-[10px] font-bold leading-4 text-red-700">
+                Solicitação automática de boleto bloqueada. A análise deve
+                seguir manualmente com Financeiro/Gestão.
+              </div>
+            )}
+
+            {creditFeedback && (
+              <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-[10px] font-bold leading-4 text-slate-600">
+                {creditFeedback}
+              </div>
+            )}
+          </section>
+
           {selected.commercial_notes && (
             <div className="drawer-notes">
               <small>Observações</small>
@@ -2562,6 +2972,81 @@ export default function CustomersPage() {
             </button>
           </div>
         </aside>
+      )}
+
+      {financeMessageOpen && financeMessageCustomer && (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/60 p-4"
+          onClick={() => {
+            setFinanceMessageOpen(false);
+            setFinanceMessageCustomer(null);
+          }}
+        >
+          <section
+            className="w-full max-w-[650px] rounded-[24px] bg-white p-5 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-[0.1em] text-emerald-600">
+                  Solicitação de boleto
+                </span>
+                <h2 className="mt-1 text-[20px] font-black text-slate-950">
+                  Mensagem para o Financeiro
+                </h2>
+                <p className="mt-1 text-[11px] font-semibold text-slate-500">
+                  O texto usa os dados já cadastrados do cliente e registra que
+                  a consulta indicativa na CENPROT aparentemente não apresentou
+                  protestos.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="grid h-9 w-9 place-items-center rounded-full bg-slate-100 text-lg font-black text-slate-600"
+                onClick={() => {
+            setFinanceMessageOpen(false);
+            setFinanceMessageCustomer(null);
+          }}
+              >
+                ×
+              </button>
+            </div>
+
+            <textarea
+              value={financeMessage}
+              onChange={(event) => setFinanceMessage(event.target.value)}
+              rows={14}
+              className="mt-4 w-full resize-y rounded-2xl border border-slate-200 bg-slate-50 p-4 text-[12px] font-semibold leading-5 text-slate-700 outline-none focus:border-emerald-500"
+            />
+
+            <div className="mt-4 grid gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                className="min-h-[44px] rounded-xl border border-slate-200 bg-white px-3 text-[11px] font-black text-slate-700"
+                onClick={() => void copyFinanceMessage()}
+              >
+                📋 Copiar mensagem
+              </button>
+
+              <button
+                type="button"
+                disabled={savingCreditCheck}
+                className="min-h-[44px] rounded-xl bg-emerald-600 px-3 text-[11px] font-black text-white disabled:opacity-50"
+                onClick={() => void markBoletoRequested(financeMessageCustomer)}
+              >
+                {savingCreditCheck
+                  ? "Salvando..."
+                  : "✅ Marcar como solicitado"}
+              </button>
+            </div>
+
+            <p className="mt-3 text-[9px] font-bold leading-4 text-slate-400">
+              Para manter o histórico correto, use “Marcar como solicitado”
+              depois de encaminhar a mensagem ao Financeiro.
+            </p>
+          </section>
+        </div>
       )}
 
       {nextActionCustomer && (
