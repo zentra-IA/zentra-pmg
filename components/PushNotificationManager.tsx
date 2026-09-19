@@ -45,6 +45,13 @@ export default function PushNotificationManager({ portalToken }: Props) {
   const [supported, setSupported] = useState(false);
   const [checking, setChecking] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [pushEndpoint, setPushEndpoint] = useState("");
+  const [preferences, setPreferences] = useState({
+    promotions_enabled: true,
+    deliveries_enabled: false,
+    finance_enabled: false,
+  });
+  const [savingPreference, setSavingPreference] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
   const [isStandalone, setIsStandalone] = useState(false);
@@ -87,6 +94,24 @@ export default function PushNotificationManager({ portalToken }: Props) {
         setEnabled(
           Boolean(subscription) && Notification.permission === "granted"
         );
+
+        if (subscription && portalToken) {
+          setPushEndpoint(subscription.endpoint);
+
+          const prefResponse = await fetch(
+            `/api/push/preferences?portalToken=${encodeURIComponent(
+              portalToken
+            )}&endpoint=${encodeURIComponent(subscription.endpoint)}`,
+            { cache: "no-store" }
+          );
+
+          if (prefResponse.ok) {
+            const prefData = await prefResponse.json();
+            if (prefData?.preferences) {
+              setPreferences(prefData.preferences);
+            }
+          }
+        }
       } catch (error) {
         console.error("Erro ao registrar Service Worker:", error);
       } finally {
@@ -204,6 +229,27 @@ export default function PushNotificationManager({ portalToken }: Props) {
       }
 
       setEnabled(true);
+      setPushEndpoint(subscription.endpoint);
+
+      const prefResponse = await fetch("/api/push/preferences", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          portalToken,
+          endpoint: subscription.endpoint,
+          promotions_enabled: preferences.promotions_enabled,
+          deliveries_enabled: preferences.deliveries_enabled,
+          finance_enabled: preferences.finance_enabled,
+        }),
+      });
+
+      if (prefResponse.ok) {
+        const prefData = await prefResponse.json();
+        if (prefData?.preferences) {
+          setPreferences(prefData.preferences);
+        }
+      }
+
       alert("Notificações ativadas com sucesso.");
     } catch (error) {
       alert(
@@ -213,6 +259,50 @@ export default function PushNotificationManager({ portalToken }: Props) {
       );
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function updatePreference(
+    key: "promotions_enabled" | "deliveries_enabled" | "finance_enabled",
+    value: boolean
+  ) {
+    if (!portalToken || !pushEndpoint) return;
+
+    const next = {
+      ...preferences,
+      [key]: value,
+    };
+
+    setSavingPreference(true);
+
+    try {
+      const response = await fetch("/api/push/preferences", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          portalToken,
+          endpoint: pushEndpoint,
+          ...next,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error || "Não foi possível atualizar a preferência."
+        );
+      }
+
+      setPreferences(data.preferences || next);
+    } catch (error) {
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Erro ao atualizar notificações."
+      );
+    } finally {
+      setSavingPreference(false);
     }
   }
 
@@ -245,13 +335,50 @@ export default function PushNotificationManager({ portalToken }: Props) {
 
   if (enabled) {
     return (
-      <div className="fixed bottom-5 left-5 z-[125] flex flex-col items-start gap-2 max-[600px]:bottom-[max(12px,env(safe-area-inset-bottom))] max-[600px]:left-3">
-        <div
-          title="Este aparelho está recebendo notificações da PMG"
-          className="flex items-center gap-2 rounded-xl border border-green-200 bg-white px-3 py-2 text-xs font-black text-green-800 shadow-lg"
-        >
+      <div className="fixed bottom-5 left-5 z-[125] w-[min(92vw,330px)] rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl max-[600px]:bottom-[max(12px,env(safe-area-inset-bottom))] max-[600px]:left-3">
+        <div className="mb-2 flex items-center gap-2 text-xs font-black text-slate-800">
           <span aria-hidden="true">✅</span>
-          <span>Notificações ativadas</span>
+          <span>Notificações deste aparelho</span>
+        </div>
+
+        <div className="grid gap-2">
+          <button
+            type="button"
+            disabled={savingPreference}
+            onClick={() =>
+              void updatePreference(
+                "promotions_enabled",
+                !preferences.promotions_enabled
+              )
+            }
+            className={`flex min-h-[38px] items-center justify-between rounded-xl border px-3 text-xs font-black ${
+              preferences.promotions_enabled
+                ? "border-violet-200 bg-violet-50 text-violet-800"
+                : "border-slate-200 bg-slate-50 text-slate-500"
+            }`}
+          >
+            <span>🎁 Promoções e ofertas</span>
+            <span>{preferences.promotions_enabled ? "ATIVO" : "INATIVO"}</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={savingPreference}
+            onClick={() =>
+              void updatePreference(
+                "deliveries_enabled",
+                !preferences.deliveries_enabled
+              )
+            }
+            className={`flex min-h-[42px] items-center justify-between rounded-xl border px-3 text-xs font-black ${
+              preferences.deliveries_enabled
+                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                : "border-slate-200 bg-slate-50 text-slate-500"
+            }`}
+          >
+            <span>🚚 Alertas de entrega</span>
+            <span>{preferences.deliveries_enabled ? "ATIVO" : "INATIVO"}</span>
+          </button>
         </div>
       </div>
     );

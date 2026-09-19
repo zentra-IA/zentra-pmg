@@ -27,6 +27,14 @@ export type PushPayload = {
   badge?: string;
   image?: string | null;
   tag?: string;
+  type?: "PROMOTION" | "DELIVERY" | "FINANCE" | "SELLER_DELIVERY_ALERT";
+  requireInteraction?: boolean;
+  renotify?: boolean;
+  vibrate?: number[];
+  actions?: Array<{
+    action: string;
+    title: string;
+  }>;
 };
 
 export async function sendWebPush(
@@ -45,6 +53,11 @@ export async function sendWebPush(
       badge: payload.badge || "/logo-pmg.png",
       image: payload.image || undefined,
       tag: payload.tag || "pmg-promotion",
+      type: payload.type || "PROMOTION",
+      requireInteraction: Boolean(payload.requireInteraction),
+      renotify: Boolean(payload.renotify),
+      vibrate: payload.vibrate || undefined,
+      actions: payload.actions || undefined,
     }),
     {
       TTL: 60 * 60,

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import SellerDeliveryPushManager from "@/components/SellerDeliveryPushManager";
 
 type OrderItem = {
   code?: string;
@@ -56,18 +57,46 @@ const money = (value: any) =>
     currency: "BRL",
   });
 
-function dateInput(value?: string | Date | null) {
-  if (!value) return "";
+function calendarDateParts(value?: string | Date | null) {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(value.trim());
+
+    if (iso) {
+      return {
+        year: iso[1],
+        month: iso[2],
+        day: iso[3],
+      };
+    }
+  }
+
   const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toISOString().slice(0, 10);
+
+  if (Number.isNaN(d.getTime())) return null;
+
+  return {
+    year: String(d.getUTCFullYear()),
+    month: String(d.getUTCMonth() + 1).padStart(2, "0"),
+    day: String(d.getUTCDate()).padStart(2, "0"),
+  };
+}
+
+function dateInput(value?: string | Date | null) {
+  const parts = calendarDateParts(value);
+
+  if (!parts) return "";
+
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
 function formatDate(value?: string | Date | null) {
-  if (!value) return "-";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleDateString("pt-BR");
+  const parts = calendarDateParts(value);
+
+  if (!parts) return "-";
+
+  return `${parts.day}/${parts.month}/${parts.year}`;
 }
 
 function formatExtractedDeliveryDate(value?: string | null) {
@@ -261,8 +290,13 @@ export default function OrdersPage() {
   const [goalValue, setGoalValue] = useState("");
   const [savingGoal, setSavingGoal] = useState(false);
   const [deliverySummary, setDeliverySummary] = useState<any>(null);
+  const [deliveryTracking, setDeliveryTracking] = useState<any[]>([]);
+  const [deliveryTrackingLoading, setDeliveryTrackingLoading] = useState(false);
   const [loadingOcr, setLoadingOcr] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deliveryAlertsEnabled, setDeliveryAlertsEnabled] = useState(true);
+  const [deliveryStartTime, setDeliveryStartTime] = useState("08:00");
+  const [deliveryEndTime, setDeliveryEndTime] = useState("12:00");
   const [comparing, setComparing] = useState(false);
   const [loadingOrders, setLoadingOrders] = useState(false);
   const [editingOrder, setEditingOrder] = useState<any | null>(null);
@@ -479,12 +513,42 @@ export default function OrdersPage() {
     }
   }
 
+  async function loadDeliveryTracking() {
+    setDeliveryTrackingLoading(true);
+
+    try {
+      const res = await fetch("/api/crm/delivery-tracking", {
+        cache: "no-store",
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok) {
+        setDeliveryTracking(
+          Array.isArray(data?.deliveries) ? data.deliveries : []
+        );
+      }
+    } finally {
+      setDeliveryTrackingLoading(false);
+    }
+  }
+
   async function loadDeliverySummary() {
     const today = new Date().toISOString().slice(0, 10);
     const res = await fetch(`/api/crm/delivery-summary?date=${today}`, { cache: "no-store" });
     const data = await res.json();
     if (!data.error) setDeliverySummary(data);
   }
+
+  useEffect(() => {
+    void loadDeliveryTracking();
+
+    const timer = window.setInterval(() => {
+      void loadDeliveryTracking();
+    }, 15000);
+
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     loadOrders();
@@ -582,6 +646,35 @@ export default function OrdersPage() {
       alert(data.error || "Erro ao salvar pedido.");
       setSaving(false);
       return;
+    }
+
+    if (deliveryAlertsEnabled && data?.order?.id) {
+      const trackingResponse = await fetch("/api/crm/delivery-tracking", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderId: data.order.id,
+          startTime: deliveryStartTime,
+          endTime: deliveryEndTime,
+        }),
+      });
+
+      const trackingData = await trackingResponse.json().catch(() => ({}));
+
+      if (!trackingResponse.ok) {
+        setSaving(false);
+        alert(
+          `Pedido salvo, mas o alerta de entrega não foi configurado: ${
+            trackingData?.error || "erro desconhecido"
+          }`
+        );
+        await Promise.all([
+          loadOrders(),
+          loadPerformance(),
+          loadDeliverySummary(),
+        ]);
+        return;
+      }
     }
 
     setSaving(false);
@@ -733,8 +826,145 @@ export default function OrdersPage() {
     return options;
   }, []);
 
+  function deliveryPhone(item: any) {
+    return String(item?.whatsapp || item?.phone || "").replace(/\D/g, "");
+  }
+
+  function callCustomer(item: any) {
+    const phone = deliveryPhone(item);
+    if (!phone) {
+      alert("Cliente sem telefone cadastrado.");
+      return;
+    }
+
+    window.location.href = `tel:${phone}`;
+  }
+
+  function whatsappCustomer(item: any) {
+    const phone = deliveryPhone(item);
+    if (!phone) {
+      alert("Cliente sem WhatsApp/telefone cadastrado.");
+      return;
+    }
+
+    const text = encodeURIComponent(
+      "Olá, tudo bem? Sua entrega está prevista para hoje e ainda precisamos confirmar se você está no estabelecimento e preparado para receber o pedido."
+    );
+
+    window.open(`https://wa.me/${phone}?text=${text}`, "_blank", "noopener,noreferrer");
+  }
+
+
   return (
     <main className="min-h-screen bg-[#F7F8FA] p-4 md:p-6">
+      <section className="mx-auto mb-4 max-w-[1500px] rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <span className="text-[10px] font-black uppercase tracking-[0.1em] text-emerald-600">
+              Operação de entrega
+            </span>
+            <h2 className="mt-1 text-lg font-black text-slate-950">
+              🚚 Acompanhamento das entregas
+            </h2>
+            <p className="mt-1 text-xs font-semibold text-slate-500">
+              Alertas do cliente a cada 3 minutos. Após 3 tentativas sem resposta,
+              o vendedor é avisado; após 5, o alerta vira crítico.
+            </p>
+          </div>
+
+          <SellerDeliveryPushManager />
+        </div>
+
+        <div className="mt-4 grid gap-3">
+          {deliveryTrackingLoading && !deliveryTracking.length ? (
+            <div className="rounded-xl bg-slate-50 p-3 text-xs font-bold text-slate-500">
+              Carregando entregas...
+            </div>
+          ) : !deliveryTracking.length ? (
+            <div className="rounded-xl bg-slate-50 p-3 text-xs font-bold text-slate-500">
+              Nenhuma entrega acompanhada nas próximas horas.
+            </div>
+          ) : (
+            deliveryTracking.map((item) => {
+              const status = String(item?.status || "PENDING");
+              const attempts = Number(item?.alert_count || 0);
+              const urgent = status === "NOT_READY" || (status === "PENDING" && attempts >= 5);
+              const warning = status === "PENDING" && attempts >= 3 && attempts < 5;
+
+              return (
+                <div
+                  key={item.id}
+                  className={`rounded-2xl border p-3 ${
+                    urgent
+                      ? "border-red-200 bg-red-50"
+                      : warning
+                        ? "border-amber-200 bg-amber-50"
+                        : status === "READY"
+                          ? "border-emerald-200 bg-emerald-50"
+                          : "border-slate-200 bg-slate-50"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <strong className="block text-sm font-black text-slate-950">
+                        {item.trade_name || item.customer_name || item.legal_name || "Cliente"}
+                      </strong>
+                      <span className="text-[10px] font-bold text-slate-500">
+                        Pedido {item.order_number || "—"} · Tentativas: {attempts}
+                      </span>
+                    </div>
+
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-[9px] font-black ${
+                        status === "READY"
+                          ? "bg-emerald-100 text-emerald-700"
+                          : status === "NOT_READY"
+                            ? "bg-red-100 text-red-700"
+                            : urgent
+                              ? "bg-red-100 text-red-700"
+                              : warning
+                                ? "bg-amber-100 text-amber-700"
+                                : "bg-slate-200 text-slate-600"
+                      }`}
+                    >
+                      {status === "READY"
+                        ? "✅ PRONTO"
+                        : status === "NOT_READY"
+                          ? "🚨 NÃO PODE RECEBER"
+                          : urgent
+                            ? "🚨 AÇÃO NECESSÁRIA"
+                            : warning
+                              ? "⚠️ SEM RESPOSTA"
+                              : "⏳ AGUARDANDO"}
+                    </span>
+                  </div>
+
+                  {(status === "NOT_READY" || status === "PENDING") && (
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => callCustomer(item)}
+                        className="min-h-[38px] rounded-xl bg-slate-900 px-3 text-[11px] font-black text-white"
+                      >
+                        📞 Ligar
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => whatsappCustomer(item)}
+                        className="min-h-[38px] rounded-xl bg-emerald-600 px-3 text-[11px] font-black text-white"
+                      >
+                        💬 WhatsApp
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </section>
+
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
         <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm md:p-6">
           <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
@@ -1423,6 +1653,62 @@ export default function OrdersPage() {
                     )}
                   </div>
                 )}
+
+                <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <strong className="block text-sm font-black text-slate-950">
+                        🚚 Alertas de entrega
+                      </strong>
+                      <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">
+                        O primeiro alerta será enviado 30 minutos antes do início
+                        e repetido a cada 3 minutos até o cliente responder.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDeliveryAlertsEnabled((current) => !current)
+                      }
+                      className={`rounded-full px-3 py-1 text-[10px] font-black ${
+                        deliveryAlertsEnabled
+                          ? "bg-emerald-600 text-white"
+                          : "bg-slate-200 text-slate-600"
+                      }`}
+                    >
+                      {deliveryAlertsEnabled ? "ATIVO" : "INATIVO"}
+                    </button>
+                  </div>
+
+                  {deliveryAlertsEnabled && (
+                    <div className="mt-4 grid grid-cols-2 gap-3">
+                      <label className="text-xs font-black text-slate-700">
+                        Início
+                        <input
+                          type="time"
+                          value={deliveryStartTime}
+                          onChange={(event) =>
+                            setDeliveryStartTime(event.target.value)
+                          }
+                          className="mt-1 min-h-[42px] w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-black text-slate-900 outline-none focus:border-emerald-400"
+                        />
+                      </label>
+
+                      <label className="text-xs font-black text-slate-700">
+                        Fim
+                        <input
+                          type="time"
+                          value={deliveryEndTime}
+                          onChange={(event) =>
+                            setDeliveryEndTime(event.target.value)
+                          }
+                          className="mt-1 min-h-[42px] w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-black text-slate-900 outline-none focus:border-emerald-400"
+                        />
+                      </label>
+                    </div>
+                  )}
+                </div>
 
                 <button
                   onClick={saveOrder}
@@ -2232,6 +2518,7 @@ function Input({
   onChange: (value: string) => void;
   type?: string;
 }) {
+
   return (
     <label className="grid gap-1">
       <span className="text-xs font-black uppercase text-slate-400">{label}</span>

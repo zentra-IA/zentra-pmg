@@ -31,9 +31,14 @@ self.addEventListener("push", (event) => {
     image: data.image || undefined,
 
     tag: data.tag || "pmg-promotion",
-    renotify: true,
+    renotify: Boolean(data.renotify ?? true),
+    requireInteraction: Boolean(data.requireInteraction),
+    vibrate: Array.isArray(data.vibrate) ? data.vibrate : undefined,
+    silent: false,
+    actions: Array.isArray(data.actions) ? data.actions : undefined,
     data: {
       url: data.url || "/",
+      type: data.type || "PROMOTION",
     },
   };
 
@@ -84,8 +89,18 @@ async function trackNotificationClick(targetUrl) {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
 
-  const targetUrl =
-    event.notification?.data?.url || "/";
+  const notificationData = event.notification?.data || {};
+  const targetUrl = notificationData.url || "/";
+
+  if (event.action === "call" && notificationData.callUrl) {
+    event.waitUntil(self.clients.openWindow(notificationData.callUrl));
+    return;
+  }
+
+  if (event.action === "whatsapp" && notificationData.whatsappUrl) {
+    event.waitUntil(self.clients.openWindow(notificationData.whatsappUrl));
+    return;
+  }
 
   event.waitUntil(
     (async () => {

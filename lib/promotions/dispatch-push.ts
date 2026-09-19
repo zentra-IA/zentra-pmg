@@ -104,12 +104,37 @@ export async function dispatchPromotionPush({
       })
     : [];
 
+  const preferenceRows = subscriptions.length
+    ? await prisma.$queryRawUnsafe<
+        Array<{
+          subscription_id: string;
+          promotions_enabled: boolean;
+        }>
+      >(
+        `SELECT subscription_id, promotions_enabled
+         FROM push_preferences
+         WHERE subscription_id = ANY($1::uuid[])`,
+        subscriptions.map((item) => item.id)
+      )
+    : [];
+
+  const promotionPreference = new Map(
+    preferenceRows.map((item) => [
+      item.subscription_id,
+      item.promotions_enabled,
+    ])
+  );
+
+  const promotionSubscriptions = subscriptions.filter(
+    (item) => promotionPreference.get(item.id) !== false
+  );
+
   const subscriptionsByCustomer = new Map<
     string,
     typeof subscriptions
   >();
 
-  for (const subscription of subscriptions) {
+  for (const subscription of promotionSubscriptions) {
     const current =
       subscriptionsByCustomer.get(subscription.customer_id) || [];
     current.push(subscription);

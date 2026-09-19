@@ -91,6 +91,24 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO push_preferences (
+         subscription_id,
+         company_id,
+         customer_id,
+         promotions_enabled,
+         deliveries_enabled,
+         finance_enabled,
+         created_at,
+         updated_at
+       )
+       VALUES ($1::uuid,$2::uuid,$3::uuid,true,false,false,now(),now())
+       ON CONFLICT (subscription_id) DO NOTHING`,
+      subscription.id,
+      access.company_id,
+      access.customer_id
+    );
+
     await prisma.webPromotionAccess.update({
       where: { id: access.id },
       data: {
