@@ -679,8 +679,8 @@ export default function CustomerPortalChat({
         >
           <span className="pc-customer-float-icon">💬</span>
           <span className="pc-customer-float-copy">
-            <b>FALE COM SEU VENDEDOR</b>
-            <small>Pedidos, cotações e dúvidas por aqui</small>
+            <b>💬 FALE COM SEU VENDEDOR</b>
+            <small>Faça pedidos • peça cotações • converse por aqui</small>
           </span>
           <i className="pc-customer-live-dot" aria-hidden="true" />
         </button>
@@ -704,12 +704,27 @@ export default function CustomerPortalChat({
           color: #fff;
           background: linear-gradient(135deg, #15803d, #166534);
           box-shadow:
-            0 20px 50px rgba(21, 128, 61, .36),
-            0 0 0 5px rgba(34,197,94,.10);
+            0 22px 58px rgba(21, 128, 61, .42),
+            0 0 0 5px rgba(34,197,94,.13);
           cursor: pointer;
           font: inherit;
           text-align: left;
-          animation: pcCustomerAttention 2.4s ease-in-out infinite;
+          isolation: isolate;
+          animation:
+            pcCustomerAttention 2.4s ease-in-out infinite,
+            pcCustomerGlow 1.55s ease-in-out infinite;
+        }
+
+        .pc-customer-float::before {
+          content: "";
+          position: absolute;
+          inset: -7px;
+          z-index: -1;
+          border: 2px solid rgba(34,197,94,.42);
+          border-radius: 26px;
+          opacity: .15;
+          pointer-events: none;
+          animation: pcCustomerHalo 1.55s ease-out infinite;
         }
 
         .pc-customer-float-icon {
@@ -730,17 +745,18 @@ export default function CustomerPortalChat({
         }
 
         .pc-customer-float-copy b {
-          font-size: 12px;
+          font-size: 12.5px;
           line-height: 1.15;
           font-weight: 950;
-          letter-spacing: .01em;
+          letter-spacing: .015em;
+          text-shadow: 0 1px 10px rgba(255,255,255,.12);
         }
 
         .pc-customer-float-copy small {
-          opacity: .92;
-          font-size: 9.5px;
-          line-height: 1.2;
-          font-weight: 650;
+          opacity: .98;
+          font-size: 9.8px;
+          line-height: 1.25;
+          font-weight: 760;
         }
 
         .pc-customer-live-dot {
@@ -757,6 +773,34 @@ export default function CustomerPortalChat({
           0%, 82%, 100% { transform: translateY(0); }
           88% { transform: translateY(-3px); }
           94% { transform: translateY(0); }
+        }
+
+        @keyframes pcCustomerGlow {
+          0%, 100% {
+            box-shadow:
+              0 22px 58px rgba(21,128,61,.38),
+              0 0 0 5px rgba(34,197,94,.10);
+          }
+          50% {
+            box-shadow:
+              0 24px 64px rgba(21,128,61,.52),
+              0 0 0 10px rgba(34,197,94,.18);
+          }
+        }
+
+        @keyframes pcCustomerHalo {
+          0% {
+            transform: scale(.98);
+            opacity: .42;
+          }
+          75% {
+            transform: scale(1.055);
+            opacity: 0;
+          }
+          100% {
+            transform: scale(1.055);
+            opacity: 0;
+          }
         }
 
         @keyframes pcCustomerDot {
@@ -1038,12 +1082,13 @@ export default function CustomerPortalChat({
         @media (max-width: 600px) {
           .pc-customer-float {
             right: 12px;
-            bottom: max(12px, env(safe-area-inset-bottom));
-            width: min(340px, calc(100vw - 24px));
-            min-height: 64px;
-            grid-template-columns: 42px minmax(0, 1fr) 9px;
-            border-radius: 18px;
-            padding: 8px 11px 8px 8px;
+            left: auto;
+            bottom: max(14px, env(safe-area-inset-bottom));
+            width: min(330px, calc(100vw - 30px));
+            min-height: 68px;
+            grid-template-columns: 44px minmax(0, 1fr) 9px;
+            border-radius: 20px;
+            padding: 9px 11px 9px 9px;
           }
 
           .pc-customer-float-icon {

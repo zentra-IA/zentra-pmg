@@ -56,6 +56,7 @@ export default function PushNotificationManager({ portalToken }: Props) {
   const [isIOS, setIsIOS] = useState(false);
   const [isStandalone, setIsStandalone] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(false);
 
   const needsIOSInstall = useMemo(
     () => Boolean(portalToken && isIOS && !isStandalone),
@@ -310,7 +311,7 @@ export default function PushNotificationManager({ portalToken }: Props) {
 
   if (needsIOSInstall) {
     return (
-      <div className="fixed inset-x-4 bottom-5 z-50 mx-auto max-w-md rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl">
+      <div className="fixed inset-x-3 top-[max(10px,env(safe-area-inset-top))] z-[118] mx-auto max-w-md rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl">
         <div className="flex items-start gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-green-100 text-xl">
             📲
@@ -335,62 +336,100 @@ export default function PushNotificationManager({ portalToken }: Props) {
 
   if (enabled) {
     return (
-      <div className="fixed bottom-5 left-5 z-[125] w-[min(92vw,330px)] rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl max-[600px]:bottom-[max(12px,env(safe-area-inset-bottom))] max-[600px]:left-3">
-        <div className="mb-2 flex items-center gap-2 text-xs font-black text-slate-800">
-          <span aria-hidden="true">✅</span>
-          <span>Notificações deste aparelho</span>
-        </div>
+      <div className="fixed right-3 top-[max(10px,env(safe-area-inset-top))] z-[118] w-[min(92vw,350px)] rounded-2xl border border-slate-200 bg-white/95 p-2.5 shadow-xl backdrop-blur max-[600px]:left-3 max-[600px]:right-3 max-[600px]:w-auto">
+        <button
+          type="button"
+          onClick={() => setPanelOpen((current) => !current)}
+          className="flex min-h-[42px] w-full items-center justify-between gap-3 rounded-xl px-2 text-left"
+          aria-expanded={panelOpen}
+        >
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-xs font-black text-slate-900">
+              <span aria-hidden="true">🔔</span>
+              <span>Notificações deste aparelho</span>
+            </div>
 
-        <div className="grid gap-2">
-          <button
-            type="button"
-            disabled={savingPreference}
-            onClick={() =>
-              void updatePreference(
-                "promotions_enabled",
-                !preferences.promotions_enabled
-              )
-            }
-            className={`flex min-h-[38px] items-center justify-between rounded-xl border px-3 text-xs font-black ${
-              preferences.promotions_enabled
-                ? "border-violet-200 bg-violet-50 text-violet-800"
-                : "border-slate-200 bg-slate-50 text-slate-500"
-            }`}
-          >
-            <span>🎁 Promoções e ofertas</span>
-            <span>{preferences.promotions_enabled ? "ATIVO" : "INATIVO"}</span>
-          </button>
+            {!panelOpen && (
+              <div className="mt-1 flex flex-wrap gap-1.5 text-[9px] font-black">
+                <span
+                  className={`rounded-full px-2 py-0.5 ${
+                    preferences.promotions_enabled
+                      ? "bg-violet-100 text-violet-700"
+                      : "bg-slate-100 text-slate-400"
+                  }`}
+                >
+                  🎁 Ofertas {preferences.promotions_enabled ? "✓" : "—"}
+                </span>
+                <span
+                  className={`rounded-full px-2 py-0.5 ${
+                    preferences.deliveries_enabled
+                      ? "bg-emerald-100 text-emerald-700"
+                      : "bg-slate-100 text-slate-400"
+                  }`}
+                >
+                  🚚 Entregas {preferences.deliveries_enabled ? "✓" : "—"}
+                </span>
+              </div>
+            )}
+          </div>
 
-          <button
-            type="button"
-            disabled={savingPreference}
-            onClick={() =>
-              void updatePreference(
-                "deliveries_enabled",
-                !preferences.deliveries_enabled
-              )
-            }
-            className={`flex min-h-[42px] items-center justify-between rounded-xl border px-3 text-xs font-black ${
-              preferences.deliveries_enabled
-                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                : "border-slate-200 bg-slate-50 text-slate-500"
-            }`}
-          >
-            <span>🚚 Alertas de entrega</span>
-            <span>{preferences.deliveries_enabled ? "ATIVO" : "INATIVO"}</span>
-          </button>
-        </div>
+          <span className="shrink-0 text-sm font-black text-slate-400">
+            {panelOpen ? "▲" : "▼"}
+          </span>
+        </button>
+
+        {panelOpen && (
+          <div className="mt-2 grid gap-2 border-t border-slate-100 pt-2">
+            <button
+              type="button"
+              disabled={savingPreference}
+              onClick={() =>
+                void updatePreference(
+                  "promotions_enabled",
+                  !preferences.promotions_enabled
+                )
+              }
+              className={`flex min-h-[38px] items-center justify-between rounded-xl border px-3 text-xs font-black ${
+                preferences.promotions_enabled
+                  ? "border-violet-200 bg-violet-50 text-violet-800"
+                  : "border-slate-200 bg-slate-50 text-slate-500"
+              }`}
+            >
+              <span>🎁 Promoções e ofertas</span>
+              <span>{preferences.promotions_enabled ? "ATIVO" : "INATIVO"}</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={savingPreference}
+              onClick={() =>
+                void updatePreference(
+                  "deliveries_enabled",
+                  !preferences.deliveries_enabled
+                )
+              }
+              className={`flex min-h-[42px] items-center justify-between rounded-xl border px-3 text-xs font-black ${
+                preferences.deliveries_enabled
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                  : "border-slate-200 bg-slate-50 text-slate-500"
+              }`}
+            >
+              <span>🚚 Alertas de entrega</span>
+              <span>{preferences.deliveries_enabled ? "ATIVO" : "INATIVO"}</span>
+            </button>
+          </div>
+        )}
       </div>
     );
   }
 
   return (
-    <div className="fixed bottom-5 left-5 z-[125] max-[600px]:bottom-[max(12px,env(safe-area-inset-bottom))] max-[600px]:left-3">
+    <div className="fixed right-3 top-[max(10px,env(safe-area-inset-top))] z-[118] max-[600px]:left-3 max-[600px]:right-3">
       <button
         type="button"
         onClick={enablePush}
         disabled={loading}
-        className="rounded-xl bg-green-600 px-4 py-3 font-semibold text-white shadow-lg disabled:bg-gray-500"
+        className="w-full rounded-xl bg-green-600 px-4 py-3 text-sm font-black text-white shadow-xl disabled:bg-gray-500"
       >
         {loading ? "Ativando..." : "🔔 Ativar notificações"}
       </button>
