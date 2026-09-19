@@ -263,15 +263,14 @@ export default function PushNotificationManager({ portalToken }: Props) {
     }
   }
 
-  async function updatePreference(
-    key: "promotions_enabled" | "deliveries_enabled" | "finance_enabled",
-    value: boolean
+  async function activatePreference(
+    key: "promotions_enabled" | "deliveries_enabled" | "finance_enabled"
   ) {
-    if (!portalToken || !pushEndpoint) return;
+    if (!portalToken || !pushEndpoint || preferences[key]) return;
 
     const next = {
       ...preferences,
-      [key]: value,
+      [key]: true,
     };
 
     setSavingPreference(true);
@@ -291,7 +290,7 @@ export default function PushNotificationManager({ portalToken }: Props) {
 
       if (!response.ok) {
         throw new Error(
-          data?.error || "Não foi possível atualizar a preferência."
+          data?.error || "Não foi possível ativar a notificação."
         );
       }
 
@@ -300,7 +299,7 @@ export default function PushNotificationManager({ portalToken }: Props) {
       alert(
         error instanceof Error
           ? error.message
-          : "Erro ao atualizar notificações."
+          : "Erro ao ativar notificações."
       );
     } finally {
       setSavingPreference(false);
@@ -380,43 +379,43 @@ export default function PushNotificationManager({ portalToken }: Props) {
 
         {panelOpen && (
           <div className="mt-2 grid gap-2 border-t border-slate-100 pt-2">
-            <button
-              type="button"
-              disabled={savingPreference}
-              onClick={() =>
-                void updatePreference(
-                  "promotions_enabled",
-                  !preferences.promotions_enabled
-                )
-              }
-              className={`flex min-h-[38px] items-center justify-between rounded-xl border px-3 text-xs font-black ${
-                preferences.promotions_enabled
-                  ? "border-violet-200 bg-violet-50 text-violet-800"
-                  : "border-slate-200 bg-slate-50 text-slate-500"
-              }`}
-            >
-              <span>🎁 Promoções e ofertas</span>
-              <span>{preferences.promotions_enabled ? "ATIVO" : "INATIVO"}</span>
-            </button>
+            {preferences.promotions_enabled ? (
+              <div className="flex min-h-[42px] items-center justify-between rounded-xl border border-violet-200 bg-violet-50 px-3 text-xs font-black text-violet-800">
+                <span>🎁 Promoções e ofertas</span>
+                <span>ATIVO ✓</span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={savingPreference}
+                onClick={() => void activatePreference("promotions_enabled")}
+                className="flex min-h-[42px] items-center justify-between rounded-xl border border-violet-300 bg-violet-50 px-3 text-xs font-black text-violet-800 disabled:opacity-50"
+              >
+                <span>🎁 Promoções e ofertas</span>
+                <span>ATIVAR</span>
+              </button>
+            )}
 
-            <button
-              type="button"
-              disabled={savingPreference}
-              onClick={() =>
-                void updatePreference(
-                  "deliveries_enabled",
-                  !preferences.deliveries_enabled
-                )
-              }
-              className={`flex min-h-[42px] items-center justify-between rounded-xl border px-3 text-xs font-black ${
-                preferences.deliveries_enabled
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                  : "border-slate-200 bg-slate-50 text-slate-500"
-              }`}
-            >
-              <span>🚚 Alertas de entrega</span>
-              <span>{preferences.deliveries_enabled ? "ATIVO" : "INATIVO"}</span>
-            </button>
+            {preferences.deliveries_enabled ? (
+              <div className="flex min-h-[42px] items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 px-3 text-xs font-black text-emerald-800">
+                <span>🚚 Alertas de entrega</span>
+                <span>ATIVO ✓</span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={savingPreference}
+                onClick={() => void activatePreference("deliveries_enabled")}
+                className="flex min-h-[42px] items-center justify-between rounded-xl border border-emerald-300 bg-emerald-50 px-3 text-xs font-black text-emerald-800 disabled:opacity-50"
+              >
+                <span>🚚 Alertas de entrega</span>
+                <span>ATIVAR</span>
+              </button>
+            )}
+
+            <p className="px-1 text-[10px] font-semibold leading-4 text-slate-400">
+              Depois de ativado, o portal mantém este canal ativo neste aparelho.
+            </p>
           </div>
         )}
       </div>

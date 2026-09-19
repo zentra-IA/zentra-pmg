@@ -91,6 +91,7 @@ self.addEventListener("notificationclick", (event) => {
 
   const notificationData = event.notification?.data || {};
   const targetUrl = notificationData.url || "/";
+  const notificationType = notificationData.type || "PROMOTION";
 
   if (event.action === "call" && notificationData.callUrl) {
     event.waitUntil(self.clients.openWindow(notificationData.callUrl));
@@ -106,20 +107,48 @@ self.addEventListener("notificationclick", (event) => {
     (async () => {
       await trackNotificationClick(targetUrl);
 
-      const clientList =
-        await self.clients.matchAll({
-          type: "window",
-          includeUncontrolled: true,
-        });
+      const absoluteTargetUrl = new URL(
+        targetUrl,
+        self.location.origin
+      ).toString();
 
+      const clientList = await self.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+
+      // Entrega exige deep-link. No iPhone/PWA, navegar uma janela já aberta
+      // pode voltar para a raiz do app. Primeiro tentamos focar apenas uma
+      // janela que já esteja exatamente na entrega; caso contrário, abrimos
+      // explicitamente o URL completo da entrega.
+      if (notificationType === "DELIVERY") {
+        for (const client of clientList) {
+          try {
+            if (client.url === absoluteTargetUrl && "focus" in client) {
+              return client.focus();
+            }
+          } catch {
+            // Continua para openWindow.
+          }
+        }
+
+        const opened = await self.clients.openWindow(absoluteTargetUrl);
+        if (opened) return opened;
+      }
+
+      // Promoções e fallback geral podem reutilizar a janela existente.
       for (const client of clientList) {
-        if ("focus" in client) {
-          await client.navigate(targetUrl);
-          return client.focus();
+        if ("navigate" in client && "focus" in client) {
+          try {
+            await client.navigate(absoluteTargetUrl);
+            return client.focus();
+          } catch {
+            // Se o navegador não permitir navigate(), abre uma nova janela.
+          }
         }
       }
 
-      return self.clients.openWindow(targetUrl);
+      return self.clients.openWindow(absoluteTargetUrl);
     })()
   );
 });
