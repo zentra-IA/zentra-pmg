@@ -151,9 +151,42 @@ function formatMoney(value?: number | null) {
   });
 }
 
+/**
+ * Normaliza telefone brasileiro para o padrão atual do celular.
+ *
+ * Exemplos:
+ * 1178603269   -> 11978603269
+ * 1132456789   -> 1132456789  (fixo, não altera)
+ * 11987654321  -> 11987654321 (já correto)
+ * 551178603269 -> 11978603269
+ *
+ * Regra de segurança:
+ * - só acrescenta o 9 quando há DDD + 8 dígitos e o assinante
+ *   começa por 6, 7, 8 ou 9;
+ * - números fixos (normalmente iniciados por 2, 3, 4 ou 5)
+ *   permanecem intactos.
+ */
+function normalizeBrazilPhone(value?: string | null) {
+  let digits = String(value || "").replace(/\D/g, "");
+
+  if (!digits) return "";
+
+  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
+    digits = digits.slice(2);
+  }
+
+  if (
+    digits.length === 10 &&
+    ["6", "7", "8", "9"].includes(digits.charAt(2))
+  ) {
+    digits = `${digits.slice(0, 2)}9${digits.slice(2)}`;
+  }
+
+  return digits;
+}
+
 function formatPhone(value?: string | null) {
-  const digits = String(value || "").replace(/\D/g, "");
-  const local = digits.startsWith("55") ? digits.slice(2) : digits;
+  const local = normalizeBrazilPhone(value);
 
   if (local.length === 11) {
     return `(${local.slice(0, 2)}) ${local.slice(2, 7)}-${local.slice(7)}`;
@@ -167,9 +200,10 @@ function formatPhone(value?: string | null) {
 }
 
 function toTelUri(value?: string | null) {
-  const digits = String(value || "").replace(/\D/g, "");
-  if (!digits) return null;
-  return `tel:+${digits.startsWith("55") ? digits : `55${digits}`}`;
+  const local = normalizeBrazilPhone(value);
+  if (!local) return null;
+
+  return `tel:+55${local}`;
 }
 
 export default function DialerCampaignPage() {
@@ -468,6 +502,8 @@ export default function DialerCampaignPage() {
           body: JSON.stringify({
             campaignId,
             ...manualDraft,
+            phone1: normalizeBrazilPhone(manualDraft.phone1),
+            whatsapp: normalizeBrazilPhone(manualDraft.whatsapp),
           }),
         }
       );
