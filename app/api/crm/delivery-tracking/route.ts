@@ -166,6 +166,89 @@ export async function POST(req: NextRequest) {
   }
 }
 
+
+export async function PATCH(req: NextRequest) {
+  try {
+    const access = await requireCompanyAccess(req);
+    const role = String(access.userRole || "").toUpperCase();
+    const body = await req.json().catch(() => ({}));
+
+    const trackingId = String(body?.trackingId || "").trim();
+    const status = String(body?.status || "").trim().toUpperCase();
+
+    if (!trackingId || !["READY", "NOT_READY"].includes(status)) {
+      return NextResponse.json(
+        { error: "Entrega ou status inválido." },
+        { status: 400 }
+      );
+    }
+
+    const rows = await prisma.$queryRawUnsafe<any[]>(
+      `UPDATE order_delivery_tracking
+       SET
+         status = $4,
+         next_alert_at = NULL,
+         seller_alerted_at = CASE
+           WHEN $4 = 'NOT_READY' THEN COALESCE(seller_alerted_at, now())
+           ELSE seller_alerted_at
+         END,
+         updated_at = now()
+       WHERE id = $1::uuid
+         AND company_id = $2::uuid
+         AND ($3 <> 'VENDEDOR' OR seller_id = $5::uuid)
+       RETURNING *`,
+      trackingId,
+      access.companyId,
+      role,
+      status,
+      access.userId
+    );
+
+    const tracking = rows[0];
+
+    if (!tracking) {
+      return NextResponse.json(
+        { error: "Entrega não encontrada ou sem permissão." },
+        { status: 404 }
+      );
+    }
+
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO order_delivery_events (
+         tracking_id,
+         company_id,
+         order_id,
+         event_type,
+         metadata,
+         created_at
+       )
+       VALUES ($1::uuid,$2::uuid,$3::uuid,$4,$5::jsonb,now())`,
+      tracking.id,
+      access.companyId,
+      tracking.order_id,
+      status === "READY"
+        ? "SELLER_MARKED_READY"
+        : "SELLER_MARKED_NOT_READY",
+      JSON.stringify({
+        source: "crm_seller",
+        seller_id: access.userId,
+        status,
+      })
+    );
+
+    return NextResponse.json({
+      success: true,
+      tracking,
+    });
+  } catch (error) {
+    console.error("[DELIVERY_TRACKING_PATCH]", error);
+    return NextResponse.json(
+      { error: "Erro ao atualizar confirmação da entrega." },
+      { status: 500 }
+    );
+  }
+}
+
 export async function GET(req: NextRequest) {
   try {
     const access = await requireCompanyAccess(req);

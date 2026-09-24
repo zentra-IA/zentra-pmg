@@ -560,6 +560,123 @@ export async function GET(req: NextRequest) {
       customer: order.SalesCustomer || null,
     }));
 
+    let purchaseInsights: any = null;
+
+    if (url.searchParams.get("includeInsights") === "1") {
+      const insightOrders = await prisma.salesOrder.findMany({
+        where,
+        select: {
+          id: true,
+          customer_id: true,
+          customer_name: true,
+          total: true,
+          SalesOrderItem: {
+            select: {
+              product_code: true,
+              product_name: true,
+              quantity: true,
+              total: true,
+            },
+          },
+        },
+      });
+
+      const productFilter = cleanSearch(url.searchParams.get("product"));
+      const productCodeFilter = cleanSearch(url.searchParams.get("productCode"));
+      const rawInsightQuery = cleanSearch(url.searchParams.get("q"));
+      const requestedInsightScope = cleanSearch(url.searchParams.get("searchIn"));
+      const smartInsight = rawInsightQuery
+        ? parseSmartSearch(rawInsightQuery, requestedInsightScope)
+        : { query: "", scope: "all" as SearchScope };
+
+      const shouldFilterItemsBySmartSearch =
+        Boolean(smartInsight.query) &&
+        ["all", "product"].includes(smartInsight.scope);
+
+      const productTerms = searchTokens(productFilter || (
+        shouldFilterItemsBySmartSearch ? smartInsight.query : ""
+      )).flatMap(productTokenVariants);
+
+      const normalizedProductTerms = productTerms.map(stripSearchAccents);
+      const normalizedProductCode = stripSearchAccents(productCodeFilter);
+
+      const productMap = new Map<string, any>();
+      let totalQuantity = 0;
+      let productSales = 0;
+
+      for (const order of insightOrders as any[]) {
+        for (const item of order.SalesOrderItem || []) {
+          const code = String(item.product_code || "").trim();
+          const name = String(item.product_name || "Produto sem nome").trim();
+          const normalizedName = stripSearchAccents(`${name} ${code}`);
+
+          const matchesName =
+            !normalizedProductTerms.length ||
+            normalizedProductTerms.every((term) =>
+              normalizedName.includes(term)
+            );
+
+          const matchesCode =
+            !normalizedProductCode ||
+            stripSearchAccents(code).includes(normalizedProductCode);
+
+          if (!matchesName || !matchesCode) continue;
+
+          const key = `${code || "SEM-CODIGO"}::${stripSearchAccents(name)}`;
+          const quantity = Number(item.quantity || 0);
+          const total = Number(item.total || 0);
+
+          totalQuantity += quantity;
+          productSales += total;
+
+          const current = productMap.get(key) || {
+            code: code || null,
+            name,
+            quantity: 0,
+            total_value: 0,
+            orders: new Set<string>(),
+          };
+
+          current.quantity += quantity;
+          current.total_value += total;
+          current.orders.add(order.id);
+          productMap.set(key, current);
+        }
+      }
+
+      const products = Array.from(productMap.values())
+        .map((item: any) => ({
+          code: item.code,
+          name: item.name,
+          quantity: item.quantity,
+          total_value: item.total_value,
+          order_count: item.orders.size,
+        }))
+        .sort((a: any, b: any) => b.total_value - a.total_value);
+
+      const customerKeys = new Map<string, string>();
+      for (const order of insightOrders as any[]) {
+        const key = order.customer_id || stripSearchAccents(order.customer_name || "");
+        if (key && !customerKeys.has(key)) {
+          customerKeys.set(key, order.customer_name || "Cliente");
+        }
+      }
+
+      purchaseInsights = {
+        customer_name:
+          customerKeys.size === 1
+            ? Array.from(customerKeys.values())[0]
+            : null,
+        customer_count: customerKeys.size,
+        order_count: insightOrders.length,
+        total_sales: Number(aggregate._sum.total || 0),
+        product_sales: productSales,
+        distinct_products: products.length,
+        total_quantity: totalQuantity,
+        products,
+      };
+    }
+
     return NextResponse.json({
       orders: normalizedOrders,
       pagination: {
@@ -573,6 +690,7 @@ export async function GET(req: NextRequest) {
         total_sales: Number(aggregate._sum.total || 0),
         average_ticket: Number(aggregate._avg.total || 0),
       },
+      purchase_insights: purchaseInsights,
     });
   } catch (error) {
     console.error("[GET /api/crm/orders]", error);

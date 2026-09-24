@@ -292,6 +292,9 @@ export default function OrdersPage() {
   const [deliverySummary, setDeliverySummary] = useState<any>(null);
   const [deliveryTracking, setDeliveryTracking] = useState<any[]>([]);
   const [deliveryTrackingLoading, setDeliveryTrackingLoading] = useState(false);
+  const [deliveryActionId, setDeliveryActionId] = useState<string | null>(null);
+  const [purchaseInsights, setPurchaseInsights] = useState<any>(null);
+  const [insightsExpanded, setInsightsExpanded] = useState(false);
   const [loadingOcr, setLoadingOcr] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deliveryAlertsEnabled, setDeliveryAlertsEnabled] = useState(true);
@@ -378,6 +381,8 @@ export default function OrdersPage() {
         }
       );
 
+      params.set("includeInsights", "1");
+
       const res = await fetch(
         `/api/crm/orders?${params.toString()}`,
         { cache: "no-store" }
@@ -410,6 +415,8 @@ export default function OrdersPage() {
         ),
       });
 
+      setPurchaseInsights(data?.purchase_insights || null);
+      setInsightsExpanded(false);
       setAppliedFilters({ ...filters });
     } catch (error: any) {
       console.error(
@@ -423,6 +430,7 @@ export default function OrdersPage() {
         total_sales: 0,
         average_ticket: 0,
       });
+      setPurchaseInsights(null);
 
       alert(
         error?.message ||
@@ -830,6 +838,45 @@ export default function OrdersPage() {
     return String(item?.whatsapp || item?.phone || "").replace(/\D/g, "");
   }
 
+  async function markDeliveryBySeller(
+    item: any,
+    status: "READY" | "NOT_READY"
+  ) {
+    const label =
+      status === "READY"
+        ? "confirmar que o cliente está pronto para receber"
+        : "informar que o cliente não pode receber agora";
+
+    if (!confirm(`Deseja ${label}?`)) return;
+
+    setDeliveryActionId(String(item.id));
+
+    try {
+      const res = await fetch("/api/crm/delivery-tracking", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          trackingId: item.id,
+          status,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(
+          data?.error || "Erro ao atualizar confirmação da entrega."
+        );
+      }
+
+      await loadDeliveryTracking();
+    } catch (error: any) {
+      alert(error?.message || "Erro ao atualizar confirmação da entrega.");
+    } finally {
+      setDeliveryActionId(null);
+    }
+  }
+
   function callCustomer(item: any) {
     const phone = deliveryPhone(item);
     if (!phone) {
@@ -940,11 +987,29 @@ export default function OrdersPage() {
                   </div>
 
                   {(status === "NOT_READY" || status === "PENDING") && (
-                    <div className="mt-3 grid grid-cols-2 gap-2">
+                    <div className="mt-3 grid gap-2 md:grid-cols-4">
+                      <button
+                        type="button"
+                        disabled={deliveryActionId === String(item.id)}
+                        onClick={() => void markDeliveryBySeller(item, "READY")}
+                        className="min-h-[40px] rounded-xl bg-emerald-700 px-3 text-[11px] font-black text-white disabled:opacity-50"
+                      >
+                        ✅ Está pronto
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={deliveryActionId === String(item.id)}
+                        onClick={() => void markDeliveryBySeller(item, "NOT_READY")}
+                        className="min-h-[40px] rounded-xl border border-red-200 bg-red-50 px-3 text-[11px] font-black text-red-700 disabled:opacity-50"
+                      >
+                        ❌ Não pode receber
+                      </button>
+
                       <button
                         type="button"
                         onClick={() => callCustomer(item)}
-                        className="min-h-[38px] rounded-xl bg-slate-900 px-3 text-[11px] font-black text-white"
+                        className="min-h-[40px] rounded-xl bg-slate-900 px-3 text-[11px] font-black text-white"
                       >
                         📞 Ligar
                       </button>
@@ -952,7 +1017,7 @@ export default function OrdersPage() {
                       <button
                         type="button"
                         onClick={() => whatsappCustomer(item)}
-                        className="min-h-[38px] rounded-xl bg-emerald-600 px-3 text-[11px] font-black text-white"
+                        className="min-h-[40px] rounded-xl bg-emerald-600 px-3 text-[11px] font-black text-white"
                       >
                         💬 WhatsApp
                       </button>
@@ -2142,6 +2207,126 @@ export default function OrdersPage() {
               </strong>
             </div>
           </div>
+
+          {purchaseInsights && (
+            <section className="mt-5 overflow-hidden rounded-3xl border border-indigo-100 bg-gradient-to-br from-indigo-50 via-white to-emerald-50 shadow-sm">
+              <div className="p-4 md:p-5">
+                <div className="flex flex-col justify-between gap-3 md:flex-row md:items-start">
+                  <div>
+                    <span className="text-[10px] font-black uppercase tracking-[0.16em] text-indigo-600">
+                      📊 Inteligência de compras
+                    </span>
+                    <h3 className="mt-1 text-lg font-black text-slate-950">
+                      {purchaseInsights.customer_name
+                        ? `Compras de ${purchaseInsights.customer_name}`
+                        : "Resumo dos filtros aplicados"}
+                    </h3>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">
+                      Consolidação de todos os pedidos encontrados pelos filtros, não apenas dos pedidos exibidos na tela.
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setInsightsExpanded((current) => !current)}
+                    className="rounded-2xl border border-indigo-200 bg-white px-4 py-2.5 text-xs font-black text-indigo-700 shadow-sm"
+                  >
+                    {insightsExpanded ? "Ocultar produtos" : "Ver todos os produtos"}
+                  </button>
+                </div>
+
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                  <div className="rounded-2xl bg-white p-4 shadow-sm">
+                    <span className="text-[10px] font-black uppercase text-slate-400">
+                      Valor dos pedidos
+                    </span>
+                    <strong className="mt-1 block text-lg font-black text-emerald-700">
+                      {money(purchaseInsights.total_sales)}
+                    </strong>
+                  </div>
+
+                  <div className="rounded-2xl bg-white p-4 shadow-sm">
+                    <span className="text-[10px] font-black uppercase text-slate-400">
+                      Pedidos
+                    </span>
+                    <strong className="mt-1 block text-lg font-black text-slate-950">
+                      {Number(purchaseInsights.order_count || 0)}
+                    </strong>
+                  </div>
+
+                  <div className="rounded-2xl bg-white p-4 shadow-sm">
+                    <span className="text-[10px] font-black uppercase text-slate-400">
+                      Produtos diferentes
+                    </span>
+                    <strong className="mt-1 block text-lg font-black text-slate-950">
+                      {Number(purchaseInsights.distinct_products || 0)}
+                    </strong>
+                  </div>
+
+                  <div className="rounded-2xl bg-white p-4 shadow-sm">
+                    <span className="text-[10px] font-black uppercase text-slate-400">
+                      Quantidade comprada
+                    </span>
+                    <strong className="mt-1 block text-lg font-black text-slate-950">
+                      {Number(purchaseInsights.total_quantity || 0).toLocaleString("pt-BR")}
+                    </strong>
+                  </div>
+
+                  <div className="rounded-2xl bg-white p-4 shadow-sm">
+                    <span className="text-[10px] font-black uppercase text-slate-400">
+                      Valor dos itens
+                    </span>
+                    <strong className="mt-1 block text-lg font-black text-indigo-700">
+                      {money(purchaseInsights.product_sales)}
+                    </strong>
+                  </div>
+                </div>
+
+                {Array.isArray(purchaseInsights.products) &&
+                  purchaseInsights.products.length > 0 && (
+                    <div className="mt-4">
+                      <div className="grid gap-2">
+                        {purchaseInsights.products
+                          .slice(0, insightsExpanded ? purchaseInsights.products.length : 5)
+                          .map((product: any, index: number) => (
+                            <div
+                              key={`${product.code || "sem-codigo"}-${product.name}-${index}`}
+                              className="grid gap-2 rounded-2xl border border-slate-100 bg-white p-3 md:grid-cols-[1fr_auto_auto_auto] md:items-center"
+                            >
+                              <div className="min-w-0">
+                                <strong className="block truncate text-sm font-black text-slate-900">
+                                  {product.name || "Produto sem nome"}
+                                </strong>
+                                <span className="text-[10px] font-bold text-slate-400">
+                                  Código {product.code || "—"} · {product.order_count} pedido(s)
+                                </span>
+                              </div>
+
+                              <div className="text-xs font-black text-slate-700">
+                                Qtd. {Number(product.quantity || 0).toLocaleString("pt-BR")}
+                              </div>
+
+                              <div className="text-xs font-black text-emerald-700">
+                                {money(product.total_value)}
+                              </div>
+
+                              <div className="text-[10px] font-black uppercase text-slate-400">
+                                #{index + 1}
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+
+                      {!insightsExpanded && purchaseInsights.products.length > 5 && (
+                        <p className="mt-2 text-center text-[11px] font-bold text-slate-400">
+                          Mostrando os 5 produtos de maior valor. Clique em “Ver todos os produtos” para abrir a lista completa.
+                        </p>
+                      )}
+                    </div>
+                  )}
+              </div>
+            </section>
+          )}
 
           <div className="mt-5 grid gap-3">
             {loadingOrders && (
