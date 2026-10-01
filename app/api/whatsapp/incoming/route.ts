@@ -73,6 +73,42 @@ function isRealBrazilPhone(value: any) {
   return true;
 }
 
+/**
+ * Variantes seguras da mesma identidade de celular brasileiro.
+ * Isso evita criar outro lead quando o contato antigo está salvo sem o
+ * nono dígito e o WhatsApp devolve a resposta com o 9 (ou vice-versa).
+ *
+ * Telefones fixos não entram nessa equivalência.
+ */
+function getBrazilPhoneIdentityVariants(value: any) {
+  const phone = normalizePhone(value);
+  if (!phone) return [];
+
+  const variants = new Set<string>([phone]);
+
+  // 55 + DDD + 8 dígitos: possível celular antigo sem o nono dígito.
+  if (phone.length === 12) {
+    const prefix = phone.slice(0, 4);
+    const subscriber = phone.slice(4);
+
+    if (/^[6789]/.test(subscriber)) {
+      variants.add(`${prefix}9${subscriber}`);
+    }
+  }
+
+  // 55 + DDD + 9 dígitos: procura também a forma antiga sem o 9.
+  if (phone.length === 13) {
+    const prefix = phone.slice(0, 4);
+    const subscriber = phone.slice(4);
+
+    if (/^9[6789]/.test(subscriber)) {
+      variants.add(`${prefix}${subscriber.slice(1)}`);
+    }
+  }
+
+  return Array.from(variants);
+}
+
 function normalizeLid(value: any) {
   const text = clean(value);
   if (!text) return null;
@@ -3122,14 +3158,17 @@ async function findLead({
     }
   }
 
-  if (phone) {
+  const phoneIdentityVariants =
+    getBrazilPhoneIdentityVariants(phone);
+
+  if (phoneIdentityVariants.length) {
     await addByQuery(
       supabase
         .from("leads")
         .select("*")
         .eq("company_id", companyId)
         .eq("owner_user_id", userId)
-        .eq("phone", phone)
+        .in("phone", phoneIdentityVariants)
         .order("updated_at", { ascending: false })
         .limit(10),
       "phone"
@@ -3165,13 +3204,30 @@ async function findLead({
   }
 
   if (remoteJid) {
+    const remoteJidText = String(remoteJid);
+    const remoteJidPhone =
+      remoteJidText.includes("@s.whatsapp.net") &&
+      !remoteJidText.includes("@lid")
+        ? remoteJidText.split("@")[0]
+        : "";
+
+    const remoteJidVariants =
+      getBrazilPhoneIdentityVariants(remoteJidPhone).map(
+        (item) => `${item}@s.whatsapp.net`
+      );
+
     await addByQuery(
       supabase
         .from("leads")
         .select("*")
         .eq("company_id", companyId)
         .eq("owner_user_id", userId)
-        .eq("remote_jid", remoteJid)
+        .in(
+          "remote_jid",
+          remoteJidVariants.length
+            ? remoteJidVariants
+            : [remoteJidText]
+        )
         .order("updated_at", { ascending: false })
         .limit(10),
       "remoteJid"
