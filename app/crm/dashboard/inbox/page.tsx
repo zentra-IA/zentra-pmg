@@ -480,7 +480,8 @@ export default function InboxPage() {
 
   async function loadInbox(
     leadId?: string,
-    silent = false
+    silent = false,
+    preferredLeadId?: string
   ) {
     if (!silent) {
       setLoading(true);
@@ -541,8 +542,21 @@ export default function InboxPage() {
 
       setLeads(items);
 
+      const preferredLead =
+        preferredLeadId
+          ? items.find(
+              (item: any) =>
+                String(item.id) ===
+                String(preferredLeadId)
+            )
+          : null;
+
       setSelectedLead(
         (current: any) => {
+          if (preferredLead) {
+            return preferredLead;
+          }
+
           if (!current && items[0]) {
             return items[0];
           }
@@ -554,11 +568,16 @@ export default function InboxPage() {
           return (
             items.find(
               (item: any) =>
-                item.id === current.id
+                String(item.id) ===
+                String(current.id)
             ) || current
           );
         }
       );
+
+      if (preferredLead) {
+        setMobileChatOpen(true);
+      }
     } catch (error: any) {
       if (!silent) {
         alert(
@@ -1294,18 +1313,20 @@ export default function InboxPage() {
   }
 
   useEffect(() => {
-    loadInbox();
+    const requestedLeadId =
+      new URLSearchParams(
+        window.location.search
+      ).get("leadId") || undefined;
+
+    loadInbox(
+      undefined,
+      false,
+      requestedLeadId
+    );
 
     const interval =
       window.setInterval(() => {
         loadInbox(undefined, true);
-
-        if (selectedLead?.id) {
-          loadInbox(
-            selectedLead.id,
-            true
-          );
-        }
       }, 10_000);
 
     return () =>
