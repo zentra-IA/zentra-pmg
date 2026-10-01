@@ -123,6 +123,52 @@ function formatDate(date: string) {
   });
 }
 
+function formatDateOnly(value?: string | Date | null) {
+  if (!value) return "—";
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "—";
+
+  return parsed.toLocaleDateString("pt-BR");
+}
+
+function formatMoney(value?: number | null) {
+  if (value === null || value === undefined) return "—";
+
+  return Number(value).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
+}
+
+function radarLocation(lead: any) {
+  return [
+    lead?.radar?.city || lead?.city,
+    lead?.radar?.state || lead?.state,
+  ]
+    .filter(Boolean)
+    .join(" / ");
+}
+
+function hasRadarCommercialData(lead: any) {
+  const radar = lead?.radar;
+
+  return Boolean(
+    radar &&
+      (
+        radar.city ||
+        radar.state ||
+        radar.segment ||
+        radar.category ||
+        radar.product_interest ||
+        radar.last_order_at ||
+        radar.credit_limit !== null ||
+        radar.payment_method
+      )
+  );
+}
+
+
 function formatPhone(phone?: string | null) {
   if (!phone) return "";
 
@@ -284,7 +330,16 @@ export default function DashboardPage() {
         lead.phone,
         lead.email,
         lead.city,
+        lead.state,
+        lead.segment,
+        lead.category,
         lead.company,
+        lead.radar?.city,
+        lead.radar?.state,
+        lead.radar?.segment,
+        lead.radar?.category,
+        lead.radar?.product_interest,
+        lead.radar?.payment_method,
         lead.last_message,
         lead.status,
       ]
@@ -846,6 +901,13 @@ export default function DashboardPage() {
                               {lead.email}
                             </div>
                           )}
+                          {hasRadarCommercialData(lead) && (
+                            <div className="mt-1 text-[10px] font-bold text-slate-400">
+                              {[radarLocation(lead), lead?.radar?.segment]
+                                .filter(Boolean)
+                                .join(" • ")}
+                            </div>
+                          )}
                         </td>
 
                         <td className="min-w-[190px] border-r border-slate-100 px-3 py-3">
@@ -1027,6 +1089,10 @@ function LeadCard({
 }) {
   const stage = getStage(lead.status);
   const stoppedDays = daysStopped(lead);
+  const [commercialOpen, setCommercialOpen] = useState(false);
+  const radar = lead?.radar || null;
+  const location = radarLocation(lead);
+  const hasCommercial = hasRadarCommercialData(lead);
 
   return (
     <article className="rounded-3xl border border-slate-200 bg-white p-4 shadow-lg shadow-slate-900/5 transition hover:-translate-y-0.5 hover:border-green-200 hover:shadow-xl">
@@ -1067,6 +1133,115 @@ function LeadCard({
           <strong className="text-slate-700">{formatDate(getLastDate(lead))}</strong>
         </div>
       </div>
+
+      {hasCommercial && (
+        <div className="mt-3 overflow-hidden rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50/80 via-white to-slate-50">
+          <div className="grid grid-cols-2 gap-px bg-emerald-100/70">
+            <div className="bg-white/90 p-3">
+              <span className="block text-[9px] font-black uppercase tracking-wider text-slate-400">
+                📍 Região
+              </span>
+              <strong className="mt-1 block text-[11px] font-black text-slate-800">
+                {location || "—"}
+              </strong>
+            </div>
+
+            <div className="bg-white/90 p-3">
+              <span className="block text-[9px] font-black uppercase tracking-wider text-slate-400">
+                🏷️ Segmento
+              </span>
+              <strong className="mt-1 block text-[11px] font-black text-slate-800">
+                {radar?.segment || "—"}
+              </strong>
+            </div>
+
+            <div className="bg-white/90 p-3">
+              <span className="block text-[9px] font-black uppercase tracking-wider text-slate-400">
+                🛒 Último pedido
+              </span>
+              <strong className="mt-1 block text-[11px] font-black text-slate-800">
+                {formatDateOnly(radar?.last_order_at)}
+              </strong>
+            </div>
+
+            <div className="bg-white/90 p-3">
+              <span className="block text-[9px] font-black uppercase tracking-wider text-slate-400">
+                💰 Limite
+              </span>
+              <strong className="mt-1 block text-[11px] font-black text-emerald-700">
+                {formatMoney(radar?.credit_limit)}
+              </strong>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() =>
+              setCommercialOpen(
+                (current) => !current
+              )
+            }
+            className="flex w-full items-center justify-between px-3 py-2.5 text-left text-[10px] font-black uppercase tracking-wider text-[#0f7a3a] transition hover:bg-emerald-50"
+          >
+            <span>Dados comerciais do Radar</span>
+            <span>{commercialOpen ? "▲" : "▼"}</span>
+          </button>
+
+          {commercialOpen && (
+            <div className="grid gap-2 border-t border-emerald-100 bg-white p-3 text-[11px]">
+              <div className="flex items-start justify-between gap-3">
+                <span className="font-bold text-slate-400">Forma pagto.</span>
+                <strong className="text-right text-slate-700">
+                  {radar?.payment_method || "—"}
+                </strong>
+              </div>
+
+              <div className="flex items-start justify-between gap-3">
+                <span className="font-bold text-slate-400">Última ativação</span>
+                <strong className="text-right text-slate-700">
+                  {formatDateOnly(radar?.last_activation_at)}
+                </strong>
+              </div>
+
+              <div className="flex items-start justify-between gap-3">
+                <span className="font-bold text-slate-400">Última transferência</span>
+                <strong className="text-right text-slate-700">
+                  {formatDateOnly(radar?.last_transfer_at)}
+                </strong>
+              </div>
+
+              <div className="flex items-start justify-between gap-3">
+                <span className="font-bold text-slate-400">Cadastro Radar</span>
+                <strong className="text-right text-slate-700">
+                  {formatDateOnly(radar?.created_at)}
+                </strong>
+              </div>
+
+              {(radar?.category || radar?.product_interest) && (
+                <div className="rounded-xl bg-slate-50 p-2.5">
+                  {radar?.category && (
+                    <div>
+                      <span className="font-bold text-slate-400">Categoria: </span>
+                      <strong className="text-slate-700">
+                        {radar.category}
+                      </strong>
+                    </div>
+                  )}
+
+                  {radar?.product_interest && (
+                    <div className="mt-1">
+                      <span className="font-bold text-slate-400">Interesse: </span>
+                      <strong className="text-slate-700">
+                        {radar.product_interest}
+                      </strong>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {normalizeStatus(lead.status) === "campanha" && (
         <div className="mt-3 rounded-2xl border border-red-100 bg-red-50 p-3 text-xs font-bold text-[#d71920]">

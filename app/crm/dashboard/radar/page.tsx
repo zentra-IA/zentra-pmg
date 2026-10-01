@@ -652,11 +652,45 @@ export default function RadarPage() {
       p.externalId || ""
     ).trim();
 
-    copyText(
+    const location = [p.city, p.state]
+      .filter(Boolean)
+      .join(" / ");
+
+    const lines = [
       externalId
-        ? `${externalId}, ${p.name}, ${p.phone1}`
-        : `${p.name}, ${p.phone1}`
-    );
+        ? `ID Radar: ${externalId}`
+        : null,
+      `Cliente: ${p.name}`,
+      `Telefone: ${p.phone1}`,
+      p.email ? `E-mail: ${p.email}` : null,
+      location ? `Cidade / Região: ${location}` : null,
+      p.segment ? `Segmento: ${p.segment}` : null,
+      p.category ? `Categoria: ${p.category}` : null,
+      p.productInterest
+        ? `Produto / Interesse: ${p.productInterest}`
+        : null,
+      p.createdAt
+        ? `Data cadastro: ${formatDate(p.createdAt)}`
+        : null,
+      p.lastTransferAt
+        ? `Última transferência: ${formatDate(p.lastTransferAt)}`
+        : null,
+      p.lastActivationAt
+        ? `Última ativação: ${formatDate(p.lastActivationAt)}`
+        : null,
+      p.lastOrderAt
+        ? `Último pedido: ${formatDate(p.lastOrderAt)}`
+        : null,
+      p.creditLimit !== null &&
+      p.creditLimit !== undefined
+        ? `Limite: ${formatMoney(p.creditLimit)}`
+        : null,
+      p.paymentMethod
+        ? `Forma de pagamento: ${p.paymentMethod}`
+        : null,
+    ].filter(Boolean);
+
+    copyText(lines.join("\n"));
   }
 
   function copySelectedForCampaign() {

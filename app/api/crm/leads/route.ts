@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { requireCompanyAccess } from "@/lib/server-company";
+import { prisma } from "@/lib/prisma";
 import {
   normalizeKanbanStatusOrNovo,
 } from "@/lib/crm/kanban-status";
@@ -187,6 +188,146 @@ function supervisorForbidden() {
     },
     { status: 403 }
   );
+}
+
+
+async function enrichLeadsWithRadar(
+  companyId: string,
+  leads: any[]
+) {
+  const externalIds = [
+    ...new Set(
+      leads
+        .map((lead) =>
+          clean(
+            lead?.external_id ||
+              lead?.externalId
+          )
+        )
+        .filter(Boolean)
+    ),
+  ];
+
+  if (!externalIds.length) {
+    return leads;
+  }
+
+  try {
+    const prospects = await prisma.prospect.findMany({
+      where: {
+        company_id: companyId,
+        active: true,
+        externalId: {
+          in: externalIds,
+        },
+      },
+      select: {
+        externalId: true,
+        name: true,
+        city: true,
+        state: true,
+        segment: true,
+        category: true,
+        productInterest: true,
+        email: true,
+        phone1: true,
+        phone2: true,
+        createdAt: true,
+        lastTransferAt: true,
+        lastActivationAt: true,
+        lastOrderAt: true,
+        creditLimit: true,
+        paymentMethod: true,
+      },
+    });
+
+    const prospectMap = new Map<string, any>();
+
+    for (const prospect of prospects as any[]) {
+      const key = clean(prospect.externalId);
+
+      if (key && !prospectMap.has(key)) {
+        prospectMap.set(key, prospect);
+      }
+    }
+
+    return leads.map((lead) => {
+      const externalId = clean(
+        lead?.external_id ||
+          lead?.externalId
+      );
+
+      const prospect = externalId
+        ? prospectMap.get(externalId)
+        : null;
+
+      if (!prospect) {
+        return lead;
+      }
+
+      return {
+        ...lead,
+
+        // Campos diretos ajudam busca/listagem sem alterar a tabela leads.
+        city: lead?.city || prospect.city || null,
+        state: lead?.state || prospect.state || null,
+        segment:
+          lead?.segment ||
+          prospect.segment ||
+          null,
+        category:
+          lead?.category ||
+          prospect.category ||
+          null,
+        product_interest:
+          lead?.product_interest ||
+          prospect.productInterest ||
+          null,
+        email:
+          lead?.email ||
+          prospect.email ||
+          null,
+
+        // Snapshot comercial vindo do Radar. Nenhuma duplicação no banco.
+        radar: {
+          external_id:
+            prospect.externalId || externalId,
+          name: prospect.name || null,
+          city: prospect.city || null,
+          state: prospect.state || null,
+          segment: prospect.segment || null,
+          category: prospect.category || null,
+          product_interest:
+            prospect.productInterest || null,
+          email: prospect.email || null,
+          phone1: prospect.phone1 || null,
+          phone2: prospect.phone2 || null,
+          created_at: prospect.createdAt || null,
+          last_transfer_at:
+            prospect.lastTransferAt || null,
+          last_activation_at:
+            prospect.lastActivationAt || null,
+          last_order_at:
+            prospect.lastOrderAt || null,
+          credit_limit:
+            prospect.creditLimit ?? null,
+          payment_method:
+            prospect.paymentMethod || null,
+        },
+      };
+    });
+  } catch (error) {
+    /*
+     * O Kanban não pode parar de carregar se o Radar estiver
+     * temporariamente indisponível.
+     */
+    console.error(
+      "CRM LEADS - erro ao enriquecer dados do Radar:",
+      error
+    );
+
+    return leads;
+  }
 }
 
 async function loadJobsAndBatches(
@@ -434,10 +575,16 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    const enrichedRows =
+      await enrichLeadsWithRadar(
+        access.companyId,
+        visibleRows
+      );
+
     const leads = await loadJobsAndBatches(
       supabase,
       access.companyId,
-      visibleRows
+      enrichedRows
     );
 
     return NextResponse.json({
