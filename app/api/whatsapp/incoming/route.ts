@@ -73,20 +73,12 @@ function isRealBrazilPhone(value: any) {
   return true;
 }
 
-/**
- * Variantes seguras da mesma identidade de celular brasileiro.
- * Isso evita criar outro lead quando o contato antigo está salvo sem o
- * nono dígito e o WhatsApp devolve a resposta com o 9 (ou vice-versa).
- *
- * Telefones fixos não entram nessa equivalência.
- */
 function getBrazilPhoneIdentityVariants(value: any) {
   const phone = normalizePhone(value);
   if (!phone) return [];
 
   const variants = new Set<string>([phone]);
 
-  // 55 + DDD + 8 dígitos: possível celular antigo sem o nono dígito.
   if (phone.length === 12) {
     const prefix = phone.slice(0, 4);
     const subscriber = phone.slice(4);
@@ -96,7 +88,6 @@ function getBrazilPhoneIdentityVariants(value: any) {
     }
   }
 
-  // 55 + DDD + 9 dígitos: procura também a forma antiga sem o 9.
   if (phone.length === 13) {
     const prefix = phone.slice(0, 4);
     const subscriber = phone.slice(4);
@@ -169,6 +160,55 @@ function getIncomingRemoteJid(body: any) {
     body?.message_object?.key?.remoteJid ||
     null
   );
+}
+
+function getIncomingAlternatePhoneJid(body: any) {
+  const candidates = [
+    body?.remoteJidAlt,
+    body?.remote_jid_alt,
+    body?.participantAlt,
+    body?.participant_alt,
+    body?.senderPn,
+    body?.senderPN,
+    body?.sender_pn,
+    body?.pnJid,
+    body?.pn_jid,
+    body?.key?.remoteJidAlt,
+    body?.key?.participantAlt,
+    body?.data?.remoteJidAlt,
+    body?.data?.remote_jid_alt,
+    body?.data?.participantAlt,
+    body?.data?.participant_alt,
+    body?.data?.senderPn,
+    body?.data?.senderPN,
+    body?.data?.sender_pn,
+    body?.data?.pnJid,
+    body?.data?.pn_jid,
+    body?.data?.key?.remoteJidAlt,
+    body?.data?.key?.participantAlt,
+    body?.data?.messages?.[0]?.key?.remoteJidAlt,
+    body?.data?.messages?.[0]?.key?.participantAlt,
+    body?.messages?.[0]?.key?.remoteJidAlt,
+    body?.messages?.[0]?.key?.participantAlt,
+    body?.messageObject?.key?.remoteJidAlt,
+    body?.messageObject?.key?.participantAlt,
+    body?.message_object?.key?.remoteJidAlt,
+    body?.message_object?.key?.participantAlt,
+  ];
+
+  for (const candidate of candidates) {
+    const value = clean(candidate);
+
+    if (
+      value.includes("@s.whatsapp.net") &&
+      !value.includes("@lid") &&
+      !value.includes("@g.us")
+    ) {
+      return value;
+    }
+  }
+
+  return null;
 }
 
 function getIncomingPushName(body: any) {
@@ -3595,15 +3635,20 @@ export async function POST(req: Request) {
       ? normalizeLid(body.lid || remoteJid)
       : null;
 
-    /*
-     * remoteJid é a identidade mais confiável da mensagem atual.
-     * Não priorizamos body.phone/body.number quando existe um JID explícito,
-     * pois alguns servidores usam "phone" para o número da sessão conectada.
-     */
     const phoneFromRemoteJid =
       !incomingIsLid &&
       String(remoteJid || "").includes("@s.whatsapp.net")
         ? normalizePhone(String(remoteJid).split("@")[0])
+        : "";
+
+    const alternatePhoneJid =
+      getIncomingAlternatePhoneJid(body);
+
+    const phoneFromAlternateJid =
+      alternatePhoneJid
+        ? normalizePhone(
+            String(alternatePhoneJid).split("@")[0]
+          )
         : "";
 
     const explicitSenderPhone = normalizePhone(
@@ -3611,16 +3656,31 @@ export async function POST(req: Request) {
         body.sender_phone ||
         body.contactPhone ||
         body.contact_phone ||
+        body?.data?.senderPhone ||
+        body?.data?.sender_phone ||
+        body?.data?.contactPhone ||
+        body?.data?.contact_phone ||
         ""
     );
 
     const phone = phoneFromRemoteJid
       ? phoneFromRemoteJid
-      : explicitSenderPhone
-        ? explicitSenderPhone
-        : remoteJid
-          ? ""
-          : normalizePhone(rawPhone || rawNumber);
+      : phoneFromAlternateJid
+        ? phoneFromAlternateJid
+        : explicitSenderPhone
+          ? explicitSenderPhone
+          : remoteJid
+            ? ""
+            : normalizePhone(rawPhone || rawNumber);
+
+    if (incomingIsLid) {
+      console.log("[WHATSAPP_IDENTITY] Entrada LID:", {
+        hasLid: Boolean(lid),
+        hasAlternatePhoneJid:
+          Boolean(alternatePhoneJid),
+        hasResolvedPhone: Boolean(phone),
+      });
+    }
 
     const email = clean(body.email || body.customer_email || "");
     const incomingMedia = extractIncomingMedia(body);
