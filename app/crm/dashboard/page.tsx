@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import NextActionModal from "@/components/crm/next-action/NextActionModal";
 import { normalizeKanbanStatusOrNovo } from "@/lib/crm/kanban-status";
@@ -243,6 +243,7 @@ type SortDirection = "asc" | "desc";
 export default function DashboardPage() {
   const [leads, setLeads] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const dashboardLoadingRef = useRef(false);
   const [movingId, setMovingId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [selectedStage, setSelectedStage] = useState("todos");
@@ -258,25 +259,134 @@ export default function DashboardPage() {
   const [selectedRows, setSelectedRows] = useState<string[]>([]);
 
   async function loadDashboard() {
+    if (dashboardLoadingRef.current) {
+      return;
+    }
+
+    dashboardLoadingRef.current = true;
+
     try {
       setLoading(true);
 
-      const res = await fetch("/api/crm/leads", {
-        cache: "no-store",
-        credentials: "include",
-      });
+      const pageSize = 500;
 
-      const data = await res.json().catch(() => ({}));
+      async function fetchLeadPage(pageNumber: number) {
+        const params = new URLSearchParams({
+          page: String(pageNumber),
+          pageSize: String(pageSize),
+        });
 
-      if (!res.ok) {
-        throw new Error(data.error || "Erro ao carregar o funil comercial");
+        const res = await fetch(
+          `/api/crm/leads?${params.toString()}`,
+          {
+            cache: "no-store",
+            credentials: "include",
+          }
+        );
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          throw new Error(
+            data.error ||
+              "Erro ao carregar o funil comercial"
+          );
+        }
+
+        return {
+          leads: Array.isArray(data)
+            ? data
+            : Array.isArray(data?.leads)
+              ? data.leads
+              : [],
+          pagination:
+            data?.pagination || null,
+        };
       }
 
-      setLeads(Array.isArray(data) ? data : data.leads || []);
+      const firstPage =
+        await fetchLeadPage(1);
+
+      const totalPages = Math.max(
+        Number(
+          firstPage.pagination?.total_pages || 1
+        ),
+        1
+      );
+
+      const allLeads = [
+        ...firstPage.leads,
+      ];
+
+      /*
+       * Carrega as páginas restantes em pequenos lotes.
+       * Evita o antigo teto de 500 sem disparar dezenas de requests
+       * simultâneos caso a carteira cresça bastante.
+       */
+      const batchSize = 4;
+
+      for (
+        let startPage = 2;
+        startPage <= totalPages;
+        startPage += batchSize
+      ) {
+        const pageNumbers = Array.from(
+          {
+            length: Math.min(
+              batchSize,
+              totalPages - startPage + 1
+            ),
+          },
+          (_, index) => startPage + index
+        );
+
+        const results =
+          await Promise.all(
+            pageNumbers.map(fetchLeadPage)
+          );
+
+        for (const result of results) {
+          allLeads.push(...result.leads);
+        }
+      }
+
+      /*
+       * Proteção contra repetição entre páginas caso um lead seja
+       * atualizado enquanto o carregamento está acontecendo.
+       */
+      const leadMap =
+        new Map<string, any>();
+
+      for (const lead of allLeads) {
+        const key = String(
+          lead?.id || ""
+        );
+
+        if (!key) continue;
+        if (!leadMap.has(key)) {
+          leadMap.set(key, lead);
+        }
+      }
+
+      setLeads(
+        Array.from(
+          leadMap.values()
+        )
+      );
     } catch (error: any) {
-      console.error("ERRO DASHBOARD:", error);
-      alert("Erro ao carregar funil:\n\n" + (error.message || "Erro desconhecido"));
+      console.error(
+        "ERRO DASHBOARD:",
+        error
+      );
+      alert(
+        "Erro ao carregar funil:\n\n" +
+          (
+            error.message ||
+            "Erro desconhecido"
+          )
+      );
     } finally {
+      dashboardLoadingRef.current = false;
       setLoading(false);
     }
   }
@@ -286,7 +396,7 @@ export default function DashboardPage() {
 
     const interval = setInterval(() => {
       loadDashboard();
-    }, 8000);
+    }, 30_000);
 
     return () => clearInterval(interval);
   }, []);

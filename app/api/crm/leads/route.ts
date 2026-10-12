@@ -425,17 +425,39 @@ export async function GET(req: NextRequest) {
         searchParams.get("job_id")
     );
 
-    const requestedLimit = Number(
-      searchParams.get("limit") || 500
+    const requestedPage = Number(
+      searchParams.get("page") || 1
     );
 
-    const limit = Number.isFinite(requestedLimit)
-      ? Math.min(Math.max(requestedLimit, 1), 1000)
+    const requestedPageSize = Number(
+      searchParams.get("pageSize") ||
+        searchParams.get("limit") ||
+        500
+    );
+
+    const page = Number.isFinite(requestedPage)
+      ? Math.max(Math.floor(requestedPage), 1)
+      : 1;
+
+    const pageSize = Number.isFinite(requestedPageSize)
+      ? Math.min(
+          Math.max(
+            Math.floor(requestedPageSize),
+            1
+          ),
+          500
+        )
       : 500;
+
+    const rangeFrom =
+      (page - 1) * pageSize;
+
+    const rangeTo =
+      rangeFrom + pageSize - 1;
 
     let query = supabase
       .from("leads")
-      .select("*")
+      .select("*", { count: "exact" })
       .eq("company_id", access.companyId)
       .or("opt_out.is.null,opt_out.eq.false")
       .order("last_message_at", {
@@ -450,7 +472,7 @@ export async function GET(req: NextRequest) {
         ascending: false,
         nullsFirst: false,
       })
-      .limit(limit);
+      .range(rangeFrom, rangeTo);
 
     /*
      * Segurança principal:
@@ -477,11 +499,24 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const { data, error } = await query;
+    const {
+      data,
+      error,
+      count,
+    } = await query;
 
     if (error) {
       throw new Error(error.message);
     }
+
+    const totalRows =
+      Number(count || 0);
+
+    const totalPages =
+      Math.max(
+        Math.ceil(totalRows / pageSize),
+        1
+      );
 
     /*
      * V8 — o Kanban representa CONVERSAS/OPORTUNIDADES, não apenas
@@ -590,6 +625,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       success: true,
       leads,
+      pagination: {
+        page,
+        page_size: pageSize,
+        total: totalRows,
+        total_pages: totalPages,
+        has_more: page < totalPages,
+      },
     });
   } catch (error: any) {
     console.error("CRM LEADS GET:", error);
