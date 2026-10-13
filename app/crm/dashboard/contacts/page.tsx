@@ -537,38 +537,146 @@ export default function ContactsDispatchPage() {
     try {
       setLoading(true);
 
-      const params = new URLSearchParams();
+      const pageSize = 500;
 
-      if (filters.q.trim()) {
-        params.set("q", filters.q.trim());
-      }
+      async function fetchContactsPage(
+        pageNumber: number
+      ) {
+        const params = new URLSearchParams({
+          page: String(pageNumber),
+          pageSize: String(pageSize),
+        });
 
-      if (filters.status) {
-        params.set("status", filters.status);
-      }
-
-      params.set("limit", "1000");
-
-      const response = await fetch(
-        `/api/crm/leads?${params.toString()}`,
-        {
-          cache: "no-store",
-          credentials: "include",
+        if (filters.q.trim()) {
+          params.set(
+            "q",
+            filters.q.trim()
+          );
         }
+
+        if (filters.status) {
+          params.set(
+            "status",
+            filters.status
+          );
+        }
+
+        const response = await fetch(
+          `/api/crm/leads?${params.toString()}`,
+          {
+            cache: "no-store",
+            credentials: "include",
+          }
+        );
+
+        const data =
+          await response
+            .json()
+            .catch(() => ({}));
+
+        if (!response.ok) {
+          throw new Error(
+            data?.error ||
+              "Erro ao carregar contatos."
+          );
+        }
+
+        return {
+          leads: Array.isArray(data?.leads)
+            ? data.leads
+            : Array.isArray(data)
+              ? data
+              : [],
+          pagination:
+            data?.pagination || null,
+        };
+      }
+
+      const firstPage =
+        await fetchContactsPage(1);
+
+      const totalPages = Math.max(
+        Number(
+          firstPage.pagination
+            ?.total_pages || 1
+        ),
+        1
       );
 
-      const data = await response.json().catch(() => ({}));
+      const allContacts = [
+        ...firstPage.leads,
+      ];
 
-      if (!response.ok) {
-        alert(data?.error || "Erro ao carregar contatos.");
-        return;
+      /*
+       * A API de leads agora trabalha em páginas de 500.
+       * Carregamos todas as páginas que correspondem aos filtros atuais.
+       *
+       * Isso é importante nesta tela porque:
+       * - "Novo lead" precisa enxergar todos os leads Novo lead;
+       * - sem seleção, o disparo considera todos os resultados filtrados;
+       * - não podemos limitar a campanha aos primeiros 500 contatos.
+       */
+      const batchSize = 4;
+
+      for (
+        let startPage = 2;
+        startPage <= totalPages;
+        startPage += batchSize
+      ) {
+        const pageNumbers =
+          Array.from(
+            {
+              length: Math.min(
+                batchSize,
+                totalPages -
+                  startPage +
+                  1
+              ),
+            },
+            (_, index) =>
+              startPage + index
+          );
+
+        const results =
+          await Promise.all(
+            pageNumbers.map(
+              fetchContactsPage
+            )
+          );
+
+        for (const result of results) {
+          allContacts.push(
+            ...result.leads
+          );
+        }
       }
 
-      const nextContacts = Array.isArray(data?.leads)
-        ? data.leads
-        : Array.isArray(data)
-          ? data
-          : [];
+      /*
+       * Proteção contra repetição entre páginas caso algum lead seja
+       * atualizado enquanto o carregamento estiver acontecendo.
+       */
+      const contactMap =
+        new Map<string, any>();
+
+      for (const contact of allContacts) {
+        const key = String(
+          contact?.id || ""
+        );
+
+        if (!key) continue;
+
+        if (!contactMap.has(key)) {
+          contactMap.set(
+            key,
+            contact
+          );
+        }
+      }
+
+      const nextContacts =
+        Array.from(
+          contactMap.values()
+        );
 
       setContacts(nextContacts);
 
@@ -581,21 +689,29 @@ export default function ContactsDispatchPage() {
       let preselected: string[] = [];
 
       try {
-        const raw = window.sessionStorage.getItem(
-          "zentra_contacts_preselect"
-        );
+        const raw =
+          window.sessionStorage.getItem(
+            "zentra_contacts_preselect"
+          );
 
         if (raw) {
-          const parsed = JSON.parse(raw);
+          const parsed =
+            JSON.parse(raw);
 
           if (Array.isArray(parsed)) {
-            const availableIds = new Set(
-              nextContacts.map((item: any) => String(item.id))
-            );
+            const availableIds =
+              new Set(
+                nextContacts.map(
+                  (item: any) =>
+                    String(item.id)
+                )
+              );
 
             preselected = parsed
               .map(String)
-              .filter((id) => availableIds.has(id));
+              .filter((id) =>
+                availableIds.has(id)
+              );
           }
 
           window.sessionStorage.removeItem(
@@ -607,6 +723,16 @@ export default function ContactsDispatchPage() {
       }
 
       setSelectedIds(preselected);
+    } catch (error: any) {
+      console.error(
+        "[CONTACTS] Erro ao carregar contatos:",
+        error
+      );
+
+      alert(
+        error?.message ||
+          "Erro ao carregar contatos."
+      );
     } finally {
       setLoading(false);
     }
