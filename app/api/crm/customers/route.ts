@@ -1094,6 +1094,62 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    /*
+     * Evita que a ponte Funil -> Clientes gere um segundo cadastro
+     * quando o mesmo ID Radar/PMG ou documento já existe na empresa.
+     */
+    const duplicateKeys: any[] = [];
+
+    if (data.internal_code) {
+      duplicateKeys.push({
+        internal_code: data.internal_code,
+      });
+    }
+
+    if (data.erp_code) {
+      duplicateKeys.push({
+        erp_code: data.erp_code,
+      });
+    }
+
+    if (data.document) {
+      duplicateKeys.push({
+        document: data.document,
+      });
+    }
+
+    if (duplicateKeys.length) {
+      const duplicate =
+        await prisma.salesCustomer.findFirst({
+          where: {
+            company_id: access.companyId,
+            OR: duplicateKeys,
+          },
+          select: {
+            id: true,
+            internal_code: true,
+            erp_code: true,
+            document: true,
+            legal_name: true,
+            trade_name: true,
+          },
+        });
+
+      if (duplicate) {
+        return NextResponse.json(
+          {
+            error: `Cliente já cadastrado: ${
+              duplicate.trade_name ||
+              duplicate.legal_name
+            }.`,
+            existing_customer_id:
+              duplicate.id,
+          },
+          { status: 409 }
+        );
+      }
+    }
+
     let classification: DistanceClassification | null = null;
     let distanceWarning: string | null = null;
 

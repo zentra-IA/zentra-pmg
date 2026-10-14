@@ -325,6 +325,7 @@ export default function CustomersPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Customer | null>(null);
+  const [prefillLeadName, setPrefillLeadName] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -440,6 +441,75 @@ export default function CustomersPage() {
 
   useEffect(() => {
     loadCustomers();
+
+    /*
+     * Ponte Funil -> Clientes.
+     * O card do Kanban envia somente dados que já existem no lead/Radar.
+     * O vendedor completa CNPJ, CEP, endereço e demais campos que faltarem.
+     */
+    try {
+      const params =
+        new URLSearchParams(
+          window.location.search
+        );
+
+      if (params.get("fromLead") === "1") {
+        const prefill = {
+          internal_code:
+            params.get("internal_code") || "",
+          legal_name:
+            params.get("legal_name") || "",
+          trade_name:
+            params.get("trade_name") || "",
+          phone:
+            params.get("phone") || "",
+          whatsapp:
+            params.get("whatsapp") || "",
+          email:
+            params.get("email") || "",
+          city:
+            params.get("city") || "",
+          state:
+            params.get("state") || "",
+          segment:
+            params.get("segment") || "",
+          category:
+            params.get("category") || "",
+          payment_terms:
+            params.get("payment_terms") || "",
+          commercial_notes:
+            params.get("commercial_notes") || "",
+        };
+
+        setEditingId(null);
+        setSelected(null);
+        setForm((current) => ({
+          ...current,
+          ...prefill,
+          status: "prospect",
+        }));
+
+        setPrefillLeadName(
+          prefill.trade_name ||
+            prefill.legal_name ||
+            "Lead do Funil"
+        );
+
+        window.setTimeout(() => {
+          document
+            .getElementById(
+              "customer-registration-form"
+            )
+            ?.scrollIntoView({
+              behavior: "smooth",
+              block: "start",
+            });
+        }, 150);
+      }
+    } catch {
+      // Se a URL estiver inválida, o cadastro manual continua normal.
+    }
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -536,6 +606,7 @@ export default function CustomersPage() {
   function resetForm() {
     setForm(EMPTY_FORM);
     setEditingId(null);
+    setPrefillLeadName("");
   }
 
   function editCustomer(customer: Customer) {
@@ -606,6 +677,21 @@ export default function CustomersPage() {
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
+        if (
+          res.status === 409 &&
+          data?.existing_customer_id
+        ) {
+          alert(
+            `${
+              data.error ||
+              "Este cliente já está cadastrado."
+            }
+
+O sistema bloqueou a criação duplicada.`
+          );
+          return;
+        }
+
         alert(data.error || "Erro ao salvar cliente.");
         return;
       }
@@ -1887,9 +1973,25 @@ Obrigado!`;
       </section>
 
       <form
+        id="customer-registration-form"
         className="panel form-panel"
         onSubmit={saveCustomer}
       >
+        {prefillLeadName && !editingId && (
+          <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+            <div className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700">
+              👤 Dados trazidos do Funil Comercial
+            </div>
+            <strong className="mt-1 block text-base font-black text-slate-900">
+              {prefillLeadName}
+            </strong>
+            <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">
+              Nome, contato e dados comerciais disponíveis já foram preenchidos.
+              Complete CNPJ, CEP, endereço e os campos que faltarem antes de salvar.
+            </p>
+          </div>
+        )}
+
         <div className="section-title">
           <span>
             {editingId ? "EDITAR CLIENTE" : "NOVO CLIENTE"}

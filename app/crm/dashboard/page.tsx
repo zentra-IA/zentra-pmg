@@ -222,6 +222,117 @@ function formatLeadExternalId(lead: any) {
   ).trim();
 }
 
+
+function getLeadPhoneForCustomer(lead: any) {
+  const direct = String(
+    lead?.phone ||
+      lead?.mobile ||
+      lead?.telefone ||
+      lead?.radar?.phone1 ||
+      ""
+  ).trim();
+
+  if (direct) {
+    return direct;
+  }
+
+  const remoteJid = String(
+    lead?.remote_jid || ""
+  );
+
+  if (
+    remoteJid.includes("@s.whatsapp.net")
+  ) {
+    return remoteJid.split("@")[0];
+  }
+
+  return "";
+}
+
+function buildCustomerRegistrationHref(lead: any) {
+  const params = new URLSearchParams();
+
+  const externalId =
+    formatLeadExternalId(lead);
+
+  const name = String(
+    lead?.name ||
+      lead?.radar?.name ||
+      ""
+  ).trim();
+
+  const phone =
+    getLeadPhoneForCustomer(lead);
+
+  const values: Record<string, any> = {
+    fromLead: "1",
+    leadId: lead?.id || "",
+    internal_code: externalId,
+    legal_name: name,
+    trade_name: name,
+    phone,
+    whatsapp: phone,
+    email:
+      lead?.email ||
+      lead?.radar?.email ||
+      "",
+    city:
+      lead?.city ||
+      lead?.radar?.city ||
+      "",
+    state:
+      lead?.state ||
+      lead?.radar?.state ||
+      "",
+    segment:
+      lead?.segment ||
+      lead?.radar?.segment ||
+      "",
+    category:
+      lead?.category ||
+      lead?.radar?.category ||
+      "",
+    payment_terms:
+      lead?.radar?.payment_method ||
+      "",
+  };
+
+  for (const [key, value] of Object.entries(values)) {
+    const text = String(
+      value ?? ""
+    ).trim();
+
+    if (text) {
+      params.set(key, text);
+    }
+  }
+
+  const notes = [
+    externalId
+      ? `Origem: Funil Comercial · ID Radar ${externalId}`
+      : "Origem: Funil Comercial",
+    lead?.radar?.product_interest
+      ? `Interesse: ${lead.radar.product_interest}`
+      : "",
+    lead?.radar?.last_order_at
+      ? `Último pedido Radar: ${formatDateOnly(lead.radar.last_order_at)}`
+      : "",
+    lead?.radar?.credit_limit !== null &&
+    lead?.radar?.credit_limit !== undefined
+      ? `Limite Radar: ${formatMoney(lead.radar.credit_limit)}`
+      : "",
+  ].filter(Boolean);
+
+  if (notes.length) {
+    params.set(
+      "commercial_notes",
+      notes.join(" | ")
+    );
+  }
+
+  return `/crm/dashboard/customers?${params.toString()}`;
+}
+
 function shortText(text?: string | null, max = 90) {
   if (!text) return "";
   const value = String(text).trim();
@@ -1079,6 +1190,12 @@ export default function DashboardPage() {
                             >
                               Próxima ação
                             </button>
+                            <Link
+                              href={buildCustomerRegistrationHref(lead)}
+                              className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700 transition hover:bg-emerald-100"
+                            >
+                              👤 Cadastrar cliente
+                            </Link>
                           </div>
                         </td>
                       </tr>
@@ -1400,6 +1517,12 @@ function LeadCard({
       >
         📅 Próxima ação
       </button>
+      <Link
+        href={buildCustomerRegistrationHref(lead)}
+        className="mt-2 block w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-center text-sm font-black text-emerald-700 transition hover:bg-emerald-100"
+      >
+        👤 Cadastrar como cliente
+      </Link>
     </article>
   );
 }
