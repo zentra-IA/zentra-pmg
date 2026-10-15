@@ -1092,16 +1092,26 @@ async function updateLeadKanbanStatus({
   candidate: string | null | undefined;
   explicit?: boolean;
 }) {
+  const currentStatus =
+    normalizeKanbanStatus(lead?.status || "novo") || "novo";
+
   const nextStatus = chooseKanbanStatus(
-    lead?.status || "novo",
+    currentStatus,
     candidate,
     explicit
   );
 
-  if (nextStatus === normalizeKanbanStatus(lead?.status || "novo")) {
-    return { ...lead, status: nextStatus };
+  if (nextStatus === currentStatus) {
+    return { ...lead, status: currentStatus };
   }
 
+  /*
+   * O lead já foi resolvido por company_id + owner_user_id + identidade exata
+   * em findLead(). Aqui usamos id + company_id como chave final de persistência.
+   *
+   * Motivo: filtrar owner_user_id novamente fazia alguns updates retornarem
+   * zero linhas sem erro e o código antigo fingia em memória que o card andou.
+   */
   const { data, error } = await supabase
     .from("leads")
     .update({
@@ -1110,22 +1120,35 @@ async function updateLeadKanbanStatus({
     })
     .eq("id", lead.id)
     .eq("company_id", companyId)
-    .eq("owner_user_id", userId)
     .select("*")
-    .maybeSingle();
+    .single();
 
-  if (error) {
-    console.error("[KANBAN] Erro ao atualizar status:", {
+  if (error || !data) {
+    console.error("[KANBAN] FALHA AO PERSISTIR STATUS:", {
       leadId: lead?.id,
-      currentStatus: lead?.status,
+      ownerUserId: userId,
+      currentStatus,
       candidate,
       nextStatus,
       error,
     });
-    return { ...lead, status: lead?.status || "novo" };
+
+    throw new Error(
+      `Kanban não persistiu ${currentStatus} -> ${nextStatus}: ${
+        error?.message || "lead não atualizado"
+      }`
+    );
   }
 
-  return data || { ...lead, status: nextStatus };
+  console.log("[KANBAN] STATUS PERSISTIDO:", {
+    leadId: data.id,
+    ownerUserId: userId,
+    from: currentStatus,
+    to: data.status,
+    explicit,
+  });
+
+  return data;
 }
 
 function shouldForceSalesStatus(
@@ -3855,6 +3878,40 @@ export async function POST(req: Request) {
     }
 
     if (!lead) {
+      /*
+       * FALLBACK CIRÚRGICO PARA O KANBAN:
+       *
+       * Antes de criar outro card, tenta recuperar o lead que acabou de
+       * receber um disparo. A função findLeadFromRecentQueue já possui
+       * regras de segurança (telefone/LID/JID/nome compatível), então não
+       * escolhe simplesmente "o último lead".
+       *
+       * Isso reduz o caso clássico:
+       * Mensagem enviada -> cliente responde por @lid -> nasce outro card.
+       */
+      lead = await findLeadFromRecentQueue({
+        supabase,
+        companyId,
+        userId,
+        phone,
+        lid,
+        remoteJid,
+        sessionId,
+        pushName,
+      });
+
+      if (lead) {
+        console.log("[KANBAN_IDENTITY] Lead recuperado da fila recente:", {
+          leadId: lead.id,
+          status: lead.status,
+          phone: lead.phone || null,
+          lid: lid || null,
+          remoteJid: remoteJid || null,
+        });
+      }
+    }
+
+    if (!lead) {
       const { data: createdLead, error: createError } =
         await supabase
           .from("leads")
@@ -4038,15 +4095,69 @@ export async function POST(req: Request) {
       false
     );
 
+    /*
+     * PERSISTÊNCIA OBRIGATÓRIA DO KANBAN:
+     * uma mensagem recebida precisa atualizar o banco de verdade.
+     * Não aceitamos mais "zero linhas atualizadas" como se fosse sucesso.
+     */
+    const previousStatus =
+      normalizeKanbanStatus(lead.status || "novo") || "novo";
+
+    const statusNow = new Date().toISOString();
+
+    /*
+     * KANBAN PRIMEIRO.
+     *
+     * A movimentação do card é salva isoladamente. Se algum dado auxiliar
+     * (LID, remote_jid, unread_count etc.) tiver problema, isso não impede
+     * "Mensagem enviada" -> "Cliente respondeu" / "Quer cotação".
+     *
+     * A lógica do chatbot abaixo permanece intocada.
+     */
     const { data: updatedLead, error: updateLeadError } =
       await supabase
         .from("leads")
         .update({
           status: statusAfterIncoming,
+          updated_at: statusNow,
+        })
+        .eq("id", lead.id)
+        .eq("company_id", companyId)
+        .select("*")
+        .single();
+
+    if (updateLeadError || !updatedLead) {
+      console.error("[KANBAN] MENSAGEM RECEBIDA NÃO MOVEU O CARD:", {
+        leadId: lead.id,
+        ownerUserId: userId,
+        companyId,
+        previousStatus,
+        detectedStatus,
+        statusAfterIncoming,
+        intent,
+        error: updateLeadError || null,
+      });
+
+      throw new Error(
+        `Não foi possível persistir o Kanban ${previousStatus} -> ${statusAfterIncoming}: ${
+          updateLeadError?.message || "lead não atualizado"
+        }`
+      );
+    }
+
+    lead = updatedLead;
+
+    /*
+     * Metadados operacionais são best-effort e vêm DEPOIS do Kanban.
+     */
+    const { data: metadataLead, error: metadataLeadError } =
+      await supabase
+        .from("leads")
+        .update({
           unread_count:
             Number(lead.unread_count || 0) + 1,
           last_message: historyMessage,
-          last_message_at: new Date().toISOString(),
+          last_message_at: statusNow,
           whatsapp_lid:
             lead.whatsapp_lid ||
             lid ||
@@ -4059,31 +4170,31 @@ export async function POST(req: Request) {
             lead.email ||
             email ||
             null,
-          updated_at: new Date().toISOString(),
+          updated_at: statusNow,
         })
         .eq("id", lead.id)
         .eq("company_id", companyId)
-        .eq("owner_user_id", userId)
         .select("*")
         .maybeSingle();
 
-    if (updateLeadError) {
-      throw new Error(
-        `Não foi possível atualizar o lead: ${updateLeadError.message}`
-      );
+    if (metadataLeadError) {
+      console.warn("[KANBAN] CARD MOVEU, MAS METADADOS FALHARAM:", {
+        leadId: lead.id,
+        status: lead.status,
+        error: metadataLeadError.message,
+      });
+    } else if (metadataLead) {
+      lead = metadataLead;
     }
 
-    if (updatedLead) {
-      lead = updatedLead;
-    } else {
-      lead = {
-        ...lead,
-        status: statusAfterIncoming,
-        unread_count:
-          Number(lead.unread_count || 0) + 1,
-        last_message: historyMessage,
-      };
-    }
+    console.log("[KANBAN] MENSAGEM RECEBIDA MOVEU O CARD:", {
+      leadId: lead.id,
+      ownerUserId: userId,
+      from: previousStatus,
+      to: lead.status,
+      intent,
+      messageId: messageId || null,
+    });
 
     if (lead.ai_paused === true) {
       return NextResponse.json({
