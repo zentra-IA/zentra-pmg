@@ -3312,8 +3312,44 @@ async function findLead({
   const lidOnly = isLidOnlyContact(phone, lid, remoteJid);
   const normalizedPushName = normalizeComparableName(pushName || "");
 
-  const safeCandidates = candidates.filter((lead) => {
+  /*
+   * Identidade de lead manual: para mensagem recebida só com @lid,
+   * o LID exato previamente vinculado a um lead COM telefone é mais
+   * confiável que pushName, remote_jid legado ou updated_at.
+   *
+   * Não presumimos qual telefone pertence a outro candidato. Em caso
+   * de dois leads com telefone disputando o mesmo LID na mesma sessão,
+   * interrompemos o processamento em vez de enviar mensagem/alterar card
+   * ou criar uma duplicata.
+   */
+  const exactPhoneBackedLidCandidates = lidOnly && lid
+    ? candidates.filter((item) =>
+        item.whatsapp_lid === lid &&
+        Boolean(normalizePhone(item.phone || "")) &&
+        Number(item.session_id) === Number(sessionId)
+      )
+    : [];
+
+  if (exactPhoneBackedLidCandidates.length > 1) {
+    console.error("[KANBAN_IDENTITY] LID AMBÍGUO COM TELEFONES:", {
+      companyId,
+      userId,
+      sessionId,
+      lid,
+      leadIds: exactPhoneBackedLidCandidates.map((item) => item.id),
+    });
+    throw new Error("Identidade WhatsApp ambígua: múltiplos leads com telefone para o mesmo LID.");
+  }
+
+  const safeCandidates = exactPhoneBackedLidCandidates.length === 1
+    ? exactPhoneBackedLidCandidates
+    : candidates.filter((lead) => {
     const sources = lead._sources || [];
+
+    // Um remote_jid legado não pode sobrepor um whatsapp_lid diferente.
+    if (lidOnly && lid && lead.whatsapp_lid && lead.whatsapp_lid !== lid) {
+      return false;
+    }
 
     // Telefone/e-mail são identificadores fortes.
     if (sources.includes("phone") || sources.includes("email")) return true;
