@@ -55,6 +55,7 @@ const FULL_MENU: MenuItem[] = [
   { label: "Transmissões Push", href: "/crm/dashboard/broadcasts", icon: "megaphone", description: "Listas e mensagens em massa" },
   { label: "Mensagens IA", href: "/crm/dashboard/messages", icon: "mail", description: "Templates comerciais" },
   { label: "Conteúdo IA", href: "/crm/dashboard/creative-generator", icon: "spark", description: "Criativos e textos" },
+  { label: "Ads IA", href: "/crm/dashboard/ads-ia", icon: "megaphone", description: "Planejamento de tráfego pago" },
   { label: "BI Comercial", href: "/crm/dashboard/bi", icon: "chart", description: "Indicadores gerenciais" },
   { label: "Pedidos", href: "/crm/dashboard/orders", icon: "orders", description: "Espelhos e histórico" },
   { label: "Cotações IA", href: "/crm/dashboard/quotes", icon: "quote", description: "Cotador PMG integrado" },
@@ -82,6 +83,7 @@ const SELLER_MENU: MenuItem[] = [
   { label: "Campanhas", href: "/crm/dashboard/campaigns", icon: "megaphone", description: "Disparos e automações" },
   { label: "Mensagens IA", href: "/crm/dashboard/messages", icon: "mail", description: "Templates comerciais" },
   { label: "Conteúdo IA", href: "/crm/dashboard/creative-generator", icon: "spark", description: "Criativos e textos" },
+  { label: "Ads IA", href: "/crm/dashboard/ads-ia", icon: "megaphone", description: "Planejamento de tráfego pago" },
   { label: "Pedidos", href: "/crm/dashboard/orders", icon: "orders", description: "Espelhos e histórico" },
   { label: "WhatsApp QR", href: "/crm/whatsapp", icon: "phone", description: "Conexão" },
 ];
