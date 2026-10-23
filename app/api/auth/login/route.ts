@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { prisma } from "@/lib/prisma";
+import { setAdsIaSessionCookies } from "@/lib/ads-ia-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -109,9 +110,9 @@ export async function POST(req: NextRequest) {
       password,
     });
 
-    if (error || !data?.user) {
+    if (error || !data?.user || !data.session?.access_token || !data.session.refresh_token) {
       return NextResponse.json(
-        { error: "E-mail ou senha inválidos." },
+        { error: "E-mail ou senha inválidos ou sessão não disponível." },
         { status: 401 }
       );
     }
@@ -179,6 +180,7 @@ export async function POST(req: NextRequest) {
         maxAge,
       });
 
+      setAdsIaSessionCookies(response, data.session, remember);
       return response;
     }
 
@@ -272,6 +274,7 @@ export async function POST(req: NextRequest) {
       response.cookies.set("zentra_branch_id", branch.id, cookieConfig);
     }
 
+    setAdsIaSessionCookies(response, data.session, remember);
     return response;
   } catch (error: any) {
     console.error("ERRO LOGIN ZENTRA SALES AI:", error);

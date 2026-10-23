@@ -246,3 +246,131 @@
 @media (prefers-reduced-motion: reduce) {
   .page button { transition: none; }
 }
+
+
+/* Ads IA V3 — Estúdio de marca e auditoria criativa */
+.brandStudio {
+  margin: 24px 0 0;
+  padding: 22px;
+  border: 1px solid #b9e0d1;
+  border-radius: 19px;
+  background: linear-gradient(148deg, #f1faf6 0%, #ffffff 60%, #f7faf9 100%);
+  box-shadow: 0 8px 22px rgba(13, 107, 80, .045);
+}
+.brandStudioHead { display: flex; align-items: center; gap: 13px; margin-bottom: 21px; }
+.brandStudioHead > div:nth-child(2) { flex: 1; min-width: 0; }
+.brandStudioHead h3 { color: #194b3e; font-size: 19px; margin: 2px 0 4px; }
+.brandStudioHead p { color: #567269; font-size: 12px; line-height: 1.55; }
+.brandIcon { width: 45px; height: 45px; flex: none; display: flex; align-items: center; justify-content: center; border-radius: 13px; background: #d8f3e7; color: #147655; }
+.brandDefault { display: inline-flex; gap: 5px; align-items: center; white-space: nowrap; padding: 7px 10px; border: 1px solid #c6e6d5; background: #fff; color: #157252; border-radius: 20px; font-weight: 750; font-size: 11px; }
+.brandGrid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(250px, .78fr); gap: 23px; align-items: start; }
+.brandControls { display: flex; flex-direction: column; gap: 17px; min-width: 0; }
+.brandControls .formGrid { gap: 12px; }
+.modeLabel { color: #2c5750; font-weight: 800; font-size: 12px; margin-bottom: -9px; }
+.modeGrid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
+.modeButton {
+  display: flex; flex-direction: column; gap: 5px; align-items: flex-start;
+  text-align: left; padding: 12px; border-radius: 12px;
+  border: 1.5px solid #d9e6e5; background: #fff; color: #49635f; cursor: pointer;
+}
+.modeButton b { color: #224f48; font-size: 12px; line-height: 1.35; }
+.modeButton span { font-size: 11px; color: #7a8c86; line-height: 1.5; }
+.modeButton:hover { background: #f2faf6; border-color: #a7d9c6; }
+.modeActive, .modeActive:hover { border-color: #208362; background: #e7f6ed; box-shadow: inset 0 0 0 1px rgba(31,131,97,.18); }
+.modeActive b { color: #0c674b; }
+.brandFormSplit { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.brandFormSplit label { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: #314957; font-weight: 700; font-size: 12px; }
+.brandFormSplit label small { font-weight: 500; color: #83938c; }
+.logoControl { padding: 15px; border-radius: 13px; background: #fff; border: 1px solid #d6e8e0; }
+.toggleLabel { display: flex; align-items: center; gap: 10px; cursor: pointer; color: #275749; font-size: 13px; font-weight: 800; }
+.toggleLabel input { width: 17px; height: 17px; accent-color: #128360; flex: none; }
+.logoUploader { display: flex; gap: 9px; align-items: center; margin: 12px 0 9px; flex-wrap: wrap; }
+.logoUploadButton { cursor: pointer; position: relative; padding: 9px 12px; min-height: 40px; border-radius: 9px; border: 1px solid #b8ddd0; background: #eaf7f0; color: #106247; display: flex; gap: 7px; align-items: center; font-size: 12px; font-weight: 750; overflow: hidden; }
+.logoUploadButton:hover { border-color: #14966f; background: #dff2e6; }
+.logoUploadButton input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.logoUploadButton:focus-within { outline: 2px solid #159e73; outline-offset: 2px; }
+.logoUploadState { font-size: 11px; color: #59776b; min-width: 0; overflow-wrap: anywhere; }
+.logoRemove { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 8px; border: 1px solid #ead6d2; background: #fff; color: #ad5a4b; cursor: pointer; }
+.brandHint { margin-top: 9px !important; font-size: 11px; color: #698477; line-height: 1.6; }
+.previewCol { min-width: 0; }
+.previewHead { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #375f55; font-weight: 750; margin-bottom: 9px; }
+.previewHead span { margin-left: auto; font-size: 10px; color: #7d9990; font-weight: 500; }
+.adPreview {
+  padding: 15px; border-radius: 15px; min-height: 340px;
+  background: radial-gradient(ellipse at 85% 20%, rgba(138,229,177,.42), transparent 60%), linear-gradient(150deg,#174338,#0c322f 74%);
+  box-shadow: 0 10px 22px rgba(8, 63, 43, .12);
+  color: #fff; display: flex; flex-direction: column; overflow: hidden;
+}
+.previewTop { display: flex; align-items: flex-start; gap: 8px; justify-content: space-between; }
+.previewTop img { max-width: 110px; max-height: 60px; object-fit: contain; background: #fff; border-radius: 6px; padding: 5px; }
+.previewBrand { display: inline-block; color: #fff; font-weight: 950; font-size: 22px; letter-spacing: -.04em; overflow-wrap: anywhere; }
+.previewTop small { text-align: right; font-weight: 750; color: #b7e7c9; font-size: 8px; letter-spacing: .08em; max-width: 90px; }
+.previewText { display: flex; flex-direction: column; gap: 7px; margin-top: 20px; min-width: 0; }
+.previewText strong { color: #fff; line-height: 1.25; letter-spacing: -.025em; font-size: clamp(18px, 2vw, 24px); overflow-wrap: anywhere; }
+.previewText span { color: #dbf4e5; font-size: 11px; line-height: 1.5; }
+.previewProduct { display: flex; align-items: center; gap: 9px; justify-content: center; flex: 1; margin: 20px 0 12px; min-height: 88px; padding: 10px; border: 1px dashed rgba(218,251,236,.35); border-radius: 12px; color: #a9d9c1; background: rgba(229,254,239,.05); }
+.previewProduct span { font-size: 11px; font-weight: 700; }
+.previewCTA { border-radius: 9px; padding: 11px; text-align: center; background: #c7f07d; color: #193f31; font-weight: 850; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.previewFoot { display: flex; gap: 7px; align-items: center; font-size: 10px; color: #608578; line-height: 1.5; margin-top: 10px; }
+.previewFoot svg { flex: none; }
+.nextStepBar { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 18px; border-radius: 14px; background: linear-gradient(115deg,#133d34,#1b6550); color: #fff; }
+.nextStepBar .cardEyebrow { color: #b0f4c6; }
+.nextStepBar h3 { font-size: 18px; margin: 3px 0 6px; color: #fff; }
+.nextStepBar p { font-size: 12px; color: #e3f4e8; }
+.nextStepBar .copyButton { flex: none; background: #fff; color: #185c48; border-color: #fff; }
+.resultDetails { padding: 0 16px; border: 1px solid #dce9e5; border-radius: 13px; background: #fafdfb; min-width: 0; }
+.resultDetails summary { list-style: none; padding: 15px 0; cursor: pointer; display: flex; align-items: center; gap: 9px; font-weight: 750; font-size: 13px; color: #28614f; }
+.resultDetails summary::-webkit-details-marker { display: none; }
+.resultDetails summary svg:last-child { margin-left: auto; }
+.resultDetails[open] summary { border-bottom: 1px solid #e1ece7; margin-bottom: 15px; }
+.resultDetails .twoColumns { padding-bottom: 16px; }
+.resultDetails .resultCard { background: #fff; }
+.metricGrid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; }
+.reviewMetric { padding: 13px 15px; background: #fff; border: 1px solid #dcebe4; border-radius: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.reviewMetric strong { font-size: 22px; line-height: 1.1; font-weight: 850; color: #106349; font-variant-numeric: tabular-nums; }
+.reviewMetric strong small { font-size: 11px; color: #88a09a; font-weight: 600; }
+.reviewMetric span { color: #4c7466; font-size: 11px; line-height: 1.35; max-width: 100px; }
+.checksPanel { background: #f8fbfa; border: 1px solid #ddece6; padding: 17px; border-radius: 14px; }
+.sectionMiniTitle { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; color: #166b50; }
+.sectionMiniTitle h3 { font-size: 15px; }
+.checkGrid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+.checkItem { display: flex; gap: 11px; align-items: flex-start; padding: 13px; border: 1px solid #e5e9e6; border-radius: 11px; background: #fff; min-width: 0; }
+.checkItem > div { min-width: 0; }
+.checkItem h4 { font-size: 13px; color: #203c37; margin: 0 0 5px; }
+.checkItem p { font-size: 12px; color: #59726b; line-height: 1.55; }
+.checkItem small { display: block; font-size: 11px; color: #735b3d; margin-top: 8px; line-height: 1.55; }
+.checkSymbol { width: 27px; height: 27px; display: flex; align-items: center; justify-content: center; border-radius: 9px; flex: none; }
+.checkOk .checkSymbol { background: #e4f7ec; color: #118052; }
+.checkFix .checkSymbol { background: #fff0dc; color: #ac7720; }
+.checkUnknown .checkSymbol { background: #edf1f7; color: #6a7b96; }
+.correctionIntro { display: flex; align-items: flex-start; gap: 11px; color: #195d49; padding: 16px; border: 1px solid #c9e8d8; border-radius: 13px; background: #ebf8f1; }
+.correctionIntro > svg { flex: none; margin-top: 2px; }
+.correctionIntro b { font-size: 15px; }
+.correctionIntro p { color: #527466; font-size: 12px; margin-top: 4px; }
+@media (max-width: 1150px) {
+ .brandGrid { grid-template-columns: minmax(0,1.2fr) minmax(245px,.8fr); gap: 15px; }
+ .modeGrid { grid-template-columns: 1fr; }
+ .modeButton { flex-direction: row; justify-content: space-between; align-items: center; }
+}
+@media (max-width: 870px) {
+ .brandGrid { grid-template-columns: 1fr; }
+ .previewCol { max-width: 430px; width: 100%; margin: 0 auto; }
+ .modeGrid { grid-template-columns: repeat(3,minmax(0,1fr)); }
+ .modeButton { flex-direction: column; align-items: flex-start; }
+ .metricGrid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@media (max-width: 600px) {
+ .brandStudio { padding: 15px; margin-top: 17px; }
+ .brandStudioHead { align-items: flex-start; }
+ .brandDefault { display: none; }
+ .brandControls .formGrid, .brandFormSplit { grid-template-columns: 1fr; }
+ .modeGrid { grid-template-columns: 1fr; }
+ .modeButton { flex-direction: row; }
+ .adPreview { min-height: 300px; }
+ .nextStepBar { flex-direction: column; align-items: stretch; }
+ .checkGrid { grid-template-columns: 1fr; }
+ .metricGrid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+
+.editorSuccess { display: flex; align-items: flex-start; gap: 9px; padding: 12px 14px; border-radius: 11px; border: 1px solid #b7e5ce; background: #edf9f2; color: #126747; margin: 13px 0; font-weight: 650; font-size: 12px; }
+.editorSuccess svg { flex: none; margin-top: 1px; }
