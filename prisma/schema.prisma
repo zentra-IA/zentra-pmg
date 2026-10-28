@@ -2461,3 +2461,53 @@ model PortalQuoteItem {
   @@index([product_code])
   @@map("portal_quote_items")
 }
+
+/// Campanhas independentes da Júlia; não modificam o Discador Manual.
+model JuliaCampaign {
+  id         String    @id @default(cuid())
+  company_id String    @db.Uuid
+  user_id    String    @db.Uuid
+  name       String
+  status     String    @default("READY")
+  maxCalls   Int       @default(10)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  contacts JuliaContact[]
+
+  @@index([company_id, user_id, createdAt])
+  @@index([status])
+  @@map("julia_campaigns")
+}
+
+model JuliaContact {
+  id              String    @id @default(cuid())
+  campaignId      String
+  name            String
+  phone           String
+  phoneType       String    @default("FIXO")
+  status          String    @default("PENDING")
+  attempts        Int       @default(0)
+  vapiCallId      String?   @unique
+  vapiStatus      String?
+  outcome         String?
+  endedReason     String?
+  result          Json?
+  costUsd         Float?
+  durationSeconds Int?
+  lastError       String?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  campaign JuliaCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, phone])
+  @@index([phone])
+  @@index([status])
+  @@index([campaignId, status])
+  @@map("julia_contacts")
+}
