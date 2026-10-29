@@ -16,7 +16,7 @@ export const LIVE_STATUSES = ["RESERVED", "QUEUED", "RINGING", "IN_PROGRESS", "F
 
 // Devido à autenticação legada via cookies sem assinatura, NÃO habilitar chamadas pagas na Vercel.
 export function canDial(): boolean {
-  return process.env.NODE_ENV !== "production" &&
+  return (process.env.NODE_ENV !== "production" || (process.env.JULIA_PROD_TEST_ONLY === "true" && /^\d{12,13}$/.test((process.env.JULIA_TEST_MOBILE_E164 || "").replace(/\D/g, "")))) &&
     process.env.JULIA_CALLS_ENABLED === "true" &&
     Boolean(process.env.JULIA_VAPI_API_KEY && process.env.JULIA_VAPI_ASSISTANT_ID &&
       process.env.JULIA_VAPI_PHONE_NUMBER_ID);
@@ -26,7 +26,7 @@ export function canDial(): boolean {
 export function isJuliaTestMobile(phone: string, campaignName: string, maxCalls: number): boolean {
   const allowed = (process.env.JULIA_TEST_MOBILE_E164 || "").replace(/\D/g, "");
   const number = String(phone || "").replace(/\D/g, "");
-  return process.env.NODE_ENV !== "production" &&
+  return (process.env.NODE_ENV !== "production" || process.env.JULIA_PROD_TEST_ONLY === "true") &&
     campaignName === "[TESTE JULIA] CELULAR AUTORIZADO" &&
     maxCalls === 1 && allowed.length >= 12 && allowed.length <= 13 &&
     (number === allowed || (allowed.startsWith("55") && number === allowed.slice(2)));

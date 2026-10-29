@@ -22,6 +22,12 @@ export async function POST(req:NextRequest, context:{params:Promise<{id:string}>
         where:{id,company_id:access.companyId,user_id:access.userId}
       });
       if (!campaign || campaign.status!=="RUNNING") throw new JuliaAccessError(409,"Campanha pausada ou indisponível.");
+      if (process.env.NODE_ENV === "production" &&
+          (process.env.JULIA_PROD_TEST_ONLY !== "true" ||
+           campaign.name !== "[TESTE JULIA] CELULAR AUTORIZADO" ||
+           campaign.maxCalls !== 1)) {
+        throw new JuliaAccessError(403, "Producao liberada somente para campanha de teste autorizada.");
+      }
       const globalActive=await tx.juliaContact.count({
         where:{status:{in:LIVE_STATUSES},campaign:{company_id:access.companyId}}
       });
@@ -42,6 +48,14 @@ export async function POST(req:NextRequest, context:{params:Promise<{id:string}>
         where:{campaignId:id,status:"PENDING"},orderBy:{createdAt:"asc"},take:80
       });
       for (const c of pending) {
+        if (process.env.NODE_ENV === "production" &&
+            !isJuliaTestMobile(c.phone, campaign.name, campaign.maxCalls)) {
+          await tx.juliaContact.update({
+            where: { id: c.id },
+            data: { status: "REVIEW", outcome: "bloqueado_piloto_producao" }
+          });
+          continue;
+        }
         if (!checkPhone(c.phone) && !isJuliaTestMobile(c.phone, campaign.name, campaign.maxCalls)) {
           await tx.juliaContact.update({where:{id:c.id},data:{status:"REVIEW",outcome:"numero_nao_fixo"}});
           continue;
@@ -62,10 +76,39 @@ export async function POST(req:NextRequest, context:{params:Promise<{id:string}>
             campaign:{company_id:access.companyId}
           },select:{id:true}
         });
-        if(recent) {
-          await tx.juliaContact.update({where:{id:c.id},data:{status:"REVIEW",outcome:"contato_recente_30_dias"}});
-          continue;
-        }
+      const prodTest =
+  process.env.NODE_ENV === "production" &&
+  process.env.JULIA_PROD_TEST_ONLY === "true" &&
+  isJuliaTestMobile(c.phone, campaign.name, campaign.maxCalls);
+
+if (prodTest) {
+  const testAttempts24h = await tx.juliaContact.count({
+    where: {
+      campaign: {
+        company_id: access.companyId,
+        name: "[TESTE JULIA] CELULAR AUTORIZADO",
+      },
+      attempts: { gt: 0 },
+      startedAt: { gte: lastDay },
+    },
+  });
+
+  if (testAttempts24h >= 1) {
+    throw new JuliaAccessError(
+      429,
+      "Piloto de produção limitado a uma tentativa a cada 24 horas."
+    );
+  }
+} else if (recent) {
+  await tx.juliaContact.update({
+    where: { id: c.id },
+    data: {
+      status: "REVIEW",
+      outcome: "contato_recente_30_dias",
+    },
+  });
+  continue;
+}
         const now=new Date();
         await tx.juliaContact.update({
           where:{id:c.id}, data:{status:"RESERVED",attempts:{increment:1},startedAt:now}
