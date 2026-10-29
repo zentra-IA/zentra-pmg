@@ -81,7 +81,7 @@ export async function POST(req:NextRequest, context:{params:Promise<{id:string}>
   process.env.JULIA_PROD_TEST_ONLY === "true" &&
   isJuliaTestMobile(c.phone, campaign.name, campaign.maxCalls);
 
-if (prodTest) {
+if (!prodTest && recent) {
   const testAttempts24h = await tx.juliaContact.count({
     where: {
       campaign: {
@@ -93,12 +93,9 @@ if (prodTest) {
     },
   });
 
-  if (testAttempts24h >= 1) {
-    throw new JuliaAccessError(
-      429,
-      "Piloto de produção limitado a uma tentativa a cada 24 horas."
-    );
-  }
+  // Piloto autorizado: sem bloqueio de 24 horas.
+// Permanecem ativos o limite da campanha,
+// o numero autorizado e o controle financeiro.
 } else if (recent) {
   await tx.juliaContact.update({
     where: { id: c.id },
