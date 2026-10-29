@@ -76,36 +76,23 @@ export async function POST(req:NextRequest, context:{params:Promise<{id:string}>
             campaign:{company_id:access.companyId}
           },select:{id:true}
         });
-      const prodTest =
-  process.env.NODE_ENV === "production" &&
-  process.env.JULIA_PROD_TEST_ONLY === "true" &&
-  isJuliaTestMobile(c.phone, campaign.name, campaign.maxCalls);
+              const prodTest =
+          process.env.NODE_ENV === "production" &&
+          process.env.JULIA_PROD_TEST_ONLY === "true" &&
+          isJuliaTestMobile(c.phone, campaign.name, campaign.maxCalls);
 
-if (!prodTest && recent) {
-  const testAttempts24h = await tx.juliaContact.count({
-    where: {
-      campaign: {
-        company_id: access.companyId,
-        name: "[TESTE JULIA] CELULAR AUTORIZADO",
-      },
-      attempts: { gt: 0 },
-      startedAt: { gte: lastDay },
-    },
-  });
-
-  // Piloto autorizado: sem bloqueio de 24 horas.
-// Permanecem ativos o limite da campanha,
-// o numero autorizado e o controle financeiro.
-} else if (recent) {
-  await tx.juliaContact.update({
-    where: { id: c.id },
-    data: {
-      status: "REVIEW",
-      outcome: "contato_recente_30_dias",
-    },
-  });
-  continue;
-}
+        // Mantém o bloqueio de 30 dias para contatos comuns.
+        // Permite repetir o teste somente no celular autorizado.
+        if (!prodTest && recent) {
+          await tx.juliaContact.update({
+            where: { id: c.id },
+            data: {
+              status: "REVIEW",
+              outcome: "contato_recente_30_dias",
+            },
+          });
+          continue;
+        }
         const now=new Date();
         await tx.juliaContact.update({
           where:{id:c.id}, data:{status:"RESERVED",attempts:{increment:1},startedAt:now}
