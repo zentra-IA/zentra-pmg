@@ -68,26 +68,25 @@ export async function POST(
 
       const production = process.env.NODE_ENV === "production";
 
-      const testCampaign =
-        production &&
-        process.env.JULIA_PROD_TEST_ONLY === "true" &&
-        campaign.name === TEST_CAMPAIGN_NAME &&
-        campaign.maxCalls === 1;
+const testCampaign =
+  production &&
+  process.env.JULIA_PROD_TEST_ONLY === "true" &&
+  campaign.name === TEST_CAMPAIGN_NAME &&
+  campaign.maxCalls === 1;
 
-      const commercialPilot =
-        production &&
-        process.env.JULIA_COMMERCIAL_PILOT === "true" &&
-        campaign.name !== TEST_CAMPAIGN_NAME &&
-        campaign.maxCalls >= 1 &&
-        campaign.maxCalls <= COMMERCIAL_PILOT_LIMIT;
+const commercialPilot =
+  production &&
+  process.env.JULIA_COMMERCIAL_PILOT === "true" &&
+  campaign.name !== TEST_CAMPAIGN_NAME &&
+  campaign.maxCalls >= 1 &&
+  campaign.maxCalls <= 50;
 
-      // Produção só admite os dois modos explicitamente autorizados.
-      if (production && !testCampaign && !commercialPilot) {
-        throw new JuliaAccessError(
-          403,
-          "Produção autorizada somente para teste no celular ou piloto comercial de até 5 tentativas."
-        );
-      }
+if (production && !testCampaign && !commercialPilot) {
+  throw new JuliaAccessError(
+    403,
+    "Discagem comercial não habilitada."
+  );
+}
 
       // 3. Não permitir chamadas simultâneas na empresa
       const globalActive = await tx.juliaContact.count({
@@ -142,22 +141,6 @@ export async function POST(
       //
       // Sem janela temporal: o piloto não reinicia automaticamente
       // a cada dia, nem ao criar outra campanha.
-      if (commercialPilot) {
-        const commercialAttempts = await tx.juliaContact.count({
-          where: {
-            campaign: { company_id: access.companyId },
-            phoneType: "FIXO",
-            attempts: { gt: 0 },
-          },
-        });
-
-        if (commercialAttempts >= COMMERCIAL_PILOT_LIMIT) {
-          throw new JuliaAccessError(
-            429,
-            "Piloto comercial atingiu o limite global de 5 tentativas. É necessária uma nova autorização para ampliar."
-          );
-        }
-      }
 
       // 7. Verificação de orçamento, dentro da mesma transação
       await assertJuliaBudget(tx, access.companyId);
