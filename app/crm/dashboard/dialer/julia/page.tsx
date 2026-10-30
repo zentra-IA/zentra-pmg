@@ -17,6 +17,7 @@ type CallResult = {
   whatsapp_confirmado?:string; autorizou_contato_vendedor?:boolean;
   nao_ligar_novamente?:boolean; observacoes?:string;
   _julia?:{nextAt?:string;kind?:"RETRY"|"CALLBACK";previousStatus?:string};
+  _juliaVerification?:{customerSpoke?:boolean;callbackConfirmed?:boolean;evidence?:string};
   _juliaHistory?:Array<{outcome?:string|null;result?:{observacoes?:string}}>;
 };
 type CallContact = {
@@ -68,22 +69,63 @@ function label(status:string) {
     DO_NOT_CALL:"Não ligar",FAILED:"Falha"
   } as Record<string,string>)[status]||status;
 }
-type ResultFilter = "todos"|"retornos"|"agendados"|"atenderam"|"nao_atenderam"|"desligaram"|"falhas"|"interessados"|"pendentes"|"bloqueados";
+type ResultFilter =
+  "todos"|"retornos"|"agendados"|"interessados"|"atenderam"|"ausentes"|
+  "nao_atenderam"|"ocupados"|"caixa_postal"|"desligaram"|"falhas"|
+  "revisar"|"pendentes"|"bloqueados";
+
 function classifyResult(c:CallContact):ResultFilter {
-  if(c.status==="DO_NOT_CALL"||c.result?.nao_ligar_novamente)return "bloqueados";
+  if(c.status==="DO_NOT_CALL"||c.result?.nao_ligar_novamente===true)return "bloqueados";
   if(c.result?._julia?.nextAt&&c.status==="PENDING")return "agendados";
   if(["PENDING","RESERVED","QUEUED","RINGING","IN_PROGRESS","FINISHING"].includes(c.status))return "pendentes";
   const outcome=(c.outcome||"").toLowerCase();
   const reason=(c.endedReason||"").toLowerCase();
   if(c.status==="FAILED"||outcome==="falha_sip"||reason.includes("sip outbound call failed"))return "falhas";
-  if(c.status==="NO_ANSWER"||["nao_atendeu","ocupado","caixa_postal"].includes(outcome))return "nao_atenderam";
-  if(outcome==="desligou"||(reason.includes("customer-ended-call") && c.durationSeconds!==null &&
-     c.durationSeconds<=20&&!c.result?.nome_responsavel))return "desligaram";
-  if(["responsavel_ausente","retorno_agendado"].includes(outcome)||
-    c.result?.melhor_dia_retorno||c.result?.melhor_horario_retorno)return "retornos";
+  if(outcome==="ocupado")return "ocupados";
+  if(outcome==="caixa_postal")return "caixa_postal";
+  if(c.status==="NO_ANSWER"||outcome==="nao_atendeu")return "nao_atenderam";
+  if(["desligou","desligou_rapido","desligou_sem_conversa"].includes(outcome))return "desligaram";
+  // Resultado extraído automaticamente não confirma um pedido de retorno.
+  // Registros antigos sem evidência são enviados a "Conferir".
+  if(outcome==="retorno_confirmado" && c.result?._juliaVerification?.callbackConfirmed===true)
+    return "retornos";
+  if(outcome==="retorno_agendado"||outcome==="retorno_nao_confirmado")return "revisar";
+  if(outcome==="responsavel_ausente")return "ausentes";
   if(["interessado","cotacao","comprar","pedido"].some(x=>outcome.includes(x))||
-    c.result?.autorizou_contato_vendedor===true)return "interessados";
-  return c.status==="DONE"?"atenderam":"falhas";
+     c.result?.autorizou_contato_vendedor===true)
+    return c.result?._juliaVerification?.customerSpoke===true?"interessados":"revisar";
+  if(c.status==="DONE")
+    return c.result?._juliaVerification?.customerSpoke===true?"atenderam":"revisar";
+  return "revisar";
+}
+function resultLabel(c:CallContact):string {
+  const dict:Record<string,string>={
+    retorno_confirmado:"Retorno solicitado pelo cliente",
+    retorno_agendado:"Retorno antigo — conferir",
+    retorno_nao_confirmado:"Retorno sem confirmação",
+    responsavel_ausente:"Responsável ausente — sem retorno combinado",
+    desligou_rapido:"Desligou rapidamente",
+    desligou_sem_conversa:"Desligou sem conversa registrada",
+    desligou:"Desligou",
+    nao_atendeu:"Não atendeu",
+    ocupado:"Ocupado",
+    caixa_postal:"Caixa postal",
+    falha_sip:"Falha de conexão SIP",
+    conversa_sem_classificacao:"Conversa — avaliar",
+    sem_confirmacao:"Sem fala do cliente confirmada",
+    sem_dados:"Sem informações suficientes",
+    maximo_tentativas:"Máximo de tentativas",
+    nao_ligar_novamente:"Pediu para não ligar",
+  };
+  return dict[c.outcome||""]||c.outcome||"—";
+}
+function isCallback(c:CallContact) {
+  return classifyResult(c)==="retornos" ||
+    (classifyResult(c)==="agendados" && c.result?._julia?.kind==="CALLBACK");
+}
+function matchesResultFilter(c:CallContact,filter:ResultFilter) {
+  return filter==="todos" || classifyResult(c)===filter ||
+    (filter==="retornos" && isCallback(c));
 }
 function nextLocalDate(hours=2) {
   const d=new Date(Date.now()+hours*3600000);
@@ -107,11 +149,11 @@ function whatsappUrl(value:string|null|undefined):string|null {
   return `https://wa.me/55${digits}`;
 }
 function saveCsv(detail:Detail) {
-  const columns=["Nome","Telefone","Nome do responsável","Status","Resultado","Situação","Retorno dia","Retorno horário",
+  const columns=["Nome","Telefone","Nome do responsável","Status","Categoria","Resultado","Situação","Retorno dia","Retorno horário",
     "WhatsApp confirmado","Autorizou contato","Não ligar","Observações","Duração seg",
     "Custo Vapi USD","Motivo encerramento","Vapi Call ID"];
   const rows=detail.contacts.map(c=>[
-    c.name,c.phone,c.result?.nome_responsavel||"",label(c.status),c.outcome||"",c.result?.situacao_cliente||"",
+    c.name,c.phone,c.result?.nome_responsavel||"",label(c.status),classifyResult(c),resultLabel(c),c.result?.situacao_cliente||"",
     c.result?.melhor_dia_retorno||"",c.result?.melhor_horario_retorno||"",
     c.result?.whatsapp_confirmado||"",c.result?.autorizou_contato_vendedor?"SIM":"NÃO",
     c.result?.nao_ligar_novamente?"SIM":"NÃO",c.result?.observacoes||"",
@@ -338,9 +380,7 @@ export default function JuliaPage() {
   }
   const results=detail?.contacts||[];
   const filteredResults=results.filter(c=>{
-    const category=classifyResult(c);
-    if(resultFilter!=="todos" && category!==resultFilter &&
-       !(resultFilter==="retornos" && category==="agendados" && c.result?._julia?.kind==="CALLBACK"))return false;
+    if(!matchesResultFilter(c,resultFilter))return false;
     const query=resultSearch.trim().toLowerCase();
     return !query||[c.name,c.phone,c.outcome,c.result?.observacoes,c.result?.nome_responsavel]
       .some(x=>String(x||"").toLowerCase().includes(query));
@@ -354,8 +394,11 @@ export default function JuliaPage() {
     return d && c.result?._julia?.kind==="CALLBACK" && d.getTime()<=Date.now();
   }).length;
   const scheduledCallbacks=results.filter(c=>Boolean(scheduledTime(c))&&c.result?._julia?.kind==="CALLBACK").length;
-  const missed=results.filter(c=>classifyResult(c)==="nao_atenderam").length;
+  const missed=results.filter(c=>["nao_atenderam","ocupados","caixa_postal"].includes(classifyResult(c))).length;
   const failed=results.filter(c=>classifyResult(c)==="falhas").length;
+  const hungUp=results.filter(c=>classifyResult(c)==="desligaram").length;
+  const toReview=results.filter(c=>classifyResult(c)==="revisar").length;
+  const verifiedCallbacks=results.filter(isCallback).length;
   return <main style={S.root}><div style={S.wrap}>
     <Link href="/crm/dashboard/dialer" style={{color:"#14843f",fontWeight:800,textDecoration:"none"}}>← Voltar ao Discador Comercial</Link>
     <header style={{marginTop:20,background:"linear-gradient(110deg,#083e2c,#106b47)",borderRadius:22,padding:"clamp(20px,3vw,32px)",color:"#fff",boxShadow:"0 14px 35px rgba(8,62,44,.14)"}}>
@@ -457,10 +500,12 @@ export default function JuliaPage() {
           <div style={S.grid}>
             <div style={{background:"#f1f5f9",padding:15,borderRadius:12}}><strong>{detail.summary.total}</strong><p>Contatos</p></div>
             <div style={{background:"#f1f5f9",padding:15,borderRadius:12}}><strong>{detail.summary.completed}</strong><p>Finalizados</p></div>
-            <div style={{background:"#ecfdf5",padding:15,borderRadius:12}}><strong>{detail.summary.callbacks}</strong><p>Retornos solicitados</p></div>
+            <div style={{background:"#ecfdf5",padding:15,borderRadius:12}}><strong>{verifiedCallbacks}</strong><p>Retornos confirmados / agendados</p></div>
             <div style={{background:dueCallbacks?"#fff7ed":"#f1f5f9",padding:15,borderRadius:12}}><strong>{dueCallbacks}</strong><p>Retornos no horário / vencidos</p></div>
-            <div style={{background:"#f1f5f9",padding:15,borderRadius:12}}><strong>{missed}</strong><p>Não atenderam</p></div>
-            <div style={{background:"#fef2f2",padding:15,borderRadius:12}}><strong>{failed}</strong><p>Falhas técnicas / revisar</p></div>
+            <div style={{background:"#f1f5f9",padding:15,borderRadius:12}}><strong>{missed}</strong><p>Sem contato (não atendeu/ocupado/caixa postal)</p></div>
+            <div style={{background:"#fef2f2",padding:15,borderRadius:12}}><strong>{failed}</strong><p>Falhas técnicas</p></div>
+            <div style={{background:"#fff7ed",padding:15,borderRadius:12}}><strong>{hungUp}</strong><p>Desligaram rápido / sem conversa</p></div>
+            <div style={{background:"#f8fafc",padding:15,borderRadius:12}}><strong>{toReview}</strong><p>Conferir classificação</p></div>
           </div>
           <p><strong>Vapi:</strong> US$ {detail.summary.vapiCostUsd.toFixed(4)} (não inclui Nvoip) ·
             <strong> Reagendados:</strong> {results.filter(c=>Boolean(scheduledTime(c))).length}
@@ -501,15 +546,16 @@ export default function JuliaPage() {
           <div style={{...S.row,marginTop:12}}>
             {([
               ["todos","Todos"],["retornos","Retornos"],["agendados","Agendados"],
-              ["interessados","Interessados"],["atenderam","Atenderam"],["nao_atenderam","Não atenderam"],
-              ["desligaram","Desligaram"],["falhas","Falhas"],["pendentes","Aguardando"],
-              ["bloqueados","Não ligar"]
+              ["interessados","Interessados"],["atenderam","Conversaram"],
+              ["ausentes","Responsável ausente"],["nao_atenderam","Não atenderam"],
+              ["ocupados","Ocupado"],["caixa_postal","Caixa postal"],
+              ["desligaram","Desligaram"],["falhas","Falha SIP"],
+              ["revisar","Conferir"],["pendentes","Aguardando"],["bloqueados","Não ligar"]
             ] as [ResultFilter,string][]).map(([value,title])=>
               <button key={value} type="button" onClick={()=>{setResultFilter(value);setResultPage(1);}}
                 style={{...S.neutral,padding:"8px 12px",fontSize:12,
                   background:resultFilter===value?"#dcfce7":"#f8fafc",borderColor:resultFilter===value?"#16a34a":"#dbe4ed"}}>
-                {title} ({value==="todos"?results.length:results.filter(c=>classifyResult(c)===value||
-                  (value==="retornos"&&classifyResult(c)==="agendados"&&c.result?._julia?.kind==="CALLBACK")).length})
+                {title} ({results.filter(c=>matchesResultFilter(c,value)).length})
               </button>)}
           </div>
           <div style={{overflowX:"auto",marginTop:14,maxHeight:630}}>
@@ -522,7 +568,8 @@ export default function JuliaPage() {
                 <td style={{...S.td,minWidth:150}}><strong>{c.name}</strong><div style={S.muted}>Tentativas: {c.attempts}</div></td>
                 <td style={S.td}>{c.phone}</td>
                 <td style={S.td}>{label(c.status)}</td>
-                <td style={S.td}>{c.outcome||"—"}{c.endedReason&&<div style={{...S.muted,maxWidth:190}}>{c.endedReason}</div>}
+                <td style={S.td}>{resultLabel(c)}{classifyResult(c)==="revisar"&&
+                   <div style={{fontSize:11,color:"#a16207"}}>Confira a gravação antes de marcar retorno.</div>}{c.endedReason&&<div style={{...S.muted,maxWidth:190}}>{c.endedReason}</div>}
                   {Boolean(c.result?._juliaHistory?.length)&&<details style={{marginTop:5}}>
                     <summary style={{color:"#087a45",cursor:"pointer"}}>Histórico anterior</summary>
                     {c.result?._juliaHistory?.map((h,i)=><p key={i} style={S.muted}>

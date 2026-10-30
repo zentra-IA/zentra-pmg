@@ -269,9 +269,7 @@ export function summarize(
     ).length,
 
     callbacks: contacts.filter(
-      c =>
-        c.outcome === "responsavel_ausente" ||
-        c.outcome === "retorno_agendado"
+      c => c.outcome === "retorno_confirmado"
     ).length,
 
     optOut: contacts.filter(

@@ -293,6 +293,9 @@ if (production && !testCampaign && !commercialPilot) {
         assistantId: process.env.JULIA_VAPI_ASSISTANT_ID,
         assistantOverrides: {
           maxDurationSeconds: 150,
+          // Abertura curta e honesta: pergunta primeiro, vende depois.
+          firstMessage: "Oi, tudo bem? Eu sou a Júlia, assistente virtual da PMG Atacadista. É bem rapidinho: posso falar com quem cuida das compras aí?",
+          firstMessageInterruptionsEnabled: true,
         },
         phoneNumberId: process.env.JULIA_VAPI_PHONE_NUMBER_ID,
         customer: {
