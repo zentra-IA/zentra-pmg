@@ -6,7 +6,7 @@ import { normalizeJuliaRows } from "@/lib/julia/phones";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-const MAX = 300;
+const MAX = 400;
 
 async function __pmg_original_GET(req: NextRequest) {
   try {
@@ -51,8 +51,8 @@ async function __pmg_original_GET(req: NextRequest) {
     return NextResponse.json({
       success: true, source, contacts: normalizeJuliaRows(rows),
       note: source === "prospects"
-        ? "Até 300 prospects recentemente revelados (podem ter telefone principal e secundário)."
-        : "Até 300 clientes vinculados ao usuário logado.",
+        ? "Até 400 prospects recentemente revelados (podem ter telefone principal e secundário)."
+        : "Até 400 clientes vinculados ao usuário logado.",
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const e = juliaError(error);

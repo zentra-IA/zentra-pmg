@@ -8,9 +8,9 @@ import {
   inBusinessHours,
   vapiFetch,
   LIVE_STATUSES,
-  DAILY_LIMIT,
   assertJuliaBudget,
   isJuliaTestMobile,
+  MAX_CALLS,
   handleApi,
   JuliaAccessError,
 } from "@/lib/julia/campaign";
@@ -19,7 +19,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const TEST_CAMPAIGN_NAME = "[TESTE JULIA] CELULAR AUTORIZADO";
-const COMMERCIAL_PILOT_LIMIT = 5;
+const MAX_ATTEMPTS_PER_CONTACT = 3;
 
 export async function POST(
   req: NextRequest,
@@ -79,7 +79,7 @@ const commercialPilot =
   process.env.JULIA_COMMERCIAL_PILOT === "true" &&
   campaign.name !== TEST_CAMPAIGN_NAME &&
   campaign.maxCalls >= 1 &&
-  campaign.maxCalls <= 50;
+  campaign.maxCalls <= MAX_CALLS;
 
 if (production && !testCampaign && !commercialPilot) {
   throw new JuliaAccessError(
@@ -104,12 +104,11 @@ if (production && !testCampaign && !commercialPilot) {
       }
 
       // 4. Limite individual da campanha
-      const total = await tx.juliaContact.count({
-        where: {
-          campaignId: id,
-          attempts: { gt: 0 },
-        },
+      const usedAttempts = await tx.juliaContact.aggregate({
+        where: { campaignId: id },
+        _sum: { attempts: true },
       });
+      const total = usedAttempts._sum.attempts ?? 0;
 
       if (total >= campaign.maxCalls) {
         throw new JuliaAccessError(
@@ -118,29 +117,8 @@ if (production && !testCampaign && !commercialPilot) {
         );
       }
 
-      // 5. Limite geral de segurança por empresa
-      const lastDay = new Date(Date.now() - 24 * 3600 * 1000);
-
-      const daily = await tx.juliaContact.count({
-        where: {
-          campaign: { company_id: access.companyId },
-          attempts: { gt: 0 },
-          startedAt: { gte: lastDay },
-        },
-      });
-
-      if (daily >= DAILY_LIMIT) {
-        throw new JuliaAccessError(
-          429,
-          "Limite de segurança de 50 tentativas a cada 24 horas atingido."
-        );
-      }
-
-      // 6. Piloto comercial: limite global de 5 tentativas
-      // por empresa, independentemente da campanha.
-      //
-      // Sem janela temporal: o piloto não reinicia automaticamente
-      // a cada dia, nem ao criar outra campanha.
+      // Sem bloqueio diário arbitrário: a verba de 24h continua sendo o teto
+      // preventivo configurado para a operação, incluindo a telefonia.
 
       // 7. Verificação de orçamento, dentro da mesma transação
       await assertJuliaBudget(tx, access.companyId);
@@ -152,10 +130,31 @@ if (production && !testCampaign && !commercialPilot) {
           status: "PENDING",
         },
         orderBy: { createdAt: "asc" },
-        take: 80,
+        take: 400,
       });
 
       for (const c of pending) {
+        // As novas tentativas são agendadas explicitamente e só entram
+        // na fila depois da hora escolhida, nunca imediatamente.
+        if (c.attempts >= MAX_ATTEMPTS_PER_CONTACT) {
+          await tx.juliaContact.update({
+            where: { id: c.id },
+            data: { status: "REVIEW", outcome: "maximo_tentativas" },
+          });
+          continue;
+        }
+        const result = c.result && typeof c.result === "object" && !Array.isArray(c.result)
+          ? (c.result as Record<string, unknown>) : {};
+        const metadata = result._julia;
+        if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+          const when = (metadata as Record<string, unknown>).nextAt;
+          if (typeof when === "string") {
+            const nextAt = new Date(when);
+            if (!Number.isNaN(nextAt.getTime()) && nextAt.getTime() > Date.now()) {
+              continue;
+            }
+          }
+        }
         const authorizedTestMobile =
           testCampaign &&
           isJuliaTestMobile(

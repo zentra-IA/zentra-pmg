@@ -1,13 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { prisma, requireJulia, ownedCampaign, handleApi, vapiFetch, OUTPUT_ID, safeResult } from "@/lib/julia/campaign";
 
 export const dynamic="force-dynamic";
 export const runtime="nodejs";
 
-function noAnswer(endedReason:string){
-  if(endedReason.includes("did-not-answer")||endedReason.includes("no-answer")) return "nao_atendeu";
-  if(endedReason.includes("busy")) return "ocupado";
-  if(endedReason.includes("voicemail")) return "caixa_postal";
+function noAnswer(endedReason: string, durationSeconds: number | null) {
+  const reason = endedReason.toLowerCase();
+  if (reason.includes("sip") && (reason.includes("error") || reason.includes("failed"))) return "falha_sip";
+  if (reason.includes("did-not-answer") || reason.includes("no-answer")) return "nao_atendeu";
+  if (reason.includes("busy")) return "ocupado";
+  if (reason.includes("voicemail")) return "caixa_postal";
+  if (reason.includes("customer-ended-call") && durationSeconds !== null &&
+      durationSeconds <= 20) return "desligou";
   return "sem_dados";
 }
 function validDate(v:any):Date|null {
@@ -61,25 +66,38 @@ export async function POST(req:NextRequest, context:{params:Promise<{id:string}>
         const output=call.artifact?.structuredOutputs?.[OUTPUT_ID]?.result;
         const structured=safeResult(output);
         // A extração da IA pode aparecer alguns segundos após a ligação terminar.
-        if(!structured && (Date.now()-ended.getTime())<90000) {
+        const immediateFailure = /sip.*(error|failed)|(error|failed).*sip/i.test(String(call.endedReason||""));
+        if(!structured && !immediateFailure && (Date.now()-ended.getTime())<90000) {
           await prisma.juliaContact.update({where:{id:contact.id},data:{status:"FINISHING",vapiStatus:"ended"}});
           updated++;
           continue;
         }
         const reason=String(call.endedReason||"");
-        const outcome=structured?.resultado||noAnswer(reason);
-        const optOut=structured?.nao_ligar_novamente===true||outcome==="nao_ligar_novamente";
-        const status=optOut?"DO_NOT_CALL":(!structured&&outcome==="sem_dados"?"REVIEW":
-          ["nao_atendeu","ocupado","caixa_postal"].includes(outcome)?"NO_ANSWER":"DONE");
         const start=validDate(call.startedAt);
         const duration=start?Math.max(0,Math.floor((ended.getTime()-start.getTime())/1000)):null;
+        const outcome=structured?.resultado||noAnswer(reason,duration);
+        const optOut=structured?.nao_ligar_novamente===true||outcome==="nao_ligar_novamente";
+        const status=optOut?"DO_NOT_CALL":outcome==="falha_sip"?"FAILED":
+          (!structured&&outcome==="sem_dados"?"REVIEW":
+          ["nao_atendeu","ocupado","caixa_postal"].includes(outcome)?"NO_ANSWER":"DONE");
         const rawCost=Number(call.cost);
+        // Preserve resultados históricos de uma chamada anterior reagendada.
+        const oldResult=contact.result && typeof contact.result==="object" &&
+          !Array.isArray(contact.result) ? contact.result as Record<string, unknown> : {};
+        const history=Array.isArray(oldResult._juliaHistory) ? oldResult._juliaHistory : [];
+        const { _julia: _schedule, _juliaHistory: _oldHistory, ...previousFields } = oldResult;
+        const archived = contact.attempts > 1 && _schedule
+          ? [{ outcome: contact.outcome, result: previousFields }] : [];
+        const resultData = {
+          ...(structured || {}),
+          _juliaHistory: [...history, ...archived].slice(-5),
+        } as Prisma.InputJsonObject;
         // Evita marcar novas ligações como concluídas duas vezes por sincronizações concorrentes.
         await prisma.juliaContact.updateMany({
           where:{id:contact.id,status:{in:["QUEUED","RINGING","IN_PROGRESS","FINISHING"]}},
           data:{
             status, vapiStatus:"ended", outcome, endedReason:reason.slice(0,180),
-            result: structured||undefined,
+            result: resultData,
             costUsd:Number.isFinite(rawCost)?rawCost:null,
             durationSeconds:duration, finishedAt:ended
           }
@@ -95,7 +113,10 @@ export async function POST(req:NextRequest, context:{params:Promise<{id:string}>
     const activeLeft=await prisma.juliaContact.count({
       where:{campaignId:id,status:{in:["RESERVED","QUEUED","RINGING","IN_PROGRESS","FINISHING"]}}
     });
-    const attempts=await prisma.juliaContact.count({where:{campaignId:id,attempts:{gt:0}}});
+    const attemptsSum=await prisma.juliaContact.aggregate({
+      where:{campaignId:id}, _sum:{attempts:true}
+    });
+    const attempts=attemptsSum._sum.attempts??0;
     if(campaign.status==="RUNNING" && activeLeft===0 && (open===0 || attempts>=campaign.maxCalls)) {
       await prisma.juliaCampaign.updateMany({
         where:{id,status:"RUNNING"},

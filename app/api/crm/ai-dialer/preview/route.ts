@@ -12,9 +12,9 @@ async function __pmg_original_POST(req: NextRequest) {
     await requireJuliaSession(req);
     const body = await req.json();
     const text = typeof body?.text === "string" ? body.text : "";
-    if (text.length > 50_000 || text.split(/\r?\n/).length > 300) {
+    if (text.length > 70_000 || text.split(/\r?\n/).length > 400) {
       return NextResponse.json({
-        success: false, error: "Limite de 300 linhas ou 50 mil caracteres."
+        success: false, error: "Limite de 400 linhas ou 70 mil caracteres."
       }, { status: 400 });
     }
     return NextResponse.json({

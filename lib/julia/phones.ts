@@ -63,7 +63,7 @@ export function classifyJuliaPhone(value: unknown): {
   };
 }
 
-export function parseJuliaContacts(text: string, maxRows = 300): JuliaContact[] {
+export function parseJuliaContacts(text: string, maxRows = 400): JuliaContact[] {
   const seen = new Set<string>();
   const lines = String(text || "").split(/\r?\n/).filter((s) => s.trim());
   return lines.slice(0, maxRows).map((raw, index) => {

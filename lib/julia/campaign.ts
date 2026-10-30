@@ -24,9 +24,9 @@ export {
   JuliaAccessError,
 };
 
-export const MAX_CONTACTS = 300;
-export const MAX_CALLS = 50;
-export const DAILY_LIMIT = 60;
+export const MAX_CONTACTS = 400;
+export const MAX_CALLS = 800; // Até 400 contatos e tentativas adicionais agendadas.
+export const DAILY_LIMIT = 0; // Sem teto fixo diário; orçamento continua obrigatório.
 
 export const OUTPUT_ID = "038879db-8b86-47e4-8ac2-673b88902784";
 

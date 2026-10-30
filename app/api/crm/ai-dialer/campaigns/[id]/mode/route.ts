@@ -18,7 +18,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     if (action === "START" && !canDial()) {
       return NextResponse.json({
         success: false,
-        error: "Chamadas pagas desabilitadas. Configure e autorize o piloto LOCAL antes de iniciar."
+        error:  "Chamadas desabilitadas. Confira a configuração da Júlia."
       }, { status: 503 });
     }
 
@@ -32,7 +32,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
       });
       if (!campaign) throw new JuliaAccessError(404, "Campanha da Júlia não encontrada.");
       if (campaign.status === "COMPLETED") {
-        throw new JuliaAccessError(409, "Campanha concluída.");
+        throw new JuliaAccessError(409, "Campanha concluída. Reagende contatos para reabrir.");
       }
 
       const nextStatus = action === "PAUSE" ? "PAUSED" : "RUNNING";

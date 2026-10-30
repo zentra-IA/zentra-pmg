@@ -5,6 +5,8 @@ export const runtime="nodejs";
 export async function GET(req:NextRequest){
   return handleApi(req,async()=>{
     await requireJulia(req);
-    return NextResponse.json({success:true,callsEnabled:canDial(),maxCalls:MAX_CALLS,dailyLimit:DAILY_LIMIT,mode:"LOCAL_PILOT"});
+    return NextResponse.json({success:true,callsEnabled:canDial(),maxCalls:MAX_CALLS,dailyLimit:DAILY_LIMIT,mode:"COMMERCIAL",
+      budgetUsd24h:Number(process.env.JULIA_BUDGET_USD_24H||0),
+      reserveUsdPerCall:Number(process.env.JULIA_RESERVE_USD_PER_CALL||0)});
   });
 }

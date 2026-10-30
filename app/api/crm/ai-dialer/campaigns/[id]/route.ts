@@ -8,7 +8,7 @@ export async function GET(req:NextRequest, context:{params:Promise<{id:string}>}
     const {id} = await context.params;
     const {campaign} = await ownedCampaign(req,id);
     const contacts = await prisma.juliaContact.findMany({
-      where:{campaignId:id}, orderBy:{createdAt:"asc"}, take:300,
+      where:{campaignId:id}, orderBy:{createdAt:"asc"}, take:400,
       select: {
         id:true,name:true,phone:true,status:true,attempts:true,vapiCallId:true,vapiStatus:true,
         outcome:true,endedReason:true,result:true,costUsd:true,durationSeconds:true,
