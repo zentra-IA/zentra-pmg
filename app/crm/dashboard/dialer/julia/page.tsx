@@ -32,6 +32,21 @@ type Detail = {
   summary:{total:number;pending:number;active:number;completed:number;callbacks:number;
     optOut:number;vapiCostUsd:number;outcomes:Record<string,number>}
 };
+type OverviewRow = CallContact & {
+  campaign: { id:string; name:string; status:string };
+};
+type OverviewData = {
+  campaigns: Array<{id:string;name:string;status:string;createdAt:string}>;
+  rows:OverviewRow[];total:number;page:number;pageSize:number;
+  dueCallbacks:OverviewRow[];dueCallbacksMayBeIncomplete:boolean;
+  summary:{all:number;callbacks:number;notAnswered:number;hungUp:number;sipFailures:number};
+};
+function localDate(daysAgo=0):string {
+  const d=new Date();
+  d.setDate(d.getDate()-daysAgo);
+  const formatter=new Intl.DateTimeFormat("en-CA",{timeZone:"America/Sao_Paulo",year:"numeric",month:"2-digit",day:"2-digit"});
+  return formatter.format(d);
+}
 const API="/api/crm/ai-dialer";
 const S:Record<string,CSSProperties>={
   root:{background:"linear-gradient(180deg,#edf7f2 0%,#f7fafc 280px,#f8fafc 100%)",color:"#0f172a",minHeight:"100vh",padding:"clamp(12px,2.5vw,30px)"},
@@ -62,7 +77,7 @@ function date(value:string|null|undefined) {
 }
 function label(status:string) {
   return ({
-    READY:"Pronta",RUNNING:"Em execução",PAUSED:"Pausada",COMPLETED:"Concluída",
+    READY:"Pronta",RUNNING:"Em execução",PAUSED:"Pausada",COMPLETED:"Concluída",ARCHIVED:"Arquivada",
     PENDING:"Aguardando",RESERVED:"Preparando",QUEUED:"Chamando",
     RINGING:"Tocando",IN_PROGRESS:"Em conversa",FINISHING:"Analisando",
     DONE:"Concluída",NO_ANSWER:"Não atendeu",REVIEW:"Revisar",
@@ -169,6 +184,21 @@ function saveCsv(detail:Detail) {
   const a=document.createElement("a");a.href=url;a.download=`julia-${detail.campaign.id}-relatorio.csv`;a.click();
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
+function saveOverviewCsv(rows:OverviewRow[]) {
+  const titles=["Campanha","Nome","Telefone","Status","Categoria","Resultado","Retorno","Data da tentativa","Custo Vapi USD"];
+  const data=rows.map(c=>[
+    c.campaign.name,c.name,c.phone,label(c.status),classifyResult(c),resultLabel(c),
+    c.result?._julia?.nextAt||"",c.startedAt||"",c.costUsd??""
+  ]);
+  const quote=(v:unknown)=>{
+    const raw=String(v??"");const safe=/^[=+\-@\t\r]/.test(raw)?"'"+raw:raw;
+    return `"${safe.replace(/"/g,'""')}"`;
+  };
+  const csv="\uFEFF"+[titles,...data].map(row=>row.map(quote).join(";")).join("\r\n");
+  const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));
+  const link=document.createElement("a");link.href=url;link.download="julia-resultado-geral-pagina.csv";
+  link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
 function ContactsTable({title,items}:{title:string;items:Contact[]}) {
   const [copied,setCopied]=useState(false);
   const copy=async()=>{
@@ -200,6 +230,17 @@ export default function JuliaPage() {
   const [selectedId,setSelectedId]=useState("");
   const [detail,setDetail]=useState<Detail|null>(null);
   const [config,setConfig]=useState<{callsEnabled:boolean;maxCalls:number;dailyLimit:number;budgetUsd24h:number;reserveUsdPerCall:number}|null>(null);
+  const [overview,setOverview]=useState<OverviewData|null>(null);
+  const [overviewCampaign,setOverviewCampaign]=useState("");
+  const [overviewFilter,setOverviewFilter]=useState<ResultFilter>("todos");
+  const [overviewQ,setOverviewQ]=useState("");
+  const [overviewSearchInput,setOverviewSearchInput]=useState("");
+  const [overviewFrom,setOverviewFrom]=useState(localDate(7));
+  const [overviewTo,setOverviewTo]=useState(localDate());
+  const [overviewPage,setOverviewPage]=useState(1);
+  const [overviewRefresh,setOverviewRefresh]=useState(0);
+  const [showArchived,setShowArchived]=useState(false);
+
   const [resultFilter,setResultFilter]=useState<ResultFilter>("todos");
   const [resultSearch,setResultSearch]=useState("");
   const [resultPage,setResultPage]=useState(1);
@@ -227,6 +268,55 @@ export default function JuliaPage() {
     setConfig(data);
   },[]);
 
+  const loadOverview=useCallback(async()=>{
+    const qs=new URLSearchParams({
+      from:overviewFrom,to:overviewTo,filter:overviewFilter,page:String(overviewPage)
+    });
+    if(overviewCampaign)qs.set("campaignId",overviewCampaign);
+    if(overviewQ.trim())qs.set("q",overviewQ.trim());
+    const data=await json(await fetch(`${API}/overview?${qs}`,{cache:"no-store"}));
+    setOverview(data as OverviewData);
+  },[overviewFrom,overviewTo,overviewFilter,overviewPage,overviewCampaign,overviewQ]);
+  useEffect(()=>{
+    if(!unlocked)return;
+    void loadOverview().catch((e:any)=>setMessage(e.message));
+  },[unlocked,loadOverview,overviewRefresh]);
+
+  async function deleteCampaign(id:string,name:string,kind:"archive"|"permanent") {
+    if(busy)return;
+    if(kind==="archive" && !window.confirm(
+      `Arquivar "${name}"? Ela sairá da lista principal, mas histórico, retornos e bloqueios serão preservados.`
+    ))return;
+    if(kind==="permanent"){
+      const typed=window.prompt(`ATENÇÃO: exclusão definitiva. Somente campanhas nunca discadas podem ser apagadas.\nDigite o nome exato para confirmar:\n${name}`);
+      if(typed!==name)return;
+    }
+    armed.current=false;
+    setBusy(true);setMessage("");
+    try{
+      await json(await fetch(`${API}/campaigns/${encodeURIComponent(id)}${kind==="permanent"?"?permanent=true":""}`,{
+        method:"DELETE",cache:"no-store",
+      }));
+      if(selectedId===id){setSelectedId("");setDetail(null);}
+      await loadCampaigns();
+      setOverviewRefresh(v=>v+1);
+      setMessage(kind==="archive"
+        ?"Campanha arquivada. Histórico e retornos preservados."
+        :"Campanha sem tentativas excluída definitivamente.");
+    }catch(e:any){setMessage(e.message);}
+    finally{setBusy(false);}
+  }
+  async function restoreCampaign(id:string) {
+    if(busy)return;
+    setBusy(true);setMessage("");
+    try{
+      await post(`/campaigns/${encodeURIComponent(id)}`,{action:"RESTORE"});
+      await loadCampaigns();
+      setOverviewRefresh(v=>v+1);
+      setMessage("Campanha restaurada e pausada. Nenhuma ligação foi iniciada.");
+    }catch(e:any){setMessage(e.message);}
+    finally{setBusy(false);}
+  }
   useEffect(()=>{
     let alive=true;
     (async()=>{
@@ -254,7 +344,7 @@ export default function JuliaPage() {
   async function logout(){
     armed.current=false;
     await fetch(API+"/session",{method:"DELETE"});
-    setUnlocked(false);setDetail(null);setCampaigns([]);setSelectedId("");
+    setUnlocked(false);setDetail(null);setCampaigns([]);setSelectedId("");setOverview(null);
   }
   async function analyze(){
     setBusy(true);setMessage("");
@@ -372,6 +462,7 @@ export default function JuliaPage() {
         action,contactId,...(action==="CANCEL"?{}:{at:d.toISOString()})
       });
       await Promise.all([loadDetail(selectedId),loadCampaigns()]);
+      setOverviewRefresh(v=>v+1);
       setScheduleContactId("");
       setMessage(action==="CANCEL"?"Reagendamento cancelado.":
         `${data.scheduled} contato(s) agendado(s). Para executar automaticamente no horário, inicie/retome a campanha e mantenha a aba aberta.`);
@@ -426,6 +517,125 @@ export default function JuliaPage() {
           <strong style={{color:"#166534"}}>● Painel protegido · Operação comercial</strong>
           <button style={S.neutral} onClick={()=>void logout()}>Bloquear painel</button>
         </div>
+        <section id="julia-central" style={{...S.card,border:"2px solid #b7e4c7"}}>
+          <div style={{...S.row,justifyContent:"space-between"}}>
+            <div>
+              <h2 style={{margin:"0 0 5px"}}>📊 Central de Resultados — Todas as campanhas</h2>
+              <p style={{...S.muted,margin:0}}>Campanhas reunidas. Filtre por data, campanha, resultado e nome.</p>
+            </div>
+            <div style={S.row}>
+              <button style={S.neutral} type="button" onClick={()=>setOverviewRefresh(v=>v+1)}>Atualizar geral</button>
+              <button style={S.neutral} type="button" disabled={!overview?.rows.length}
+                onClick={()=>overview&&saveOverviewCsv(overview.rows)}>Exportar esta página CSV</button>
+            </div>
+          </div>
+
+          {overview&&<div style={{...S.grid,marginTop:15}}>
+            {([
+              ["Contatos no período",overview.summary.all,"#f1f5f9"],
+              ["Retornos confirmados/agendados",overview.summary.callbacks,"#dcfce7"],
+              ["Não atenderam",overview.summary.notAnswered,"#f1f5f9"],
+              ["Desligaram",overview.summary.hungUp,"#fff7ed"],
+              ["Falhas de conexão",overview.summary.sipFailures,"#fef2f2"]
+            ] as [string,number,string][]).map(([text,count,color])=>
+              <div key={text} style={{background:color,padding:13,borderRadius:12}}>
+                <strong style={{fontSize:23}}>{count}</strong>
+                <div style={{...S.muted,fontSize:12}}>{text}</div>
+              </div>)}
+          </div>}
+
+          <div style={{marginTop:18,padding:14,background:"#f0fdf4",borderRadius:12}}>
+            <h3 style={{margin:"0 0 8px",color:"#166534"}}>🔔 Retornos vencidos — de todas as campanhas</h3>
+            <p style={S.muted}>Aparecem aqui independentemente do filtro de datas. Nenhuma chamada é iniciada automaticamente nesta tela.</p>
+            {overview?.dueCallbacks.length?
+              <div style={{maxHeight:230,overflow:"auto"}}>
+                {overview.dueCallbacks.map(c=><div key={c.id} style={{...S.row,padding:"9px 0",borderBottom:"1px solid #d1fae5"}}>
+                  <div style={{flex:1,minWidth:210}}>
+                    <strong>{c.name}</strong> — {c.phone}
+                    <div style={S.muted}>{c.campaign.name} · agendado para {date(c.result?._julia?.nextAt)}</div>
+                  </div>
+                  <button style={S.neutral} type="button"
+                    onClick={()=>{armed.current=false;setSelectedId(c.campaign.id);void loadDetail(c.campaign.id);
+                      window.location.hash="julia-resultados";}}>Abrir campanha</button>
+                </div>)}
+              </div>:
+              <p style={S.muted}>Nenhum retorno vencido localizado.</p>}
+            {overview?.dueCallbacksMayBeIncomplete&&
+              <p style={{...S.muted,color:"#a16207"}}>Há muitos retornos históricos. Consulte uma campanha específica para verificar os mais antigos.</p>}
+          </div>
+
+          <div style={{...S.grid,marginTop:18}}>
+            <label>De
+              <input style={{...S.input,marginTop:5}} type="date" value={overviewFrom}
+                onChange={e=>{setOverviewFrom(e.target.value);setOverviewPage(1);}}/>
+            </label>
+            <label>Até
+              <input style={{...S.input,marginTop:5}} type="date" value={overviewTo}
+                onChange={e=>{setOverviewTo(e.target.value);setOverviewPage(1);}}/>
+            </label>
+            <label>Campanha
+              <select style={{...S.input,marginTop:5}} value={overviewCampaign}
+                onChange={e=>{setOverviewCampaign(e.target.value);setOverviewPage(1);}}>
+                <option value="">Todas as campanhas</option>
+                {overview?.campaigns.map(c=>
+                  <option key={c.id} value={c.id}>{c.name}{c.status==="ARCHIVED"?" (arquivada)":""}</option>)}
+              </select>
+            </label>
+            <label>Situação
+              <select style={{...S.input,marginTop:5}} value={overviewFilter}
+                onChange={e=>{setOverviewFilter(e.target.value as ResultFilter);setOverviewPage(1);}}>
+                {([
+                  ["todos","Todas"],["retornos","Retornos"],["agendados","Agendados"],
+                  ["interessados","Interessados"],["atenderam","Conversaram"],
+                  ["ausentes","Responsável ausente"],["nao_atenderam","Não atenderam"],
+                  ["ocupados","Ocupado"],["caixa_postal","Caixa postal"],
+                  ["desligaram","Desligaram"],["falhas","Falha SIP"],
+                  ["revisar","Conferir"],["pendentes","Aguardando"],["bloqueados","Não ligar"]
+                ] as [ResultFilter,string][]).map(([v,t])=><option key={v} value={v}>{t}</option>)}
+              </select>
+            </label>
+          </div>
+          <div style={{...S.row,marginTop:12}}>
+            <input style={{...S.input,maxWidth:400}} aria-label="Buscar resultados gerais"
+              placeholder="Buscar nome ou telefone" value={overviewSearchInput}
+              onChange={e=>setOverviewSearchInput(e.target.value)}
+              onKeyDown={e=>{if(e.key==="Enter"){setOverviewQ(overviewSearchInput);setOverviewPage(1);}}}/>
+            <button style={S.neutral} onClick={()=>{setOverviewQ(overviewSearchInput);setOverviewPage(1);}}>Pesquisar</button>
+          </div>
+
+          <div style={{overflowX:"auto",maxHeight:570,marginTop:16}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+              <thead style={{position:"sticky",top:0,background:"#eef3f7",zIndex:1}}>
+                <tr>{["Campanha","Contato","Telefone","Situação","Resultado","Data","Ação"].map(h=>
+                  <th key={h} style={S.th}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {overview?.rows.map(c=><tr key={c.id}>
+                  <td style={S.td}>{c.campaign.name}</td>
+                  <td style={S.td}><strong>{c.name}</strong></td>
+                  <td style={S.td}>{c.phone}</td>
+                  <td style={S.td}>{classifyResult(c)==="retornos"?"Retorno confirmado":classifyResult(c)}</td>
+                  <td style={S.td}>{resultLabel(c)}</td>
+                  <td style={S.td}>{date(c.startedAt)}</td>
+                  <td style={S.td}><button type="button" style={{...S.neutral,padding:"7px 9px"}}
+                    onClick={()=>{armed.current=false;setSelectedId(c.campaign.id);void loadDetail(c.campaign.id);
+                      window.location.hash="julia-resultados";}}>Abrir</button></td>
+                </tr>)}
+              </tbody>
+            </table>
+            {overview?.rows.length===0&&<p style={{...S.muted,padding:15}}>Nenhum contato para os filtros selecionados.</p>}
+            {!overview&&<p style={S.muted}>Carregando resultados gerais...</p>}
+          </div>
+          <div style={{...S.row,justifyContent:"space-between",marginTop:12}}>
+            <span style={S.muted}>{overview?.total??0} resultados · página {overviewPage} de {Math.max(1,Math.ceil((overview?.total??0)/(overview?.pageSize||40)))}</span>
+            <div style={S.row}>
+              <button style={S.neutral} disabled={overviewPage<=1}
+                onClick={()=>setOverviewPage(n=>Math.max(1,n-1))}>← Anterior</button>
+              <button style={S.neutral} disabled={!overview||overviewPage*overview.pageSize>=overview.total}
+                onClick={()=>setOverviewPage(n=>n+1)}>Próxima →</button>
+            </div>
+          </div>
+        </section>
         <section style={S.card}>
           <h2 style={{marginTop:0}}>01 <span style={{color:"#087a45"}}>·</span> Preparar contatos</h2>
           <p style={{...S.muted,marginTop:-4}}>Importe ou cole a lista. A Júlia separa automaticamente os números fixos e os celulares.</p>
@@ -485,12 +695,29 @@ export default function JuliaPage() {
               {config?.callsEnabled?"Discagem habilitada":"Discagem paga desligada"}
             </strong>
           </div>
-          {campaigns.length===0?<p style={S.muted}>Nenhuma campanha cadastrada. Prepare uma lista e crie sua primeira campanha acima.</p>:
-            campaigns.map(c=><button key={c.id} style={{...S.neutral,textAlign:"left",display:"block",
-              width:"100%",marginBottom:8,background:selectedId===c.id?"#dcfce7":"#f8fafc"}}
-              onClick={()=>{armed.current=false;setResultPage(1);setResultFilter("todos");setScheduleContactId("");setSelectedId(c.id);void loadDetail(c.id);}}>
-              <strong>{c.name}</strong> — {label(c.status)} • {c._count?.contacts||0} contatos • limite {c.maxCalls}
-            </button>)}
+          <label style={{...S.row,fontSize:13,marginBottom:12}}>
+            <input type="checkbox" checked={showArchived} onChange={e=>setShowArchived(e.target.checked)}/>
+            Mostrar campanhas arquivadas
+          </label>
+          {campaigns.filter(c=>showArchived||c.status!=="ARCHIVED").length===0?
+            <p style={S.muted}>Nenhuma campanha nessa lista.</p>:
+            campaigns.filter(c=>showArchived||c.status!=="ARCHIVED").map(c=>
+              <div key={c.id} style={{...S.row,justifyContent:"space-between",padding:9,border:"1px solid #e2e8f0",
+                borderRadius:12,marginBottom:8,background:selectedId===c.id?"#dcfce7":"#fff"}}>
+                <button type="button" style={{...S.neutral,textAlign:"left",flex:"1 1 270px",border:0,background:"transparent"}}
+                  onClick={()=>{armed.current=false;setResultPage(1);setResultFilter("todos");setScheduleContactId("");
+                    setSelectedId(c.id);void loadDetail(c.id);}}>
+                  <strong>{c.name}</strong> — {c.status==="ARCHIVED"?"Arquivada":label(c.status)}
+                  {" • "}{c._count?.contacts||0} contatos • limite {c.maxCalls}
+                </button>
+                {c.status==="ARCHIVED"?
+                  <button type="button" style={S.neutral} disabled={busy}
+                    onClick={()=>void restoreCampaign(c.id)}>Restaurar</button>:
+                  <button type="button" style={S.neutral} disabled={busy||c.status==="RUNNING"}
+                    onClick={()=>void deleteCampaign(c.id,c.name,"archive")}>Arquivar</button>}
+                <button type="button" style={S.warn} disabled={busy||c.status==="RUNNING"}
+                  onClick={()=>void deleteCampaign(c.id,c.name,"permanent")}>Excluir definitivamente</button>
+              </div>)}
         </section>
         {detail&&<section id="julia-resultados" style={S.card}>
           <div style={{...S.row,justifyContent:"space-between"}}>

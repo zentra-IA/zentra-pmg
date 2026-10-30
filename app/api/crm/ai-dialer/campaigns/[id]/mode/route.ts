@@ -31,6 +31,9 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
         select: { status: true, startedAt: true }
       });
       if (!campaign) throw new JuliaAccessError(404, "Campanha da Júlia não encontrada.");
+      if (campaign.status === "ARCHIVED") {
+        throw new JuliaAccessError(409, "Campanha arquivada. Restaure-a antes de iniciar chamadas.");
+      }
       if (campaign.status === "COMPLETED") {
         throw new JuliaAccessError(409, "Campanha concluída. Reagende contatos para reabrir.");
       }

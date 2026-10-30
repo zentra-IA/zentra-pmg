@@ -52,6 +52,9 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
         where: { id, company_id: access.companyId, user_id: access.userId }
       });
       if (!campaign) throw new JuliaAccessError(404, "Campanha não encontrada.");
+      if (campaign.status === "ARCHIVED") {
+        throw new JuliaAccessError(409, "Restaure a campanha arquivada antes de reagendar.");
+      }
 
       const total = await tx.juliaContact.aggregate({
         where: { campaignId: id }, _sum: { attempts: true }
