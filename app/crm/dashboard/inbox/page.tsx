@@ -1324,15 +1324,17 @@ export default function InboxPage() {
       requestedLeadId
     );
 
-    const interval =
-      window.setInterval(() => {
-        loadInbox(undefined, true);
-      }, 10_000);
-
-    return () =>
-      window.clearInterval(
-        interval
-      );
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") {
+        void loadInbox(undefined, true);
+      }
+    };
+    const interval = window.setInterval(refreshWhenVisible, 20_000);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

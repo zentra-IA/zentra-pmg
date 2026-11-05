@@ -289,6 +289,32 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    // Consulta leve para notificações quando o chat global está fechado.
+    if (mode === "summary") {
+      const unread = await prisma.portalConversation.findMany({
+        where: {
+          company_id: access.companyId,
+          seller_id: access.sellerId,
+          seller_unread: { gt: 0 },
+        },
+        select: {
+          id: true,
+          customer_name: true,
+          last_message: true,
+          seller_unread: true,
+        },
+        orderBy: [{ last_message_at: "desc" }, { updated_at: "desc" }],
+        take: 300,
+      });
+      return NextResponse.json({
+        success: true,
+        conversations: unread.map((item) => ({
+          ...item,
+          last_message: item.last_message?.slice(0, 180) ?? null,
+        })),
+      });
+    }
+
     const conversationId = portalChatClean(
       req.nextUrl.searchParams.get("conversationId") ||
         req.nextUrl.searchParams.get("conversation_id")

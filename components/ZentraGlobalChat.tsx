@@ -144,19 +144,11 @@ export default function ZentraGlobalChat() {
   const notificationInitializedRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const [incomingToast, setIncomingToast] = useState<string | null>(null);
+  const [unreadTotal, setUnreadTotal] = useState(0);
 
   useEffect(() => {
     selectedIdRef.current = selected?.id ? String(selected.id) : null;
   }, [selected?.id]);
-
-  const unreadTotal = useMemo(
-    () =>
-      conversations.reduce(
-        (sum, item) => sum + Number(item?.seller_unread || 0),
-        0
-      ),
-    [conversations]
-  );
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -176,7 +168,7 @@ export default function ZentraGlobalChat() {
     );
   }, [conversations, search]);
 
-  function playIncomingSound() {
+  const playIncomingSound = useCallback(() => {
     try {
       const AudioContextCtor =
         window.AudioContext ||
@@ -210,7 +202,48 @@ export default function ZentraGlobalChat() {
     } catch {
       // Som nunca deve bloquear atendimento.
     }
-  }
+  }, []);
+
+  // Atualiza badges e mostra aviso somente quando há novas mensagens.
+  const updateNotifications = useCallback((items: any[]) => {
+    if (notificationInitializedRef.current) {
+      const incoming = items.filter((item: any) => {
+        const previous =
+          knownConversationStateRef.current.get(String(item.id)) || 0;
+        return Number(item?.seller_unread || 0) > previous;
+      });
+
+      if (incoming.length) {
+        const newest = incoming[0];
+        const name = customerName(newest);
+        playIncomingSound();
+        setIncomingToast(`${name}: ${newest?.last_message || "Nova mensagem"}`);
+        window.setTimeout(() => setIncomingToast(null), 5500);
+
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification("Zentra · Nova mensagem do portal", {
+            body: `${name} enviou uma mensagem.`,
+            icon: "/logo-pmg.png",
+            tag: `portal-chat-seller-${newest.id}`,
+          });
+        }
+      }
+    }
+
+    knownConversationStateRef.current = new Map(
+      items.map((item: any) => [
+        String(item.id),
+        Number(item?.seller_unread || 0),
+      ])
+    );
+    notificationInitializedRef.current = true;
+    setUnreadTotal(
+      items.reduce(
+        (sum: number, item: any) => sum + Number(item?.seller_unread || 0),
+        0
+      )
+    );
+  }, [playIncomingSound]);
 
   const loadConversations = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -232,41 +265,7 @@ export default function ZentraGlobalChat() {
         ? data.conversations
         : [];
 
-      if (notificationInitializedRef.current) {
-        const newIncoming = items.filter((item: any) => {
-          const previous =
-            knownConversationStateRef.current.get(String(item.id)) || 0;
-          return Number(item?.seller_unread || 0) > previous;
-        });
-
-        if (newIncoming.length) {
-          const newest = newIncoming[0];
-          const name = customerName(newest);
-
-          playIncomingSound();
-          setIncomingToast(`${name}: ${newest?.last_message || "Nova mensagem"}`);
-          window.setTimeout(() => setIncomingToast(null), 5500);
-
-          if (
-            "Notification" in window &&
-            Notification.permission === "granted"
-          ) {
-            new Notification("Zentra · Nova mensagem do portal", {
-              body: `${name} enviou uma mensagem.`,
-              icon: "/logo-pmg.png",
-              tag: `portal-chat-seller-${newest.id}`,
-            });
-          }
-        }
-      }
-
-      knownConversationStateRef.current = new Map(
-        items.map((item: any) => [
-          String(item.id),
-          Number(item?.seller_unread || 0),
-        ])
-      );
-      notificationInitializedRef.current = true;
+      updateNotifications(items);
 
       setConversations(items);
 
@@ -285,7 +284,23 @@ export default function ZentraGlobalChat() {
     } finally {
       if (!silent) setLoading(false);
     }
-  }, []);
+  }, [updateNotifications]);
+
+  const loadNotificationSummary = useCallback(async () => {
+    try {
+      const response = await fetch("/api/crm/portal-chat?mode=summary", {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (!response.ok) return;
+      const data = await response.json().catch(() => ({}));
+      if (data?.success && Array.isArray(data.conversations)) {
+        updateNotifications(data.conversations);
+      }
+    } catch {
+      // Falha do contador não deve interromper o chat.
+    }
+  }, [updateNotifications]);
 
   const loadMessages = useCallback(
     async (conversationId: string, silent = false) => {
@@ -337,24 +352,56 @@ export default function ZentraGlobalChat() {
     []
   );
 
+  // Fechado: consulta somente as notificações não lidas uma vez por minuto.
   useEffect(() => {
-    void loadConversations(false);
+    if (open) return;
+    const refresh = () => {
+      if (document.visibilityState === "visible") {
+        void loadNotificationSummary();
+      }
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 60_000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [open, loadNotificationSummary]);
 
-    const interval = window.setInterval(() => {
+  // Aberto: lista completa a cada 30 s, além de atualizações após ações.
+  useEffect(() => {
+    if (!open) return;
+    const refresh = () => {
       if (document.visibilityState !== "visible") return;
-
       void loadConversations(true);
-
       const id = selectedIdRef.current;
       if (id) void loadMessages(id, true);
-    }, 1200);
+    };
+    refresh();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void loadConversations(true);
+      }
+    }, 30_000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [open, loadConversations, loadMessages]);
 
-    return () => window.clearInterval(interval);
-  }, [loadConversations, loadMessages]);
-
+  // Somente a conversa em uso é consultada a cada 10 s.
   useEffect(() => {
-    if (open) void loadConversations(true);
-  }, [open, loadConversations]);
+    if (!open || screen !== "chat" || !selected?.id) return;
+    const id = String(selected.id);
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void loadMessages(id, true);
+      }
+    }, 10_000);
+    return () => window.clearInterval(interval);
+  }, [open, screen, selected?.id, loadMessages]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });

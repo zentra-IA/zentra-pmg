@@ -259,13 +259,17 @@ export default function CustomerPortalChat({
 
     void loadMessages(false);
 
-    const interval = window.setInterval(() => {
+    const refreshWhenVisible = () => {
       if (document.visibilityState === "visible") {
         void loadMessages(true);
       }
-    }, 1200);
-
-    return () => window.clearInterval(interval);
+    };
+    const interval = window.setInterval(refreshWhenVisible, 12_000);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
   }, [open, loadMessages]);
 
   useEffect(() => {

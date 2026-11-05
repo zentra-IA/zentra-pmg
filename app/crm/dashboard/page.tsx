@@ -505,11 +505,17 @@ export default function DashboardPage() {
   useEffect(() => {
     loadDashboard();
 
-    const interval = setInterval(() => {
-      loadDashboard();
-    }, 30_000);
-
-    return () => clearInterval(interval);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") {
+        void loadDashboard();
+      }
+    };
+    const interval = window.setInterval(refreshWhenVisible, 60_000);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
   }, []);
 
   useEffect(() => {
